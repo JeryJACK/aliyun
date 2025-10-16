@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API 测试</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 p-8">
+    <div class="max-w-4xl mx-auto">
+        <h1 class="text-3xl font-bold mb-6">阿里云函数 API 测试</h1>
+
+        <div class="bg-white rounded-lg shadow p-6 mb-4">
+            <h2 class="text-xl font-semibold mb-4">测试 records API</h2>
+            <button id="testBtn" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
+                测试请求
+            </button>
+            <div id="result" class="mt-4 p-4 bg-gray-50 rounded"></div>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = 'https://records-bsjjdmpsel.cn-hangzhou.fcapp.run';
+
+        document.getElementById('testBtn').addEventListener('click', async () => {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = '<p class="text-blue-600">正在测试...</p>';
+
+            try {
+                console.log('发送请求到:', API_URL);
+
+                const response = await fetch(`${API_URL}?page=1&limit=10`, {
+                    method: 'GET',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                console.log('响应状态:', response.status);
+                console.log('响应头:', [...response.headers.entries()]);
+
+                const data = await response.json();
+
+                resultDiv.innerHTML = `
+                    <p class="text-green-600 font-semibold">✅ 请求成功!</p>
+                    <p class="mt-2"><strong>状态码:</strong> ${response.status}</p>
+                    <p><strong>CORS 头:</strong> ${response.headers.get('Access-Control-Allow-Origin') || '❌ 未设置'}</p>
+                    <p class="mt-2"><strong>数据:</strong></p>
+                    <pre class="bg-gray-100 p-2 rounded mt-2 text-sm overflow-auto">${JSON.stringify(data, null, 2)}</pre>
+                `;
+            } catch (error) {
+                console.error('请求失败:', error);
+                resultDiv.innerHTML = `
+                    <p class="text-red-600 font-semibold">❌ 请求失败</p>
+                    <p class="mt-2"><strong>错误类型:</strong> ${error.name}</p>
+                    <p><strong>错误信息:</strong> ${error.message}</p>
+                    <p class="mt-2 text-sm text-gray-600">请检查浏览器控制台的 Network 标签查看详细信息</p>
+                `;
+            }
+        });
+    </script>
+</body>
+</html>
