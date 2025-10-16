@@ -266,6 +266,7 @@ const ErrorHandler = {
 
 // 导出配置和API
 window.CONFIG = CONFIG;
+window.getApiUrl = getApiUrl;
 window.API = API;
 window.Auth = Auth;
 window.ErrorHandler = ErrorHandler;
