@@ -11,7 +11,7 @@
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
     
     <!-- 配置文件 -->
-    <script src="./public/js/config.js?v=2"></script>
+    <script src="./public/js/config.js?v=3"></script>
 
     <!-- Tailwind 配置 -->
     <script>
@@ -1039,7 +1039,14 @@
                     
                     const qs = new URLSearchParams(cleanParams).toString();
                     const url = getApiUrl('records');
-                    const response = await fetch(`${url}?${qs}`);
+                    const response = await fetch(`${url}?${qs}`, {
+                        method: 'GET',
+                        mode: 'cors',
+                        credentials: 'omit',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        }
+                    });
                     
                     if (!response.ok) {
                         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -1146,7 +1153,14 @@
             try {
                 const qs = new URLSearchParams(params).toString();
                 const url = getApiUrl('stats');
-                const response = await fetch(`${url}?${qs}`);
+                const response = await fetch(`${url}?${qs}`, {
+                    method: 'GET',
+                    mode: 'cors',
+                    credentials: 'omit',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
                 
                 if (!response.ok) {
                     throw new Error(`HTTP ${response.status}: ${response.statusText}`);
