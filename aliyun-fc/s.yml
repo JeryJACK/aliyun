@@ -1,0 +1,222 @@
+edition: 3.0.0
+name: satellite-analysis-app
+access: default
+
+resources:
+  # 登录函数
+  login:
+    component: fc3
+    props:
+      region: cn-hangzhou
+      functionName: login
+      description: 用户登录接口
+      runtime: nodejs18
+      code: ./
+      handler: login.handler
+      memorySize: 256
+      timeout: 30
+      environmentVariables:
+        MYSQL_HOST: rm-bp1pb10q9z4b9rkpf7o.mysql.rds.aliyuncs.com
+        MYSQL_PORT: "3306"
+        MYSQL_USER: yxyanzhongli
+        MYSQL_PASSWORD: Yzl112233@
+        MYSQL_DATABASE: emposat-satelite-database
+        JWT_SECRET: a7f3c8e9d2b1a6f4e8c3d7b2a9f6e1c4d8b3a7f2e9c6d1b4a8f3e7c2d6b1a9f5
+        NODE_ENV: production
+      triggers:
+        - triggerName: httpTrigger
+          triggerType: http
+          qualifier: LATEST
+          triggerConfig:
+            authType: anonymous
+            methods:
+              - GET
+              - POST
+              - OPTIONS
+            cors:
+              allowOrigins:
+                - '*'
+              allowMethods:
+                - GET
+                - POST
+                - OPTIONS
+              allowHeaders:
+                - Content-Type
+                - Authorization
+              exposeHeaders:
+                - '*'
+              maxAge: 3600
+
+  # 统计数据函数
+  stats:
+    component: fc3
+    props:
+      region: cn-hangzhou
+      functionName: stats
+      description: 统计数据接口
+      runtime: nodejs18
+      code: ./
+      handler: stats.handler
+      memorySize: 256
+      timeout: 30
+      environmentVariables:
+        MYSQL_HOST: rm-bp1pb10q9z4b9rkpf7o.mysql.rds.aliyuncs.com
+        MYSQL_PORT: "3306"
+        MYSQL_USER: yxyanzhongli
+        MYSQL_PASSWORD: Yzl112233@
+        MYSQL_DATABASE: emposat-satelite-database
+        JWT_SECRET: a7f3c8e9d2b1a6f4e8c3d7b2a9f6e1c4d8b3a7f2e9c6d1b4a8f3e7c2d6b1a9f5
+        NODE_ENV: production
+      triggers:
+        - triggerName: httpTrigger
+          triggerType: http
+          qualifier: LATEST
+          triggerConfig:
+            authType: anonymous
+            methods:
+              - GET
+              - OPTIONS
+            cors:
+              allowOrigins:
+                - '*'
+              allowMethods:
+                - GET
+                - OPTIONS
+              allowHeaders:
+                - Content-Type
+                - Authorization
+              exposeHeaders:
+                - '*'
+              maxAge: 3600
+
+  # 图表数据函数
+  chart-data:
+    component: fc3
+    props:
+      region: cn-hangzhou
+      functionName: chart-data
+      description: 图表数据接口
+      runtime: nodejs18
+      code: ./
+      handler: chart-data.handler
+      memorySize: 256
+      timeout: 30
+      environmentVariables:
+        MYSQL_HOST: rm-bp1pb10q9z4b9rkpf7o.mysql.rds.aliyuncs.com
+        MYSQL_PORT: "3306"
+        MYSQL_USER: yxyanzhongli
+        MYSQL_PASSWORD: Yzl112233@
+        MYSQL_DATABASE: emposat-satelite-database
+        JWT_SECRET: a7f3c8e9d2b1a6f4e8c3d7b2a9f6e1c4d8b3a7f2e9c6d1b4a8f3e7c2d6b1a9f5
+        NODE_ENV: production
+      triggers:
+        - triggerName: httpTrigger
+          triggerType: http
+          qualifier: LATEST
+          triggerConfig:
+            authType: anonymous
+            methods:
+              - GET
+              - OPTIONS
+            cors:
+              allowOrigins:
+                - '*'
+              allowMethods:
+                - GET
+                - OPTIONS
+              allowHeaders:
+                - Content-Type
+                - Authorization
+              exposeHeaders:
+                - '*'
+              maxAge: 3600
+
+  # 记录查询函数
+  records:
+    component: fc3
+    props:
+      region: cn-hangzhou
+      functionName: records
+      description: 记录查询和管理接口
+      runtime: nodejs18
+      code: ./
+      handler: records.handler
+      memorySize: 256
+      timeout: 30
+      environmentVariables:
+        MYSQL_HOST: rm-bp1pb10q9z4b9rkpf7o.mysql.rds.aliyuncs.com
+        MYSQL_PORT: "3306"
+        MYSQL_USER: yxyanzhongli
+        MYSQL_PASSWORD: Yzl112233@
+        MYSQL_DATABASE: emposat-satelite-database
+        JWT_SECRET: a7f3c8e9d2b1a6f4e8c3d7b2a9f6e1c4d8b3a7f2e9c6d1b4a8f3e7c2d6b1a9f5
+        NODE_ENV: production
+      triggers:
+        - triggerName: httpTrigger
+          triggerType: http
+          qualifier: LATEST
+          triggerConfig:
+            authType: anonymous
+            methods:
+              - GET
+              - POST
+              - PUT
+              - DELETE
+              - OPTIONS
+            cors:
+              allowOrigins:
+                - '*'
+              allowMethods:
+                - GET
+                - POST
+                - PUT
+                - DELETE
+                - OPTIONS
+              allowHeaders:
+                - Content-Type
+                - Authorization
+              exposeHeaders:
+                - '*'
+              maxAge: 3600
+
+  # 数据导入函数
+  import:
+    component: fc3
+    props:
+      region: cn-hangzhou
+      functionName: import
+      description: 数据导入接口
+      runtime: nodejs18
+      code: ./
+      handler: import.handler
+      memorySize: 512
+      timeout: 300
+      environmentVariables:
+        MYSQL_HOST: rm-bp1pb10q9z4b9rkpf7o.mysql.rds.aliyuncs.com
+        MYSQL_PORT: "3306"
+        MYSQL_USER: yxyanzhongli
+        MYSQL_PASSWORD: Yzl112233@
+        MYSQL_DATABASE: emposat-satelite-database
+        JWT_SECRET: a7f3c8e9d2b1a6f4e8c3d7b2a9f6e1c4d8b3a7f2e9c6d1b4a8f3e7c2d6b1a9f5
+        NODE_ENV: production
+      triggers:
+        - triggerName: httpTrigger
+          triggerType: http
+          qualifier: LATEST
+          triggerConfig:
+            authType: anonymous
+            methods:
+              - POST
+              - OPTIONS
+            cors:
+              allowOrigins:
+                - '*'
+              allowMethods:
+                - POST
+                - OPTIONS
+              allowHeaders:
+                - Content-Type
+                - Authorization
+              exposeHeaders:
+                - '*'
+              maxAge: 3600

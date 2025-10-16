@@ -1,0 +1,15 @@
+需要修改的文件列表：
+- login.js
+- stats.js
+- chart-data.js
+- import.js
+
+需要做的修改：
+1. 移除 res.headers 中的所有 CORS 头（Access-Control-Allow-*）
+2. 移除 OPTIONS 请求的手动处理
+3. 移除 handleCors() 函数调用
+
+保留：
+- Content-Type: application/json
+
+原因：s.yml 中已经配置了 CORS，代码中再设置会导致重复头部，浏览器会报错。

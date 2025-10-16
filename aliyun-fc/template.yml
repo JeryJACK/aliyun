@@ -1,0 +1,136 @@
+ROSTemplateFormatVersion: '2015-09-01'
+Transform: 'Aliyun::Serverless-2018-04-03'
+Resources:
+  satellite-analysis:
+    Type: 'Aliyun::Serverless::Service'
+    Properties:
+      Description: '卫星数据分析系统 API 服务'
+      InternetAccess: true
+      LogConfig:
+        Project: 'satellite-analysis-logs'
+        Logstore: 'fc-logs'
+      VpcConfig:
+        VpcId: 'Auto'
+        VSwitchIds: ['Auto']
+        SecurityGroupId: 'Auto'
+      NasConfig: 'Auto'
+      
+    login:
+      Type: 'Aliyun::Serverless::Function'
+      Properties:
+        Handler: 'login.handler'
+        Runtime: 'nodejs18'
+        CodeUri: './'
+        Description: '用户登录接口'
+        MemorySize: 256
+        Timeout: 30
+        EnvironmentVariables:
+          MYSQL_HOST: '${MYSQL_HOST}'
+          MYSQL_PORT: '${MYSQL_PORT}'
+          MYSQL_USER: '${MYSQL_USER}'
+          MYSQL_PASSWORD: '${MYSQL_PASSWORD}'
+          MYSQL_DATABASE: '${MYSQL_DATABASE}'
+          JWT_SECRET: '${JWT_SECRET}'
+          NODE_ENV: 'production'
+        Events:
+          httpTrigger:
+            Type: 'HTTP'
+            Properties:
+              AuthType: 'ANONYMOUS'
+              Methods: ['POST', 'OPTIONS']
+              
+    stats:
+      Type: 'Aliyun::Serverless::Function'
+      Properties:
+        Handler: 'stats.handler'
+        Runtime: 'nodejs18'
+        CodeUri: './'
+        Description: '统计数据接口'
+        MemorySize: 256
+        Timeout: 30
+        EnvironmentVariables:
+          MYSQL_HOST: '${MYSQL_HOST}'
+          MYSQL_PORT: '${MYSQL_PORT}'
+          MYSQL_USER: '${MYSQL_USER}'
+          MYSQL_PASSWORD: '${MYSQL_PASSWORD}'
+          MYSQL_DATABASE: '${MYSQL_DATABASE}'
+          JWT_SECRET: '${JWT_SECRET}'
+          NODE_ENV: 'production'
+        Events:
+          httpTrigger:
+            Type: 'HTTP'
+            Properties:
+              AuthType: 'ANONYMOUS'
+              Methods: ['GET', 'OPTIONS']
+              
+    chart-data:
+      Type: 'Aliyun::Serverless::Function'
+      Properties:
+        Handler: 'chart-data.handler'
+        Runtime: 'nodejs18'
+        CodeUri: './'
+        Description: '图表数据接口'
+        MemorySize: 256
+        Timeout: 30
+        EnvironmentVariables:
+          MYSQL_HOST: '${MYSQL_HOST}'
+          MYSQL_PORT: '${MYSQL_PORT}'
+          MYSQL_USER: '${MYSQL_USER}'
+          MYSQL_PASSWORD: '${MYSQL_PASSWORD}'
+          MYSQL_DATABASE: '${MYSQL_DATABASE}'
+          JWT_SECRET: '${JWT_SECRET}'
+          NODE_ENV: 'production'
+        Events:
+          httpTrigger:
+            Type: 'HTTP'
+            Properties:
+              AuthType: 'ANONYMOUS'
+              Methods: ['GET', 'OPTIONS']
+              
+    records:
+      Type: 'Aliyun::Serverless::Function'
+      Properties:
+        Handler: 'records.handler'
+        Runtime: 'nodejs18'
+        CodeUri: './'
+        Description: '记录查询接口'
+        MemorySize: 256
+        Timeout: 30
+        EnvironmentVariables:
+          MYSQL_HOST: '${MYSQL_HOST}'
+          MYSQL_PORT: '${MYSQL_PORT}'
+          MYSQL_USER: '${MYSQL_USER}'
+          MYSQL_PASSWORD: '${MYSQL_PASSWORD}'
+          MYSQL_DATABASE: '${MYSQL_DATABASE}'
+          JWT_SECRET: '${JWT_SECRET}'
+          NODE_ENV: 'production'
+        Events:
+          httpTrigger:
+            Type: 'HTTP'
+            Properties:
+              AuthType: 'ANONYMOUS'
+              Methods: ['GET', 'OPTIONS']
+              
+    import:
+      Type: 'Aliyun::Serverless::Function'
+      Properties:
+        Handler: 'import.handler'
+        Runtime: 'nodejs18'
+        CodeUri: './'
+        Description: '数据导入接口'
+        MemorySize: 512
+        Timeout: 300
+        EnvironmentVariables:
+          MYSQL_HOST: '${MYSQL_HOST}'
+          MYSQL_PORT: '${MYSQL_PORT}'
+          MYSQL_USER: '${MYSQL_USER}'
+          MYSQL_PASSWORD: '${MYSQL_PASSWORD}'
+          MYSQL_DATABASE: '${MYSQL_DATABASE}'
+          JWT_SECRET: '${JWT_SECRET}'
+          NODE_ENV: 'production'
+        Events:
+          httpTrigger:
+            Type: 'HTTP'
+            Properties:
+              AuthType: 'ANONYMOUS'
+              Methods: ['POST', 'OPTIONS']

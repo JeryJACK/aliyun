@@ -1,0 +1,25 @@
+{
+  "name": "satellite-analysis-fc",
+  "version": "1.0.0",
+  "description": "卫星数据分析系统 - 阿里云函数计算版本",
+  "main": "index.js",
+  "scripts": {
+    "dev": "node dev-server.js",
+    "deploy": "fun deploy",
+    "build": "echo 'Building for Aliyun FC'"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "express": "^5.1.0",
+    "formidable": "^3.5.1",
+    "jsonwebtoken": "^9.0.2",
+    "mysql2": "^3.6.0",
+    "xlsx": "^0.18.5"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "archiver": "^7.0.1"
+  }
+}

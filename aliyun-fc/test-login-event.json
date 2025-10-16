@@ -1,0 +1,22 @@
+{
+  "version": "1.0",
+  "method": "POST",
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": "{\"username\":\"yuxing\",\"password\":\"Emposat1\"}",
+  "queryParameters": {},
+  "pathParameters": {},
+  "requestContext": {
+    "accountId": "your-account-id",
+    "domainName": "login-paixjucluh.cn-hangzhou.fcapp.run",
+    "requestId": "test-request-id",
+    "http": {
+      "method": "POST",
+      "path": "/",
+      "protocol": "HTTP/1.1",
+      "sourceIp": "127.0.0.1",
+      "userAgent": "test"
+    }
+  }
+}
