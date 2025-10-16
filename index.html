@@ -1,0 +1,2873 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>卫星任务数据分析平台</title>
+    <!-- 外部资源 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
+    
+    <!-- 配置文件 -->
+    <script src="./public/js/config.js"></script>
+
+    <!-- Tailwind 配置 -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#165DFF',
+                        secondary: '#36CFC9',
+                        accent: '#722ED1',
+                        warning: '#FF7D00',
+                        danger: '#F53F3F',
+                        success: '#00B42A',
+                    },
+                }
+            }
+        }
+    </script>
+
+    <style type="text/tailwindcss">
+        @layer utilities {
+            .content-auto {
+                content-visibility: auto;
+            }
+            .card-shadow {
+                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+            }
+            .modal-backdrop {
+                backdrop-filter: blur(2px);
+            }
+            .stat-card {
+                transition: transform 0.3s ease, box-shadow 0.3s ease;
+            }
+            .stat-card:hover {
+                transform: translateY(-5px);
+                box-shadow: 0 8px 30px rgba(22, 93, 255, 0.15);
+            }
+        }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <!-- 顶部导航 -->
+    <header class="bg-white border-b border-gray-200">
+        <div class="container mx-auto px-4 py-3 flex items-center justify-between">
+            <div class="flex items-center space-x-2">
+                <i class="fa fa-line-chart text-primary text-2xl"></i>
+                <h1 class="text-xl font-bold text-primary">卫星任务数据分析平台</h1>
+            </div>
+
+            <!-- 导航菜单 -->
+            <nav class="hidden md:flex items-center space-x-6">
+                <a href="index.html" class="text-primary font-medium border-b-2 border-primary px-1 py-5">首页</a>
+                <a href="trend-analysis.html" class="text-gray-600 hover:text-primary transition-colors px-1 py-5">数据趋势分析</a>
+                 <a href="data-distribution.html" class="text-gray-600 hover:text-primary transition-colors px-1 py-5">数据分布</a>
+                 <a href="circle-warning.html" class="text-gray-600 hover:text-primary transition-colors px-1 py-5">数据预警</a>
+                 <a href="admin.html" class="text-gray-600 hover:text-primary transition-colors px-1 py-5">
+                    <i class="fa fa-cog mr-1"></i>数据管理
+                </a>
+            </nav>
+
+            <!-- 移动端菜单按钮 -->
+            <button class="md:hidden text-gray-600 hover:text-primary">
+                <i class="fa fa-bars text-xl"></i>
+            </button>
+        </div>
+    </header>
+
+    <!-- 主内容区 -->
+    <main class="container mx-auto px-4 py-6">
+        <!-- 数据加载状态 -->
+        <div id="dbLoading" class="mb-6 p-3 bg-primary/10 text-primary rounded-lg flex items-center hidden">
+            <i class="fa fa-spinner fa-spin mr-2"></i>
+            <span>正在从 Postgres 数据库加载数据...</span>
+        </div>
+
+        <div id="noDataAlert" class="bg-warning/10 text-warning p-4 rounded-lg mb-6 hidden">
+            <i class="fa fa-exclamation-circle mr-2"></i>
+            <span>当前无数据，请前往 <a href="admin.html" class="text-primary underline font-medium">管理页面</a> 导入数据</span>
+        </div>
+
+
+        <!-- 系统说明 -->
+        <section class="mb-8 bg-white rounded-lg p-6 card-shadow">
+            <h2 class="text-lg font-semibold mb-4 flex items-center">
+                <i class="fa fa-info-circle text-primary mr-2"></i>系统说明
+            </h2>
+            <div class="bg-blue-50 p-4 rounded-lg">
+                <p class="text-sm text-gray-700 mb-2">✅ 数据现在存储在 Postgres 数据库中，通过后端 API 提供</p>
+                <p class="text-sm text-gray-700 mb-2">⚡ 已启用智能本地缓存，首次访问后将秒速加载数据</p>
+                <p class="text-sm text-gray-700 mb-2">📊 数据管理请访问 <a href="admin.html" class="text-primary hover:underline font-medium">管理页面</a> 进行数据导入和管理</p>
+                <p class="text-sm text-gray-700 mb-2">🔑 管理员登录: <a href="login.html" class="text-primary hover:underline font-medium">点击登录</a></p>
+                <p class="text-sm text-gray-700">💡 所有时间处理均基于文件时间（北京时间），不进行时区转换</p>
+            </div>
+            
+            <!-- 缓存管理控制面板 -->
+            <div class="mt-4 p-4 bg-gray-50 rounded-lg border">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="text-sm font-semibold text-gray-700 flex items-center">
+                        <i class="fa fa-database text-primary mr-2"></i>本地缓存管理
+                    </h3>
+                    <span id="cacheStatus" class="text-xs px-2 py-1 rounded-full bg-gray-200 text-gray-600">检查中...</span>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                    <button id="refreshCacheBtn" class="text-xs px-3 py-1 bg-primary text-white rounded hover:bg-primary/90 transition-colors">
+                        <i class="fa fa-refresh mr-1"></i>刷新缓存
+                    </button>
+                    <button id="clearCacheBtn" class="text-xs px-3 py-1 bg-warning text-white rounded hover:bg-warning/90 transition-colors">
+                        <i class="fa fa-trash mr-1"></i>清空缓存
+                    </button>
+                    <span id="cacheInfo" class="text-xs text-gray-500 self-center"></span>
+                </div>
+            </div>
+        </section>
+
+        <!-- 图表筛选区 -->
+        <section class="mb-8 bg-white rounded-lg p-6 card-shadow">
+            <h2 class="text-lg font-semibold mb-4">统计筛选</h2>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">统计开始日期（文件时间）</label>
+                    <input type="date" id="startDate" class="w-full p-2 border border-gray-300 rounded-md">
+                    <p class="text-xs text-gray-500 mt-1">从所选日期的齿轮设置时间开始统计</p>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">统计结束日期（文件时间）</label>
+                    <input type="date" id="endDate" class="w-full p-2 border border-gray-300 rounded-md">
+                    <p class="text-xs text-gray-500 mt-1">统计到所选日期+1日的齿轮设置时间（包含所选日期的完整周期）</p>
+                </div>
+            </div>
+
+            <div class="mb-4">
+                <div class="flex items-center justify-between mb-1">
+                    <label class="block text-sm font-medium text-gray-700">统计周期</label>
+                    <button id="configGroupingBtn" class="text-gray-500 hover:text-primary transition-colors p-1" title="配置周期规则（基于文件时间）">
+                        <i class="fa fa-cog"></i>
+                    </button>
+                </div>
+                <select id="groupBy" class="w-full p-2 border border-gray-300 rounded-md">
+                    <option value="day">按日</option>
+                    <option value="week">按周</option>
+                    <option value="month">按月</option>
+                    <option value="quarter">按季度</option>
+                </select>
+            </div>
+
+            <div class="mb-4">
+                <label class="flex items-center">
+                    <input type="checkbox" id="showDataLabels" class="mr-2 w-4 h-4 text-primary bg-gray-100 border-gray-300 rounded focus:ring-primary focus:ring-2">
+                    <span class="text-sm font-medium text-gray-700">显示数据标签</span>
+                </label>
+                <p class="text-xs text-gray-500 mt-1">勾选后数据点上直接显示数值，取消勾选则鼠标悬停时显示</p>
+            </div>
+
+            <button id="generateChart" class="px-4 py-2 bg-primary text-white rounded-md hover:bg-primary/90 transition-colors">
+                生成统计结果
+            </button>
+        </section>
+
+        <!-- 图表展示区 -->
+        <section class="bg-white rounded-lg p-6 card-shadow mb-8">
+            <h2 class="text-lg font-semibold mb-4">计划ID计数与任务状态趋势图</h2>
+
+            <div class="h-96 border border-gray-200 rounded-lg p-4 relative">
+                <!-- 图表容器 -->
+                <canvas id="dataChart"></canvas>
+
+                <!-- 空状态提示 -->
+                <div id="chartEmptyState" class="absolute inset-0 flex items-center justify-center text-gray-500 hidden">
+                    <div class="text-center">
+                        <i class="fa fa-line-chart text-4xl mb-2"></i>
+                        <p>没有数据可显示</p>
+                        <p class="text-sm mt-1">请前往管理页面导入数据并选择正确的时间范围</p>
+                    </div>
+                </div>
+
+                <!-- 错误状态提示 -->
+                <div id="chartErrorState" class="absolute inset-0 flex items-center justify-center text-gray-500 hidden">
+                    <div class="text-center">
+                        <i class="fa fa-exclamation-triangle text-4xl mb-2 text-warning"></i>
+                        <p id="chartErrorMessage">生成统计结果时出错</p>
+                    </div>
+                </div>
+
+                <!-- 加载状态 -->
+                <div id="chartLoadingState" class="absolute inset-0 flex items-center justify-center bg-white/80 hidden">
+                    <div class="text-center">
+                        <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-primary mb-2"></div>
+                        <p>正在从 API 获取并统计数据...</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 统计卡片展示区 -->
+        <section class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+            <!-- 总计划数卡片 -->
+            <div class="stat-card bg-white rounded-lg p-6 card-shadow">
+                <div class="flex items-start justify-between">
+                    <div>
+                        <p class="text-sm text-gray-500 font-medium">总计划数</p>
+                        <h3 class="text-3xl font-bold text-primary mt-2" id="totalCount">0</h3>
+                        <p class="text-xs text-gray-400 mt-1">所有周期的计划总数</p>
+                    </div>
+                    <div class="p-3 bg-primary/10 rounded-lg">
+                        <i class="fa fa-database text-primary text-xl"></i>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 平均周期计划数卡片 -->
+            <div class="stat-card bg-white rounded-lg p-6 card-shadow">
+                <div class="flex items-start justify-between">
+                    <div>
+                        <p class="text-sm text-gray-500 font-medium">平均周期计划数</p>
+                        <h3 class="text-3xl font-bold text-secondary mt-2" id="avgCount">0</h3>
+                        <p class="text-xs text-gray-400 mt-1">所有周期的平均值</p>
+                    </div>
+                    <div class="p-3 bg-secondary/10 rounded-lg">
+                        <i class="fa fa-calculator text-secondary text-xl"></i>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 总失败圈次卡片 -->
+            <div class="stat-card bg-white rounded-lg p-6 card-shadow">
+                <div class="flex items-start justify-between">
+                    <div>
+                        <p class="text-sm text-gray-500 font-medium">总失败圈次</p>
+                        <h3 class="text-3xl font-bold text-danger mt-2" id="totalFailures">0</h3>
+                        <p class="text-xs text-gray-400 mt-1">所有周期的失败总数</p>
+                    </div>
+                    <div class="p-3 bg-danger/10 rounded-lg">
+                        <i class="fa fa-exclamation-circle text-danger text-xl"></i>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 平均成功率卡片 -->
+            <div class="stat-card bg-white rounded-lg p-6 card-shadow">
+                <div class="flex items-start justify-between">
+                    <div>
+                        <p class="text-sm text-gray-500 font-medium">平均成功率</p>
+                        <h3 class="text-3xl font-bold text-success mt-2" id="avgSuccessRate">0%</h3>
+                        <p class="text-xs text-gray-400 mt-1">所有周期的平均成功率</p>
+                    </div>
+                    <div class="p-3 bg-success/10 rounded-lg">
+                        <i class="fa fa-check-circle text-success text-xl"></i>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 新增：最大周期计划数卡片 -->
+            <div class="stat-card bg-white rounded-lg p-6 card-shadow">
+                <div class="flex items-start justify-between">
+                    <div>
+                        <p class="text-sm text-gray-500 font-medium">最大周期计划数</p>
+                        <h3 class="text-3xl font-bold text-accent mt-2" id="maxCount">0</h3>
+                        <p class="text-xs text-gray-400 mt-1">单周期最大计划数</p>
+                    </div>
+                    <div class="p-3 bg-accent/10 rounded-lg">
+                        <i class="fa fa-arrow-up text-accent text-xl"></i>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 新增：最小周期计划数卡片 -->
+            <div class="stat-card bg-white rounded-lg p-6 card-shadow">
+                <div class="flex items-start justify-between">
+                    <div>
+                        <p class="text-sm text-gray-500 font-medium">最小周期计划数</p>
+                        <h3 class="text-3xl font-bold text-warning mt-2" id="minCount">0</h3>
+                        <p class="text-xs text-gray-400 mt-1">单周期最小计划数</p>
+                    </div>
+                    <div class="p-3 bg-warning/10 rounded-lg">
+                        <i class="fa fa-arrow-down text-warning text-xl"></i>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 新增：卫星数量卡片 -->
+            <div class="stat-card bg-white rounded-lg p-6 card-shadow cursor-pointer" id="satelliteCountCard">
+                <div class="flex items-start justify-between">
+                    <div>
+                        <p class="text-sm text-gray-500 font-medium">卫星数量</p>
+                        <h3 class="text-3xl font-bold text-blue-600 mt-2" id="satelliteCount">0</h3>
+                        <p class="text-xs text-gray-400 mt-1">点击查看趋势图</p>
+                    </div>
+                    <div class="p-3 bg-blue-600/10 rounded-lg">
+                        <i class="fa fa-rocket text-blue-600 text-xl"></i>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 新增：客户数量卡片 -->
+            <div class="stat-card bg-white rounded-lg p-6 card-shadow cursor-pointer" id="customerCountCard">
+                <div class="flex items-start justify-between">
+                    <div>
+                        <p class="text-sm text-gray-500 font-medium">客户数量</p>
+                        <h3 class="text-3xl font-bold text-purple-600 mt-2" id="customerCount">0</h3>
+                        <p class="text-xs text-gray-400 mt-1">点击查看趋势图</p>
+                    </div>
+                    <div class="p-3 bg-purple-600/10 rounded-lg">
+                        <i class="fa fa-users text-purple-600 text-xl"></i>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 详细数据表格 -->
+        <section class="bg-white rounded-lg p-6 card-shadow">
+            <h2 class="text-lg font-semibold mb-4">周期统计详情</h2>
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">周期</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">计划ID数量</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">失败圈次</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">成功率</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">周期时间范围（文件时间）</th>
+                        </tr>
+                    </thead>
+                    <tbody id="detailTableBody" class="bg-white divide-y divide-gray-200"></tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <!-- 周期规则配置模态框 -->
+    <div id="groupingConfigModal" class="fixed inset-0 bg-black/50 modal-backdrop flex items-center justify-center z-50 hidden">
+        <div class="bg-white rounded-lg w-full max-w-md p-6 transform transition-all scale-95 opacity-0" id="modalContent">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-lg font-semibold">周期规则配置（所有时间均为文件时间）</h3>
+                <button id="closeConfigModal" class="text-gray-500 hover:text-gray-700 transition-colors">
+                    <i class="fa fa-times"></i>
+                </button>
+            </div>
+
+            <!-- 日周期规则 -->
+            <div class="mb-6 pb-4 border-b border-gray-100">
+                <h4 class="font-medium mb-3 flex items-center">
+                    <i class="fa fa-calendar-o text-primary mr-2"></i>按日周期
+                </h4>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm text-gray-600 mb-1">周期起始时间（文件时间）</label>
+                        <input type="time" id="dayStart" class="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all" value="00:00">
+                    </div>
+                    <div>
+                        <p class="block text-sm text-gray-600 mb-1">周期范围</p>
+                        <div class="p-2 border border-gray-200 rounded-md bg-gray-50 text-sm">
+                            X日 <span id="dayStartDisplay">00:00</span> 至 X+1日 <span id="dayEndDisplay">00:00</span>
+                        </div>
+                    </div>
+                </div>
+                <p class="text-xs text-gray-500 mt-2">例如：设置00:00，则8月1日00:00至8月2日00:00的计划归为8月1日</p>
+            </div>
+
+            <!-- 周周期规则 -->
+            <div class="mb-6 pb-4 border-b border-gray-100">
+                <h4 class="font-medium mb-3 flex items-center">
+                    <i class="fa fa-calendar-week-o text-primary mr-2"></i>按周周期
+                </h4>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm text-gray-600 mb-1">周起始日</label>
+                        <select id="weekStartDay" class="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all">
+                            <option value="0">周日</option>
+                            <option value="1" selected>周一</option>
+                            <option value="2">周二</option>
+                            <option value="3">周三</option>
+                            <option value="4">周四</option>
+                            <option value="5">周五</option>
+                            <option value="6">周六</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-600 mb-1">起始时间（文件时间）</label>
+                        <input type="time" id="weekStartTime" class="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all" value="00:00">
+                    </div>
+                </div>
+            </div>
+
+            <!-- 月周期规则 -->
+            <div class="mb-6 pb-4 border-b border-gray-100">
+                <h4 class="font-medium mb-3 flex items-center">
+                    <i class="fa fa-calendar text-primary mr-2"></i>按月周期
+                </h4>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm text-gray-600 mb-1">月起始日期</label>
+                        <input type="number" id="monthStartDate" min="1" max="31" class="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all" value="1">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-600 mb-1">起始时间（文件时间）</label>
+                        <input type="time" id="monthStartTime" class="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all" value="00:00">
+                    </div>
+                </div>
+            </div>
+
+            <!-- 季度周期规则 -->
+            <div class="mb-6">
+                <h4 class="font-medium mb-3 flex items-center">
+                    <i class="fa fa-calendar-check-o text-primary mr-2"></i>按季度周期
+                </h4>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm text-gray-600 mb-1">季度起始月份</label>
+                        <select id="quarterStartMonth" class="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all">
+                            <option value="1">1月（Q1:1-3月）</option>
+                            <option value="4">4月（Q2:4-6月）</option>
+                            <option value="7">7月（Q3:7-9月）</option>
+                            <option value="10">10月（Q4:10-12月）</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-600 mb-1">起始时间（文件时间）</label>
+                        <input type="time" id="quarterStartTime" class="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all" value="00:00">
+                    </div>
+                </div>
+            </div>
+
+            <button id="saveGroupingConfig" class="w-full px-4 py-2 bg-primary text-white rounded-md hover:bg-primary/90 transition-colors transform hover:scale-[1.02] active:scale-[0.98]">
+                保存配置
+            </button>
+        </div>
+    </div>
+
+    <!-- 卫星数量趋势图模态框 -->
+    <div id="satelliteCountModal" class="fixed inset-0 bg-black/50 modal-backdrop flex items-center justify-center z-50 hidden">
+        <div class="bg-white rounded-lg w-full max-w-4xl mx-4 p-6 transform transition-all scale-95 opacity-0" id="satelliteModalContent">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-lg font-semibold">卫星数量趋势分析</h3>
+                <button id="closeSatelliteModal" class="text-gray-500 hover:text-gray-700 transition-colors">
+                    <i class="fa fa-times"></i>
+                </button>
+            </div>
+            
+            <div class="h-96 border border-gray-200 rounded-lg p-4 relative">
+                <canvas id="satelliteCountChart"></canvas>
+                
+                <!-- 空状态提示 -->
+                <div id="satelliteChartEmpty" class="absolute inset-0 flex items-center justify-center text-gray-500 hidden">
+                    <div class="text-center">
+                        <i class="fa fa-rocket text-4xl mb-2"></i>
+                        <p>没有卫星数据可显示</p>
+                    </div>
+                </div>
+                
+                <!-- 加载状态 -->
+                <div id="satelliteChartLoading" class="absolute inset-0 flex items-center justify-center bg-white/80 hidden">
+                    <div class="text-center">
+                        <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mb-2"></div>
+                        <p>正在统计卫星数量趋势...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 客户数量趋势图模态框 -->
+    <div id="customerCountModal" class="fixed inset-0 bg-black/50 modal-backdrop flex items-center justify-center z-50 hidden">
+        <div class="bg-white rounded-lg w-full max-w-4xl mx-4 p-6 transform transition-all scale-95 opacity-0" id="customerModalContent">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-lg font-semibold">客户数量趋势分析</h3>
+                <button id="closeCustomerModal" class="text-gray-500 hover:text-gray-700 transition-colors">
+                    <i class="fa fa-times"></i>
+                </button>
+            </div>
+            
+            <div class="h-96 border border-gray-200 rounded-lg p-4 relative">
+                <canvas id="customerCountChart"></canvas>
+                
+                <!-- 空状态提示 -->
+                <div id="customerChartEmpty" class="absolute inset-0 flex items-center justify-center text-gray-500 hidden">
+                    <div class="text-center">
+                        <i class="fa fa-users text-4xl mb-2"></i>
+                        <p>没有客户数据可显示</p>
+                    </div>
+                </div>
+                
+                <!-- 加载状态 -->
+                <div id="customerChartLoading" class="absolute inset-0 flex items-center justify-center bg-white/80 hidden">
+                    <div class="text-center">
+                        <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600 mb-2"></div>
+                        <p>正在统计客户数量趋势...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ==================== 数据缓存和预载系统 ====================
+        
+        // IndexedDB缓存管理器
+        class CacheManager {
+            constructor() {
+                this.dbName = 'SatelliteDataCache';
+                this.dbVersion = 3;
+                this.allDataStoreName = 'allDataCache';
+                this.metaStoreName = 'metaData';
+                this.db = null;
+                // 移除缓存过期时间，始终使用本地缓存
+                this.cacheExpiry = Infinity; 
+            }
+
+            async init() {
+                return new Promise((resolve, reject) => {
+                    const request = indexedDB.open(this.dbName, this.dbVersion);
+
+                    request.onerror = () => {
+                        console.error('❌ IndexedDB初始化失败:', request.error);
+                        reject(request.error);
+                    };
+
+                    request.onsuccess = () => {
+                        this.db = request.result;
+                        console.log('✅ IndexedDB初始化成功');
+                        resolve(this.db);
+                    };
+
+                    request.onupgradeneeded = (event) => {
+                        this.db = event.target.result;
+                        console.log('🔧 升级IndexedDB结构...');
+
+                        // 全数据存储空间
+                        if (!this.db.objectStoreNames.contains(this.allDataStoreName)) {
+                            const allDataStore = this.db.createObjectStore(this.allDataStoreName, { keyPath: 'id' });
+                            allDataStore.createIndex('timestamp', 'timestamp', { unique: false });
+                            allDataStore.createIndex('start_time', 'start_time', { unique: false });
+                            console.log('📦 创建全数据存储空间');
+                        }
+
+                        // 元数据存储空间
+                        if (!this.db.objectStoreNames.contains(this.metaStoreName)) {
+                            const metaStore = this.db.createObjectStore(this.metaStoreName, { keyPath: 'key' });
+                            console.log('📦 创建元数据存储空间');
+                        }
+                    };
+                });
+            }
+
+            // 存储所有数据到本地缓存
+            async storeAllData(allData) {
+                if (!this.db) await this.init();
+                
+                return new Promise(async (resolve, reject) => {
+                    const transaction = this.db.transaction([this.allDataStoreName, this.metaStoreName], 'readwrite');
+                    const allDataStore = transaction.objectStore(this.allDataStoreName);
+                    const metaStore = transaction.objectStore(this.metaStoreName);
+                    
+                    try {
+                        // 清空现有数据
+                        await new Promise((res) => {
+                            const clearReq = allDataStore.clear();
+                            clearReq.onsuccess = () => res();
+                            clearReq.onerror = () => res();
+                        });
+                        
+                        // 按时间升序排序数据
+                        const sortedData = this.sortDataByTime(allData);
+                        
+                        // 批量存储数据
+                        console.log(`💾 开始存储 ${sortedData.length} 条数据到本地缓存（按开始时间升序）...`);
+                        let storedCount = 0;
+                        
+                        for (const record of sortedData) {
+                            // 统一数据格式并添加时间戳
+                            const standardRecord = {
+                                id: record.plan_id || record['计划ID'] || record.id || `record_${storedCount}`,
+                                start_time: record.start_time || record['开始时间'],
+                                task_result: record.task_result || record['任务结果状态'],
+                                task_type: record.task_type || record['任务类型'],
+                                customer: record.customer || record['所属客户'],
+                                satellite_name: record.satellite_name || record['卫星名称'],
+                                station_name: record.station_name || record['测站名称'],
+                                station_id: record.station_id || record['测站ID'],
+                                // 保留原始数据
+                                ...record
+                            };
+                            
+                            // 添加时间戳用于快速查询和排序（避免时区转换）
+                            if (standardRecord.start_time) {
+                                standardRecord.timestamp = this.parseTimeToTimestamp(standardRecord.start_time);
+                            }
+                            
+                            allDataStore.put(standardRecord);
+                            storedCount++;
+                            
+                            // 每5000条记录显示进度
+                            if (storedCount % 5000 === 0) {
+                                console.log(`📦 已存储 ${storedCount}/${sortedData.length} 条记录`);
+                            }
+                        }
+                        
+                        // 存储元数据
+                        const metaData = {
+                            key: 'allDataMeta',
+                            totalCount: sortedData.length,
+                            lastUpdated: Date.now(),
+                            dataVersion: 1,
+                            sortedByTime: true
+                        };
+                        metaStore.put(metaData);
+                        
+                        transaction.oncomplete = () => {
+                            console.log(`✅ 全数据缓存完成! 共存储 ${storedCount} 条记录（按开始时间升序）`);
+                            resolve(storedCount);
+                        };
+                        
+                        transaction.onerror = () => {
+                            console.error('❌ 全数据缓存失败:', transaction.error);
+                            reject(transaction.error);
+                        };
+                        
+                    } catch (error) {
+                        console.error('❌ 存储全数据时出错:', error);
+                        reject(error);
+                    }
+                });
+            }
+
+            // 按时间对数据进行升序排列
+            sortDataByTime(data) {
+                if (!data || !Array.isArray(data)) return [];
+                
+                return data.sort((a, b) => {
+                    // 获取时间字段
+                    const timeA = a.start_time || a['开始时间'] || a.timestamp;
+                    const timeB = b.start_time || b['开始时间'] || b.timestamp;
+                    
+                    if (!timeA || !timeB) return 0;
+                    
+                    // 转换为时间戳
+                    const timestampA = this.parseTimeToTimestamp(timeA);
+                    const timestampB = this.parseTimeToTimestamp(timeB);
+                    
+                    return timestampA - timestampB; // 升序排列
+                });
+            }
+
+            // 解析各种时间格式为时间戳（避免时区转换）
+            parseTimeToTimestamp(timeValue) {
+                if (typeof timeValue === 'number') {
+                    return timeValue > 1000000000000 ? timeValue : timeValue * 1000;
+                }
+                
+                if (typeof timeValue === 'string') {
+                    const cleanTimeStr = timeValue.replace(/[TZ]/g, ' ').replace(/[+-]\d{2}:\d{2}$/, '').trim();
+                    // 使用本地时区解析时间，避免UTC转换
+                    const date = this.parseLocalTime(cleanTimeStr);
+                    return isNaN(date.getTime()) ? 0 : date.getTime();
+                }
+                
+                if (timeValue instanceof Date) {
+                    return timeValue.getTime();
+                }
+                
+                return 0;
+            }
+
+            // 解析本地日期字符串为时间戳（避免时区转换）
+            parseLocalDateToTimestamp(dateStr, hours = 0, minutes = 0, seconds = 0, ms = 0) {
+                if (!dateStr) return 0;
+                
+                try {
+                    const parts = dateStr.split('-');
+                    if (parts.length === 3) {
+                        const year = parseInt(parts[0]);
+                        const month = parseInt(parts[1]) - 1; // JavaScript月份从0开始
+                        const day = parseInt(parts[2]);
+                        
+                        // 直接构造本地时间，避免UTC转换
+                        const date = new Date(year, month, day, hours, minutes, seconds, ms);
+                        return date.getTime();
+                    }
+                } catch (error) {
+                    console.warn('解析日期失败:', dateStr, error);
+                }
+                
+                return 0;
+            }
+
+            // 解析本地时间字符串，避免UTC转换
+            parseLocalTime(timeStr) {
+                if (!timeStr) return new Date(NaN);
+                
+                try {
+                    // 统一使用与SatelliteApp相同的解析逻辑
+                    // 尝试解析 YYYY-MM-DD HH:mm:ss 格式
+                    const match = timeStr.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2}):(\d{1,2}):(\d{1,2}))?/);
+                    if (match) {
+                        const [, year, month, day, hour = 0, minute = 0, second = 0] = match;
+                        // 直接构造文件时间，不经过UTC转换
+                        const result = new Date(
+                            parseInt(year), 
+                            parseInt(month) - 1, 
+                            parseInt(day), 
+                            parseInt(hour), 
+                            parseInt(minute), 
+                            parseInt(second)
+                        );
+                        console.log(`🔧 CacheManager解析: ${timeStr} -> ${result.toLocaleString()}`);
+                        return result;
+                    }
+                    
+                    // 如果是ISO格式，移除时区信息并按文件时间解析
+                    const cleanStr = timeStr.replace(/[TZ]/g, ' ').replace(/[+-]\d{2}:\d{2}$/, '').trim();
+                    const isoMatch = cleanStr.match(/^(\d{4})-(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{1,2}):(\d{1,2})/);
+                    if (isoMatch) {
+                        const [, year, month, day, hour, minute, second] = isoMatch;
+                        const result = new Date(
+                            parseInt(year), 
+                            parseInt(month) - 1, 
+                            parseInt(day), 
+                            parseInt(hour), 
+                            parseInt(minute), 
+                            parseInt(second)
+                        );
+                        console.log(`🔧 CacheManager解析ISO: ${timeStr} -> ${result.toLocaleString()}`);
+                        return result;
+                    }
+                    
+                    // 最后回退：构造一个0点时间（避免时区问题）
+                    console.warn('CacheManager时间解析使用默认0点时间:', timeStr);
+                    const dateOnly = timeStr.split(' ')[0]; // 只取日期部分
+                    const dateParts = dateOnly.split('-').map(Number);
+                    if (dateParts.length >= 3) {
+                        const result = new Date(dateParts[0], dateParts[1] - 1, dateParts[2], 0, 0, 0);
+                        console.log(`🔧 CacheManager回退解析: ${timeStr} -> ${result.toLocaleString()}`);
+                        return result;
+                    }
+                    
+                    return new Date(NaN);
+                } catch (error) {
+                    console.error('CacheManager时间解析错误:', timeStr, error);
+                    return new Date(NaN);
+                }
+            }
+
+            // 从本地缓存查询数据（支持时间范围筛选）
+            async queryAllData(filters = {}) {
+                if (!this.db) await this.init();
+                
+                return new Promise((resolve) => {
+                    const transaction = this.db.transaction([this.allDataStoreName], 'readonly');
+                    const store = transaction.objectStore(this.allDataStoreName);
+                    const request = store.getAll();
+
+                    request.onsuccess = () => {
+                        let results = request.result || [];
+                        
+                        // 应用时间范围过滤（避免时区转换问题）
+                        if (filters.startDate || filters.endDate) {
+                            let startTime, endTime;
+                            
+                            if (filters.startDate) {
+                                // 解析开始日期为本地时间00:00:00
+                                startTime = this.parseLocalDateToTimestamp(filters.startDate, 0, 0, 0);
+                                console.log(`🔍 筛选开始时间: ${filters.startDate} -> ${new Date(startTime).toLocaleString()}`);
+                            }
+                            
+                            if (filters.endDate) {
+                                // 解析结束日期为本地时间23:59:59.999
+                                endTime = this.parseLocalDateToTimestamp(filters.endDate, 23, 59, 59, 999);
+                                console.log(`🔍 筛选结束时间: ${filters.endDate} -> ${new Date(endTime).toLocaleString()}`);
+                            }
+                            
+                            const beforeFilter = results.length;
+                            results = results.filter(record => {
+                                const recordTime = record.timestamp || this.parseTimeToTimestamp(record.start_time);
+                                
+                                if (filters.startDate && recordTime < startTime) return false;
+                                if (filters.endDate && recordTime > endTime) return false;
+                                
+                                return true;
+                            });
+                            
+                            console.log(`🔍 时间筛选: ${beforeFilter} -> ${results.length} 条数据`);
+                        }
+                        
+                        console.log(`🔍 从本地缓存查询到 ${results.length} 条数据`);
+                        resolve(results);
+                    };
+
+                    request.onerror = () => {
+                        console.error('❌ 查询本地缓存失败:', request.error);
+                        resolve([]);
+                    };
+                });
+            }
+
+            // 检查全数据缓存是否存在
+            async checkAllDataCache() {
+                if (!this.db) await this.init();
+                
+                return new Promise((resolve) => {
+                    const transaction = this.db.transaction([this.metaStoreName], 'readonly');
+                    const store = transaction.objectStore(this.metaStoreName);
+                    const request = store.get('allDataMeta');
+
+                    request.onsuccess = () => {
+                        const meta = request.result;
+                        
+                        if (!meta) {
+                            console.log('🔍 本地缓存不存在');
+                            resolve(null);
+                            return;
+                        }
+                        
+                        console.log(`✅ 本地缓存存在，包含 ${meta.totalCount} 条记录，最后更新：${new Date(meta.lastUpdated).toLocaleString()}`);
+                        resolve(meta);
+                    };
+
+                    request.onerror = () => {
+                        console.error('❌ 检查本地缓存失败:', request.error);
+                        resolve(null);
+                    };
+                });
+            }
+
+            // 清空全数据缓存
+            async clearAllDataCache() {
+                if (!this.db) await this.init();
+                
+                return new Promise((resolve) => {
+                    const transaction = this.db.transaction([this.allDataStoreName, this.metaStoreName], 'readwrite');
+                    const allDataStore = transaction.objectStore(this.allDataStoreName);
+                    const metaStore = transaction.objectStore(this.metaStoreName);
+                    
+                    allDataStore.clear();
+                    metaStore.delete('allDataMeta');
+                    
+                    transaction.oncomplete = () => {
+                        console.log('🧹 本地缓存已清空');
+                        resolve();
+                    };
+                    
+                    transaction.onerror = () => {
+                        console.error('❌ 清空本地缓存失败:', transaction.error);
+                        resolve();
+                    };
+                });
+            }
+        }
+
+        // 数据预载管理器
+        class DataPreloader {
+            constructor() {
+                this.isPreloading = false;
+                this.preloadProgress = 0;
+            }
+
+            // 页面加载时自动预载所有数据（优化版本）
+            async autoPreloadAllData() {
+                try {
+                    console.log('🚀 页面加载：开始智能预载数据...');
+                    this.isPreloading = true;
+                    this.updatePreloadStatus('正在检查本地缓存...', 'loading');
+
+                    // 首先检查本地缓存
+                    const cacheInfo = await cacheManager.checkAllDataCache();
+                    
+                    if (cacheInfo && cacheInfo.totalCount > 0) {
+                        // 如果有缓存，立即使用
+                        console.log(`💾 发现本地缓存 ${cacheInfo.totalCount} 条数据，立即可用！`);
+                        this.updatePreloadStatus(`✅ 从本地缓存加载 ${cacheInfo.totalCount} 条数据（秒速加载）`, 'success');
+                        this.isPreloading = false;
+                        
+                        // 后台静默更新缓存
+                        setTimeout(() => this.backgroundUpdate(), 2000);
+                        return { success: true, totalCount: cacheInfo.totalCount };
+                    }
+
+                    // 没有缓存时从数据库获取
+                    console.log('🌐 首次使用，从 Postgres 数据库获取全部数据...');
+                    this.updatePreloadStatus('首次使用，正在从数据库获取全部数据...', 'loading');
+
+                    const allData = await this.fetchAllDataFromAPI();
+                    
+                    if (allData && allData.length > 0) {
+                        console.log(`📥 成功获取 ${allData.length} 条数据，开始存储到本地缓存...`);
+                        this.updatePreloadStatus(`正在将 ${allData.length} 条数据存储到本地缓存...`, 'loading');
+                        
+                        const storedCount = await cacheManager.storeAllData(allData);
+                        
+                        console.log('✅ 数据预载完成！');
+                        this.updatePreloadStatus(`✅ 成功预载并缓存 ${storedCount} 条数据，下次访问将秒速加载`, 'success');
+                        
+                        this.isPreloading = false;
+                        return { success: true, totalCount: storedCount };
+                        
+                    } else {
+                        console.warn('⚠️ 未能获取到数据');
+                        this.updatePreloadStatus('⚠️ 数据库中暂无数据', 'warning');
+                        this.isPreloading = false;
+                        return { success: false, totalCount: 0 };
+                    }
+
+                } catch (error) {
+                    console.error('❌ 数据预载失败:', error);
+                    this.updatePreloadStatus(`❌ 数据预载失败: ${error.message}`, 'error');
+                    this.isPreloading = false;
+                    throw error;
+                }
+            }
+
+            // 后台静默更新缓存
+            async backgroundUpdate() {
+                try {
+                    console.log('🔄 后台静默更新缓存...');
+                    const allData = await this.fetchAllDataFromAPI();
+                    
+                    if (allData && allData.length > 0) {
+                        await cacheManager.storeAllData(allData);
+                        console.log(`✅ 后台缓存更新完成，更新了 ${allData.length} 条数据`);
+                    }
+                } catch (error) {
+                    console.warn('⚠️ 后台缓存更新失败:', error);
+                }
+            }
+
+            // 从API获取所有数据（无分页限制）
+            async fetchAllDataFromAPI() {
+                try {
+                    console.log('📡 开始从API一次性获取所有数据（无条数限制）...');
+                    
+                    // 构建API参数（获取所有数据）
+                    const params = {
+                        // 不传limit参数，后端将返回所有数据
+                        order_by: 'start_time',
+                        sort: 'ASC',
+                        // 确保获取全部数据的标记
+                        no_limit: true,
+                        fetch_all: true
+                    };
+
+                    console.log('🔍 API调用参数:', params);
+
+                    // 一次性获取所有数据
+                    const allData = await this.fetchSinglePageFromAPI(params);
+
+                    if (allData && allData.length > 0) {
+                        console.log(`✅ 成功一次性获取 ${allData.length} 条记录`);
+                        return allData;
+                    } else {
+                        console.log('⚠️ 未获取到任何数据');
+                        return [];
+                    }
+
+                } catch (error) {
+                    console.error('❌ 获取全数据失败:', error);
+                    // 如果一次性获取失败，回退到分页获取
+                    console.log('🔄 一次性获取失败，回退到分页获取模式...');
+                    return await this.fetchAllDataWithPagination();
+                }
+            }
+
+            // 备用的分页获取方法
+            async fetchAllDataWithPagination() {
+                try {
+                    console.log('📡 使用分页模式获取所有数据...');
+                    
+                    let allData = [];
+                    let offset = 0;
+                    const pageSize = 10000; // 使用较大的页面大小
+                    let hasMore = true;
+                    let currentPage = 1;
+                    let consecutiveEmptyPages = 0;
+                    const maxEmptyPages = 5;
+
+                    while (hasMore) {
+                        console.log(`📄 [页面 ${currentPage}] 获取数据 (offset: ${offset}, 已累计: ${allData.length} 条)...`);
+
+                        const params = {
+                            offset: offset,
+                            limit: pageSize,
+                            order_by: 'start_time',
+                            sort: 'ASC'
+                        };
+
+                        const pageData = await this.fetchSinglePageFromAPI(params);
+
+                        if (pageData && pageData.length > 0) {
+                            allData.push(...pageData);
+                            console.log(`✅ [页面 ${currentPage}] 获取 ${pageData.length} 条，累计: ${allData.length} 条`);
+                            
+                            consecutiveEmptyPages = 0;
+                            offset += pageSize;
+                            currentPage++;
+                        } else {
+                            consecutiveEmptyPages++;
+                            if (consecutiveEmptyPages >= maxEmptyPages) {
+                                hasMore = false;
+                                console.log(`🏁 数据获取完成，总计: ${allData.length} 条记录`);
+                            } else {
+                                offset += pageSize;
+                                currentPage++;
+                            }
+                        }
+
+                        // 添加短暂延迟
+                        await new Promise(resolve => setTimeout(resolve, 10));
+                    }
+                    
+                    return allData;
+
+                } catch (error) {
+                    console.error('❌ 分页获取数据失败:', error);
+                    throw error;
+                }
+            }
+
+            // 单页API调用函数
+            async fetchSinglePageFromAPI(params) {
+                try {
+                    const cleanParams = {};
+                    for (const [key, value] of Object.entries(params)) {
+                        if (value !== undefined && value !== null && value !== '') {
+                            cleanParams[key] = value;
+                        }
+                    }
+                    
+                    const qs = new URLSearchParams(cleanParams).toString();
+                    const url = getApiUrl('records');
+                    const response = await fetch(`${url}?${qs}`);
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+
+                    const result = await response.json();
+
+                    if (!result.success) {
+                        throw new Error(result.error || '获取数据失败');
+                    }
+
+                    const records = result.data.records || [];
+                    return records;
+                    
+                } catch (error) {
+                    console.error('❌ 单页API调用失败:', error);
+                    throw error;
+                }
+            }
+
+            // 更新预载状态显示
+            updatePreloadStatus(message, type = 'info') {
+                const dbLoading = document.getElementById('dbLoading');
+                if (dbLoading) {
+                    const span = dbLoading.querySelector('span');
+                    if (span) {
+                        span.textContent = message;
+                    }
+                    
+                    // 根据类型更新样式
+                    dbLoading.className = 'mb-6 p-3 rounded-lg flex items-center';
+                    switch (type) {
+                        case 'loading':
+                            dbLoading.classList.add('bg-primary/10', 'text-primary');
+                            dbLoading.classList.remove('hidden');
+                            break;
+                        case 'success':
+                            dbLoading.classList.add('bg-success/10', 'text-success');
+                            // 3秒后隐藏成功消息
+                            setTimeout(() => dbLoading.classList.add('hidden'), 3000);
+                            break;
+                        case 'warning':
+                            dbLoading.classList.add('bg-warning/10', 'text-warning');
+                            break;
+                        case 'error':
+                            dbLoading.classList.add('bg-danger/10', 'text-danger');
+                            break;
+                        default:
+                            dbLoading.classList.add('bg-primary/10', 'text-primary');
+                            break;
+                    }
+                }
+            }
+        }
+
+        // 全局实例
+        const cacheManager = new CacheManager();
+        const dataPreloader = new DataPreloader();
+
+        // ==================== 原有的API函数（改为从缓存获取）====================
+        
+        // 从本地缓存获取数据的通用函数（重构为仅使用本地缓存）
+        async function fetchDataFromAPI(params = {}) {
+            try {
+                console.log('📍 从本地缓存获取数据:', params);
+                
+                // 从本地缓存查询数据
+                const filters = {};
+                
+                // 时间范围过滤
+                if (params.start_date) {
+                    filters.startDate = params.start_date;
+                }
+                if (params.end_date) {
+                    filters.endDate = params.end_date;
+                }
+                
+                // 从缓存获取数据
+                const records = await cacheManager.queryAllData(filters);
+                
+                // 构建返回结果，保持原有API格式
+                return {
+                    success: true,
+                    data: {
+                        records: records,
+                        count: records.length
+                    }
+                };
+                
+            } catch (error) {
+                console.error('❌ 从本地缓存获取数据失败:', error);
+                showError('从本地缓存获取数据失败: ' + error.message);
+                return {
+                    success: false,
+                    data: {
+                        records: [],
+                        count: 0
+                    }
+                };
+            }
+        }
+
+        async function fetchStatsFromAPI(params = {}) {
+            try {
+                const qs = new URLSearchParams(params).toString();
+                const url = getApiUrl('stats');
+                const response = await fetch(`${url}?${qs}`);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const result = await response.json();
+
+                if (!result.success) {
+                    throw new Error(result.error || '获取统计数据失败');
+                }
+
+                return result.data;
+            } catch (error) {
+                console.error('获取统计数据失败:', error);
+                showError('获取统计数据失败: ' + error.message);
+                return null;
+            }
+        }
+
+        // 任务结果状态分析工具类（保留）
+        class TaskResultAnalyzer {
+            isFailure(result) {
+                const failureTypes = [
+                    '因设备故障失败',
+                    '因操作失误失败',
+                    '未跟踪',
+                    '因卫星方原因失败',
+                    '任务成功数据处理失误'
+                ];
+                return failureTypes.includes(result);
+            }
+
+            isSuccessForRate(result) {
+                const validTypes = [
+                    '正常',
+                    '未跟踪',
+                    '因卫星方原因失败'
+                ];
+                return validTypes.includes(result);
+            }
+
+            countFailures(results) {
+                return results.filter(result => this.isFailure(result)).length;
+            }
+
+            calculateSuccessRate(results, planIdCount) {
+                if (planIdCount <= 0) return 0;
+                const validCount = results.filter(result => this.isSuccessForRate(result)).length;
+                return parseFloat(parseFloat((validCount / planIdCount) * 100).toFixed(3));
+            }
+        }
+
+        class CycleRuleEngine {
+            constructor() {
+                this.config = {
+                    day: {
+                        start: '00:00'  // 默认从0点开始（文件时间）
+                    },
+                    week: {
+                        startDay: 1,    // 周起始日（1=周一）
+                        startTime: '00:00'  // 文件时间
+                    },
+                    month: {
+                        startDate: 1,   // 月起始日期
+                        startTime: '00:00'  // 文件时间
+                    },
+                    quarter: {
+                        startMonth: 1,  // 季度起始月份
+                        startTime: '00:00'  // 文件时间
+                    }
+                };
+            }
+
+            // 更新配置
+            updateConfig(newConfig) {
+                this.config = { ...this.config, ...newConfig };
+                return true;
+            }
+
+            // 解析时间字符串为小时和分钟
+            parseTimeToHoursMinutes(timeStr) {
+                const [hours, minutes] = timeStr.split(':').map(Number);
+                return { hours: hours || 0, minutes: minutes || 0 };
+            }
+
+            // 格式化日期为YYYY-MM-DD（文件时间）
+            formatDate(date) {
+                return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+            }
+
+            // 修正显示的日期格式，消除8小时偏移
+            formatDateCorrected(date) {
+                const correctedDate = new Date(date.getTime() - 8 * 60 * 60 * 1000);
+                return `${correctedDate.getFullYear()}-${String(correctedDate.getMonth() + 1).padStart(2, '0')}-${String(correctedDate.getDate()).padStart(2, '0')}`;
+            }
+
+            // 创建严格基于文件时间的日期对象，不进行任何时区转换
+            createFileDate(originalDate) {
+                // 精确复制原始日期的年月日时分秒，完全基于文件中的时间
+                return new Date(
+                    originalDate.getFullYear(),
+                    originalDate.getMonth(),
+                    originalDate.getDate(),
+                    originalDate.getHours(),
+                    originalDate.getMinutes(),
+                    originalDate.getSeconds()
+                );
+            }
+
+
+
+            // 按日周期分组 - 完全基于文件时间
+            getDayGroup(date) {
+                const dayConfig = this.config.day;
+                const { hours, minutes } = this.parseTimeToHoursMinutes(dayConfig.start);
+
+                // 创建严格的文件时间对象，不考虑浏览器时区
+                const fileDate = this.createFileDate(date);
+
+                // 创建参考日期：与原始日期同一天的周期起始时间点（文件时间）
+                const referenceStart = this.createFileDate(fileDate);
+                referenceStart.setHours(hours, minutes, 0, 0);
+
+                // 计算周期起始时间（文件时间）
+                const cycleStart = fileDate >= referenceStart
+                    ? new Date(referenceStart)
+                    : new Date(referenceStart.getTime() - 24 * 60 * 60 * 1000);
+
+                // 周期结束时间 = 周期起始时间 + 1天（文件时间）
+                const cycleEnd = new Date(cycleStart.getTime() + 24 * 60 * 60 * 1000);
+
+                // 周期标签为周期起始时间的日期（文件时间）
+                const groupDate = new Date(cycleStart);
+                const groupKey = this.formatDate(groupDate);
+                const groupLabel = this.formatDateCorrected(groupDate); // 修正显示偏移
+
+                return {
+                    key: groupKey,
+                    label: groupLabel,
+                    rangeStart: cycleStart,
+                    rangeEnd: cycleEnd
+                };
+            }
+
+            // 按周周期分组 - 完全基于文件时间
+            getWeekGroup(date) {
+                const weekConfig = this.config.week;
+                const startDay = weekConfig.startDay; // 0=周日, 1=周一...6=周六
+                const { hours, minutes } = this.parseTimeToHoursMinutes(weekConfig.startTime);
+
+                // 创建严格的文件时间对象
+                const fileDate = this.createFileDate(date);
+
+                // 获取当前日期是星期几（文件时间）
+                const currentDay = fileDate.getDay();
+
+                // 计算距离本周起始日的天数差
+                let dayDiff = currentDay - startDay;
+                if (dayDiff < 0) {
+                    dayDiff += 7; // 如果是上周的日期，调整差值
+                }
+
+                // 创建参考日期：本周起始日的起始时间点（文件时间）
+                const referenceStart = this.createFileDate(fileDate);
+                referenceStart.setDate(fileDate.getDate() - dayDiff);
+                referenceStart.setHours(hours, minutes, 0, 0);
+
+                // 计算周期起始时间（文件时间）
+                const cycleStart = fileDate >= referenceStart
+                    ? new Date(referenceStart)
+                    : new Date(referenceStart.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+                // 周期结束时间 = 周期起始时间 + 7天（文件时间）
+                const cycleEnd = new Date(cycleStart.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+                // 计算年份和周数（基于修正后的显示时间）
+                const correctedCycleStart = new Date(cycleStart.getTime() - 8 * 60 * 60 * 1000);
+                const year = correctedCycleStart.getFullYear();
+                const firstDayOfYear = new Date(year, 0, 1);
+                const pastDaysOfYear = (correctedCycleStart - firstDayOfYear) / 86400000;
+                const week = Math.ceil((pastDaysOfYear + firstDayOfYear.getDay() + 1) / 7);
+
+                const weekDays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+                const startDayName = weekDays[startDay];
+
+                return {
+                    key: `${year}-W${String(week).padStart(2, '0')}`,
+                    label: `${year}年第${week}周（${startDayName}）`,
+                    rangeStart: cycleStart,
+                    rangeEnd: cycleEnd
+                };
+            }
+
+            // 按月周期分组 - 完全基于文件时间
+            getMonthGroup(date) {
+                const monthConfig = this.config.month;
+                const startDate = monthConfig.startDate;
+                const { hours, minutes } = this.parseTimeToHoursMinutes(monthConfig.startTime);
+
+                // 创建严格的文件时间对象
+                const fileDate = this.createFileDate(date);
+
+                const currentYear = fileDate.getFullYear();
+                const currentMonth = fileDate.getMonth(); // 0-11（文件时间月份）
+
+                // 创建参考日期：本月起始日的起始时间点（文件时间）
+                const referenceStart = new Date(currentYear, currentMonth, startDate);
+                referenceStart.setHours(hours, minutes, 0, 0);
+
+                // 处理月份最后一天可能小于startDate的情况（如2月30日）
+                if (referenceStart.getDate() !== startDate) {
+                    // 自动调整为当月最后一天
+                    referenceStart.setMonth(referenceStart.getMonth() + 1, 0);
+                    referenceStart.setHours(hours, minutes, 0, 0);
+                }
+
+                // 计算周期起始时间（文件时间）
+                let cycleStart;
+                if (fileDate >= referenceStart) {
+                    cycleStart = new Date(referenceStart);
+                } else {
+                    // 上个月的起始时间（文件时间）
+                    const prevMonth = currentMonth === 0 ? 11 : currentMonth - 1;
+                    const prevYear = currentMonth === 0 ? currentYear - 1 : currentYear;
+
+                    cycleStart = new Date(prevYear, prevMonth, startDate);
+                    cycleStart.setHours(hours, minutes, 0, 0);
+
+                    // 再次检查上个月的日期是否有效
+                    if (cycleStart.getDate() !== startDate) {
+                        cycleStart.setMonth(cycleStart.getMonth() + 1, 0);
+                        cycleStart.setHours(hours, minutes, 0, 0);
+                    }
+                }
+
+                // 计算周期结束时间（下个月的起始时间，文件时间）
+                const nextMonth = cycleStart.getMonth() + 1;
+                const nextYear = cycleStart.getFullYear() + (nextMonth > 11 ? 1 : 0);
+                const adjustedNextMonth = nextMonth > 11 ? 0 : nextMonth;
+
+                const cycleEnd = new Date(nextYear, adjustedNextMonth, startDate);
+                cycleEnd.setHours(hours, minutes, 0, 0);
+
+                // 处理下个月日期可能无效的情况
+                if (cycleEnd.getDate() !== startDate) {
+                    cycleEnd.setMonth(cycleEnd.getMonth() + 1, 0);
+                    cycleEnd.setHours(hours, minutes, 0, 0);
+                }
+
+                // 生成标签（基于修正后的显示时间）
+                const correctedCycleStart = new Date(cycleStart.getTime() - 8 * 60 * 60 * 1000);
+                const year = correctedCycleStart.getFullYear();
+                const month = correctedCycleStart.getMonth() + 1;
+
+                return {
+                    key: `${year}-${String(month).padStart(2, '0')}`,
+                    label: `${year}年${month}月`,
+                    rangeStart: cycleStart,
+                    rangeEnd: cycleEnd
+                };
+            }
+
+            // 按季度周期分组 - 完全基于文件时间
+            getQuarterGroup(date) {
+                const quarterConfig = this.config.quarter;
+                const startMonth = parseInt(quarterConfig.startMonth); // 1,4,7,10
+                const { hours, minutes } = this.parseTimeToHoursMinutes(quarterConfig.startTime);
+
+                // 创建严格的文件时间对象
+                const fileDate = this.createFileDate(date);
+
+                const currentYear = fileDate.getFullYear();
+                const currentMonth = fileDate.getMonth() + 1; // 1-12（文件时间月份）
+
+                // 确定当前季度的起始月份
+                let currentQuarterStart;
+                if (startMonth === 1) {
+                    currentQuarterStart = currentMonth <= 3 ? 1 :
+                                        currentMonth <= 6 ? 4 :
+                                        currentMonth <= 9 ? 7 : 10;
+                } else if (startMonth === 4) {
+                    currentQuarterStart = currentMonth <= 6 ? 4 :
+                                        currentMonth <= 9 ? 7 :
+                                        currentMonth <= 12 ? 10 : 1;
+                } else if (startMonth === 7) {
+                    currentQuarterStart = currentMonth <= 9 ? 7 :
+                                        currentMonth <= 12 ? 10 :
+                                        currentMonth <= 3 ? 1 : 4;
+                } else { // startMonth === 10
+                    currentQuarterStart = currentMonth <= 12 ? 10 :
+                                        currentMonth <= 3 ? 1 :
+                                        currentMonth <= 6 ? 4 : 7;
+                }
+
+                // 创建参考日期：本季度起始月1日的起始时间点（文件时间）
+                const referenceStart = new Date(
+                    currentQuarterStart <= currentMonth ? currentYear : currentYear - 1,
+                    currentQuarterStart - 1, // 转换为0-based月份
+                    1
+                );
+                referenceStart.setHours(hours, minutes, 0, 0);
+
+                // 计算周期起始时间（文件时间）
+                const cycleStart = fileDate >= referenceStart ? referenceStart : 
+                    new Date(referenceStart.getTime() - 3 * 30 * 24 * 60 * 60 * 1000); // 大约3个月前
+
+                // 计算周期结束时间（下一季度的起始时间，文件时间）
+                let nextQuarterStart = currentQuarterStart + 3;
+                let nextQuarterYear = cycleStart.getFullYear();
+                
+                if (nextQuarterStart > 12) {
+                    nextQuarterStart = nextQuarterStart - 12;
+                    nextQuarterYear++;
+                }
+
+                const cycleEnd = new Date(nextQuarterYear, nextQuarterStart - 1, 1);
+                cycleEnd.setHours(hours, minutes, 0, 0);
+
+                // 生成标签（基于修正后的显示时间）
+                const correctedCycleStart = new Date(cycleStart.getTime() - 8 * 60 * 60 * 1000);
+                const year = correctedCycleStart.getFullYear();
+                const quarter = Math.floor((currentQuarterStart - 1) / 3) + 1;
+
+                return {
+                    key: `${year}-Q${quarter}`,
+                    label: `${year}年第${quarter}季度`,
+                    rangeStart: cycleStart,
+                    rangeEnd: cycleEnd
+                };
+            }
+
+            // 获取日期所属的周期组（完全基于文件时间）
+            getGroup(date, groupType) {
+                // 确保输入是Date对象
+                const dateObj = date instanceof Date ? date : new Date(date);
+                
+                // 验证日期有效性
+                if (isNaN(dateObj.getTime())) {
+                    console.error('无效的日期:', date);
+                    throw new Error('无效的日期');
+                }
+                
+                // 所有时间处理都基于文件中的原始时间，不进行时区转换
+                switch (groupType) {
+                    case 'day':
+                        return this.getDayGroup(dateObj);
+                    case 'week':
+                        return this.getWeekGroup(dateObj);
+                    case 'month':
+                        return this.getMonthGroup(dateObj);
+                    case 'quarter':
+                        return this.getQuarterGroup(dateObj);
+                    default:
+                        return this.getDayGroup(dateObj);
+                }
+            }
+        }
+
+        // 错误/成功提示小函数
+        function showError(msg) {
+            const el = document.getElementById('chartErrorMessage');
+            if (el) {
+                el.textContent = msg;
+                document.getElementById('chartErrorState').classList.remove('hidden');
+                setTimeout(() => document.getElementById('chartErrorState').classList.add('hidden'), 6000);
+            } else {
+                alert(msg);
+            }
+        }
+
+        function showSuccess(msg) {
+            console.info(msg);
+            // 创建临时成功提示
+            const successEl = document.createElement('div');
+            successEl.className = 'fixed top-4 right-4 bg-success text-white px-4 py-2 rounded-lg shadow-lg z-50 transform transition-all duration-300 translate-x-full';
+            successEl.innerHTML = `<i class="fa fa-check-circle mr-2"></i>${msg}`;
+            document.body.appendChild(successEl);
+            
+            // 动画显示
+            setTimeout(() => successEl.classList.remove('translate-x-full'), 100);
+            
+            // 3秒后移除
+            setTimeout(() => {
+                successEl.classList.add('translate-x-full');
+                setTimeout(() => document.body.removeChild(successEl), 300);
+            }, 3000);
+        }
+
+        // 主应用类（使用 API）
+        class SatelliteApp {
+            constructor() {
+                this.cycleEngine = new CycleRuleEngine();
+                this.taskAnalyzer = new TaskResultAnalyzer();
+                this.chart = null;
+                
+                // 加载保存的配置
+                this.loadSavedConfig();
+                
+                this.bindElements();
+                this.bindEvents();
+                this.data = null;
+                this.fieldMappingValues = {
+                    planIdField: 'plan_id',
+                    startTimeField: 'start_time', 
+                    taskResultField: 'task_result'
+                };
+                this.init();
+            }
+
+            bindElements() {
+                this.startDate = document.getElementById('startDate');
+                this.endDate = document.getElementById('endDate');
+                this.groupBy = document.getElementById('groupBy');
+                this.showDataLabels = document.getElementById('showDataLabels');
+                this.generateChart = document.getElementById('generateChart');
+                this.configGroupingBtn = document.getElementById('configGroupingBtn');
+
+                this.dataChart = document.getElementById('dataChart');
+                this.chartEmptyState = document.getElementById('chartEmptyState');
+                this.chartErrorState = document.getElementById('chartErrorState');
+                this.chartErrorMessage = document.getElementById('chartErrorMessage');
+                this.chartLoadingState = document.getElementById('chartLoadingState');
+
+                this.totalCount = document.getElementById('totalCount');
+                this.avgCount = document.getElementById('avgCount');
+                this.totalFailures = document.getElementById('totalFailures');
+                this.avgSuccessRate = document.getElementById('avgSuccessRate');
+                this.maxCount = document.getElementById('maxCount');
+                this.minCount = document.getElementById('minCount');
+                this.detailTableBody = document.getElementById('detailTableBody');
+
+                this.groupingConfigModal = document.getElementById('groupingConfigModal');
+                this.modalContent = document.getElementById('modalContent');
+                this.closeConfigModal = document.getElementById('closeConfigModal');
+                this.saveGroupingConfig = document.getElementById('saveGroupingConfig');
+
+                this.dayStart = document.getElementById('dayStart');
+                this.dayStartDisplay = document.getElementById('dayStartDisplay');
+                this.dayEndDisplay = document.getElementById('dayEndDisplay');
+                this.weekStartDay = document.getElementById('weekStartDay');
+                this.weekStartTime = document.getElementById('weekStartTime');
+                this.monthStartDate = document.getElementById('monthStartDate');
+                this.monthStartTime = document.getElementById('monthStartTime');
+                this.quarterStartMonth = document.getElementById('quarterStartMonth');
+                this.quarterStartTime = document.getElementById('quarterStartTime');
+
+                this.dbLoading = document.getElementById('dbLoading');
+                this.noDataAlert = document.getElementById('noDataAlert');
+                
+                // 缓存管理元素
+                this.cacheStatus = document.getElementById('cacheStatus');
+                this.refreshCacheBtn = document.getElementById('refreshCacheBtn');
+                this.clearCacheBtn = document.getElementById('clearCacheBtn');
+                this.cacheInfo = document.getElementById('cacheInfo');
+                
+                // 新增：卫星和客户数量卡片及模态框元素
+                this.satelliteCount = document.getElementById('satelliteCount');
+                this.customerCount = document.getElementById('customerCount');
+                this.satelliteCountCard = document.getElementById('satelliteCountCard');
+                this.customerCountCard = document.getElementById('customerCountCard');
+                
+                // 卫星数量模态框元素
+                this.satelliteCountModal = document.getElementById('satelliteCountModal');
+                this.satelliteModalContent = document.getElementById('satelliteModalContent');
+                this.closeSatelliteModal = document.getElementById('closeSatelliteModal');
+                this.satelliteCountChart = document.getElementById('satelliteCountChart');
+                this.satelliteChartEmpty = document.getElementById('satelliteChartEmpty');
+                this.satelliteChartLoading = document.getElementById('satelliteChartLoading');
+                
+                // 客户数量模态框元素
+                this.customerCountModal = document.getElementById('customerCountModal');
+                this.customerModalContent = document.getElementById('customerModalContent');
+                this.closeCustomerModal = document.getElementById('closeCustomerModal');
+                this.customerCountChart = document.getElementById('customerCountChart');
+                this.customerChartEmpty = document.getElementById('customerChartEmpty');
+                this.customerChartLoading = document.getElementById('customerChartLoading');
+                
+                // 图表对象
+                this.satelliteChart = null;
+                this.customerChart = null;
+            }
+
+            bindEvents() {
+                if (this.generateChart) this.generateChart.addEventListener('click', () => this.generateStatistics());
+                if (this.configGroupingBtn) this.configGroupingBtn.addEventListener('click', () => this.openGroupingConfig());
+                if (this.closeConfigModal) this.closeConfigModal.addEventListener('click', () => this.closeGroupingConfig());
+                if (this.saveGroupingConfig) this.saveGroupingConfig.addEventListener('click', () => this.saveGroupingConfiguration());
+                if (this.showDataLabels) this.showDataLabels.addEventListener('change', () => this.toggleDataLabels());
+                if (this.dayStart) {
+                    this.dayStart.addEventListener('change', (e) => {
+                        this.dayStartDisplay.textContent = e.target.value;
+                        this.dayEndDisplay.textContent = e.target.value;
+                    });
+                }
+                
+                // 缓存管理事件
+                if (this.refreshCacheBtn) this.refreshCacheBtn.addEventListener('click', () => this.refreshCache());
+                if (this.clearCacheBtn) this.clearCacheBtn.addEventListener('click', () => this.clearCache());
+                
+                // 新增：卫星和客户数量卡片点击事件
+                if (this.satelliteCountCard) this.satelliteCountCard.addEventListener('click', () => this.showSatelliteCountChart());
+                if (this.customerCountCard) this.customerCountCard.addEventListener('click', () => this.showCustomerCountChart());
+                
+                // 新增：模态框关闭事件
+                if (this.closeSatelliteModal) this.closeSatelliteModal.addEventListener('click', () => this.closeSatelliteCountModal());
+                if (this.closeCustomerModal) this.closeCustomerModal.addEventListener('click', () => this.closeCustomerCountModal());
+            }
+
+            async init() {
+                try {
+                    console.log('🔧 SatelliteApp 初始化：从本地缓存加载数据...');
+                    
+                    // 从本地缓存获取所有数据
+                    const cachedData = await cacheManager.queryAllData();
+                    
+                    if (!cachedData || cachedData.length === 0) {
+                        console.warn('⚠️ 本地缓存为空，显示无数据提示');
+                        this.noDataAlert.classList.remove('hidden');
+                        return;
+                    }
+
+                    this.data = cachedData;
+                    this.noDataAlert.classList.add('hidden');
+                    
+                    console.log(`✅ 从本地缓存加载了 ${cachedData.length} 条数据`);
+                    console.log(`📊 数据时间范围: ${new Date(Math.min(...cachedData.map(d => d.timestamp))).toLocaleString()} 至 ${new Date(Math.max(...cachedData.map(d => d.timestamp))).toLocaleString()}`);
+                    
+                    this.setDefaultDates();
+                    this.updateCacheStatus();
+
+                } catch (error) {
+                    console.error('❌ 应用初始化失败:', error);
+                    showError('应用初始化失败: ' + (error.message || error));
+                    this.noDataAlert.classList.remove('hidden');
+                }
+            }
+
+            // 更新缓存状态显示
+            async updateCacheStatus() {
+                try {
+                    const cacheInfo = await cacheManager.checkAllDataCache();
+                    
+                    if (cacheInfo) {
+                        this.cacheStatus.textContent = '✅ 已缓存';
+                        this.cacheStatus.className = 'text-xs px-2 py-1 rounded-full bg-success/10 text-success';
+                        this.cacheInfo.textContent = `${cacheInfo.totalCount} 条数据 · ${new Date(cacheInfo.lastUpdated).toLocaleString()}`;
+                    } else {
+                        this.cacheStatus.textContent = '❌ 无缓存';
+                        this.cacheStatus.className = 'text-xs px-2 py-1 rounded-full bg-danger/10 text-danger';
+                        this.cacheInfo.textContent = '暂无本地缓存数据';
+                    }
+                } catch (error) {
+                    this.cacheStatus.textContent = '⚠️ 检查失败';
+                    this.cacheStatus.className = 'text-xs px-2 py-1 rounded-full bg-warning/10 text-warning';
+                    this.cacheInfo.textContent = '缓存状态检查失败';
+                }
+            }
+
+            // 手动刷新缓存
+            async refreshCache() {
+                try {
+                    this.refreshCacheBtn.disabled = true;
+                    this.refreshCacheBtn.innerHTML = '<i class="fa fa-spinner fa-spin mr-1"></i>刷新中...';
+                    
+                    console.log('🔄 用户手动刷新缓存...');
+                    const result = await dataPreloader.autoPreloadAllData();
+                    
+                    if (result.success) {
+                        showSuccess(`缓存刷新成功！更新了 ${result.totalCount} 条数据`);
+                        // 重新加载数据到应用
+                        await this.init();
+                    }
+                    
+                    this.updateCacheStatus();
+                    
+                } catch (error) {
+                    console.error('❌ 缓存刷新失败:', error);
+                    showError('缓存刷新失败: ' + error.message);
+                } finally {
+                    this.refreshCacheBtn.disabled = false;
+                    this.refreshCacheBtn.innerHTML = '<i class="fa fa-refresh mr-1"></i>刷新缓存';
+                }
+            }
+
+            // 清空缓存
+            async clearCache() {
+                if (!confirm('确定要清空本地缓存吗？下次访问将重新从数据库加载数据。')) {
+                    return;
+                }
+                
+                try {
+                    this.clearCacheBtn.disabled = true;
+                    this.clearCacheBtn.innerHTML = '<i class="fa fa-spinner fa-spin mr-1"></i>清空中...';
+                    
+                    console.log('🧹 用户清空缓存...');
+                    await cacheManager.clearAllDataCache();
+                    
+                    // 清空应用数据
+                    this.data = null;
+                    this.noDataAlert.classList.remove('hidden');
+                    
+                    // 清空图表
+                    if (this.chart) {
+                        this.chart.destroy();
+                        this.chart = null;
+                    }
+                    if (this.satelliteChart) {
+                        this.satelliteChart.destroy();
+                        this.satelliteChart = null;
+                    }
+                    if (this.customerChart) {
+                        this.customerChart.destroy();
+                        this.customerChart = null;
+                    }
+                    
+                    // 重置统计卡片
+                    this.updateStatCards([]);
+                    this.updateDetailTable([]);
+                    
+                    showSuccess('本地缓存已清空');
+                    this.updateCacheStatus();
+                    
+                } catch (error) {
+                    console.error('❌ 清空缓存失败:', error);
+                    showError('清空缓存失败: ' + error.message);
+                } finally {
+                    this.clearCacheBtn.disabled = false;
+                    this.clearCacheBtn.innerHTML = '<i class="fa fa-trash mr-1"></i>清空缓存';
+                }
+            }
+
+            setDefaultDates() {
+                const today = new Date();
+                const sevenDaysAgo = new Date();
+                sevenDaysAgo.setDate(today.getDate() - 7);
+                const formatDate = (date) => {
+                    const y = date.getFullYear();
+                    const m = String(date.getMonth() + 1).padStart(2, '0');
+                    const d = String(date.getDate()).padStart(2, '0');
+                    return `${y}-${m}-${d}`;
+                };
+                if (this.startDate) this.startDate.value = formatDate(sevenDaysAgo);
+                if (this.endDate) this.endDate.value = formatDate(today);
+            }
+
+            parseDateInputToLocal(dateStr, hour = 0, minute = 0, second = 0, ms = 0) {
+                if (!dateStr) return null;
+                const parts = dateStr.split('-').map(Number);
+                const year = parts[0], month = parts[1] - 1, day = parts[2];
+                return new Date(year, month, day, hour, minute, second, ms);
+            }
+
+            computeDateRangeForGroup(groupType, startDateStr, endDateStr) {
+                let startBound = null;
+                let endBound = null;
+
+                // Helper: 使用齿轮配置时间来确保正确落在周期分组内
+                const makeMidday = (dateStr) => {
+                    if (!dateStr) return null;
+                    const parts = dateStr.split('-').map(Number);
+                    
+                    // 获取齿轮配置的时间
+                    const config = this.cycleEngine.config;
+                    let configTime = config.day.start;
+                    
+                    // 解析齿轮时间 HH:mm
+                    const [hours = 0, minutes = 0] = configTime.split(':').map(num => parseInt(num, 10));
+                    
+                    // 使用齿轮配置的具体时间而不是12:00
+                    return new Date(parts[0], parts[1] - 1, parts[2], hours, minutes, 0, 0);
+                };
+
+                try {
+                    if (startDateStr) {
+                        const midStart = makeMidday(startDateStr);
+                        const gStart = this.cycleEngine.getGroup(midStart, groupType);
+                        
+                        // 确保startBound不早于用户设置的开始日期
+                        const userStartDate = this.parseDateInputToLocal(startDateStr, 0, 0, 0, 0);
+                        startBound = gStart.rangeStart < userStartDate ? userStartDate : gStart.rangeStart;
+                    }
+
+                    if (endDateStr) {
+                        const midEnd = makeMidday(endDateStr);
+                        const gEnd = this.cycleEngine.getGroup(midEnd, groupType);
+                        
+                        // 确保包含结束日期的完整周期，延长到下一天的齿轮时间
+                        const nextDayStart = new Date(midEnd);
+                        nextDayStart.setDate(nextDayStart.getDate() + 1);
+                        const gNext = this.cycleEngine.getGroup(nextDayStart, groupType);
+                        endBound = gNext.rangeStart;
+                    }
+                } catch (err) {
+                    console.warn('计算日期范围失败，回退到基于本地日历的默认解析', err);
+                    // 退回：按本地午夜/23:59:59.999解析
+                    if (startDateStr) startBound = this.parseDateInputToLocal(startDateStr, 0, 0, 0, 0);
+                    if (endDateStr) endBound = this.parseDateInputToLocal(endDateStr, 23, 59, 59, 999);
+                }
+
+                return { startDate: startBound, endDate: endBound };
+            }
+
+            async generateStatistics() {
+                if (!this.data) {
+                    showError('当前没有数据，请先导入数据后重试');
+                    return;
+                }
+
+                this.chartLoadingState.classList.remove('hidden');
+                this.chartEmptyState.classList.add('hidden');
+                this.chartErrorState.classList.add('hidden');
+                this.detailTableBody.innerHTML = '';
+
+                try {
+                    console.log('📊 开始生成统计结果（基于本地缓存数据）...');
+                    
+                    const groupType = this.groupBy.value;
+                    const range = this.computeDateRangeForGroup(groupType, this.startDate.value, this.endDate.value);
+                    const startDate = range.startDate;
+                    const endDate = range.endDate;
+
+                    const stats = this.groupDataByCycle(groupType, startDate, endDate);
+                    
+                    console.log(`📈 生成统计组数: ${stats.length}`);
+                    
+                    this.updateChart(stats, groupType);
+                    this.updateStatCards(stats);
+                    this.updateDetailTable(stats);
+
+                } catch (error) {
+                    console.error('❌ 生成统计结果失败:', error);
+                    this.chartErrorMessage.textContent = '生成统计结果时出错: ' + error.message;
+                    this.chartErrorState.classList.remove('hidden');
+                } finally {
+                    this.chartLoadingState.classList.add('hidden');
+                }
+            }
+
+            groupDataByCycle(groupType, startDate, endDate) {
+                const groups = {};
+                const { planIdField, startTimeField, taskResultField } = this.fieldMappingValues;
+                
+                this.data.forEach(item => {
+                    try {
+                        // 解析任务开始时间（严格基于文件时间）
+                        const timeValue = item[startTimeField];
+                        let date;
+                        
+                        if (timeValue instanceof Date) {
+                            // 已经是日期对象，直接使用文件时间
+                            date = this.cycleEngine.createFileDate(timeValue);
+                        } else if (typeof timeValue === 'string') {
+                            // 字符串日期，按文件时间解析
+                            date = new Date(timeValue);
+                        } else if (typeof timeValue === 'number') {
+                            // Excel日期数字，转换为文件时间
+                            date = new Date((timeValue - 25569) * 86400000);
+                        } else {
+                            console.warn('无法解析时间:', item);
+                            return;
+                        }
+                        
+                        // 验证日期有效性
+                        if (isNaN(date.getTime())) {
+                            console.warn('无效的日期值:', timeValue);
+                            return;
+                        }
+                        
+                        // 如果指定了日期范围，过滤不在范围内的数据（使用文件时间比较）
+                        if (startDate && date < startDate) return;
+                        if (endDate && date >= endDate) return;
+                        
+                        // 获取周期组信息（基于文件时间）
+                        const groupInfo = this.cycleEngine.getGroup(date, groupType);
+                        
+                        // 如果该组不存在，则初始化
+                        if (!groups[groupInfo.key]) {
+                            groups[groupInfo.key] = {
+                                key: groupInfo.key,
+                                label: groupInfo.label,
+                                count: 0,
+                                planIds: new Set(),
+                                results: [],
+                                rangeStart: groupInfo.rangeStart,
+                                rangeEnd: groupInfo.rangeEnd
+                            };
+                        }
+                        
+                        // 更新组数据
+                        const group = groups[groupInfo.key];
+                        group.planIds.add(item[planIdField]);
+                        group.count = group.planIds.size; // 确保计划ID唯一
+                        group.results.push(item[taskResultField] || '未知');
+                        
+                    } catch (error) {
+                        console.warn('处理数据项失败:', item, error);
+                    }
+                });
+                
+                // 转换为数组并按时间排序（文件时间顺序）
+                const statsArray = Object.values(groups).sort((a, b) => {
+                    return a.rangeStart - b.rangeStart;
+                });
+                
+                // 计算每个周期的失败次数和成功率 - 使用计划ID总数作为分母
+                statsArray.forEach(stat => {
+                    stat.failureCount = this.taskAnalyzer.countFailures(stat.results);
+                    // 传入计划ID总数作为第二个参数
+                    stat.successRate = this.taskAnalyzer.calculateSuccessRate(stat.results, stat.count);
+                });
+                
+                return statsArray;
+            }
+
+            updateChart(stats, groupType) {
+                if (this.chart) {
+                    this.chart.destroy();
+                }
+
+                if (!stats || stats.length === 0) {
+                    this.chartEmptyState.classList.remove('hidden');
+                    return;
+                }
+
+                this.chartEmptyState.classList.add('hidden');
+
+                const labels = stats.map(stat => stat.label);
+                const planCounts = stats.map(stat => stat.count);
+                const failureCounts = stats.map(stat => stat.failureCount);
+                const successRates = stats.map(stat => parseFloat(stat.successRate.toFixed(3)));
+                
+                // 获取是否显示数据标签的设置
+                const showLabels = this.showDataLabels.checked;
+
+                const ctx = this.dataChart.getContext('2d');
+
+                // 注册数据标签插件
+                Chart.register(ChartDataLabels);
+
+                this.chart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: [
+                            {
+                                label: '计划ID数量',
+                                data: planCounts,
+                                borderColor: '#165DFF',
+                                backgroundColor: 'rgba(22, 93, 255, 0.1)',
+                                borderWidth: 2,
+                                fill: false,
+                                tension: 0.3,
+                                yAxisID: 'y',
+                                datalabels: {
+                                    display: showLabels,
+                                    color: '#165DFF',
+                                    anchor: 'end',
+                                    align: 'top',
+                                    font: {
+                                        size: 10,
+                                        weight: 'bold'
+                                    }
+                                }
+                            },
+                            {
+                                label: '失败圈次计数',
+                                data: failureCounts,
+                                borderColor: '#F53F3F',
+                                backgroundColor: 'rgba(245, 63, 63, 0.1)',
+                                borderWidth: 2,
+                                fill: false,
+                                tension: 0.3,
+                                yAxisID: 'y',
+                                datalabels: {
+                                    display: showLabels,
+                                    color: '#F53F3F',
+                                    anchor: 'end',
+                                    align: 'bottom',
+                                    font: {
+                                        size: 10,
+                                        weight: 'bold'
+                                    }
+                                }
+                            },
+                            {
+                                label: '成功率(%)',
+                                data: successRates,
+                                borderColor: '#00B42A',
+                                backgroundColor: 'rgba(0, 180, 42, 0.1)',
+                                borderWidth: 2,
+                                fill: false,
+                                tension: 0.3,
+                                yAxisID: 'y1',
+                                pointRadius: 4,
+                                pointBackgroundColor: '#00B42A',
+                                datalabels: {
+                                    display: showLabels,
+                                    color: '#00B42A',
+                                    anchor: 'end',
+                                    align: 'top',
+                                    font: {
+                                        size: 10,
+                                        weight: 'bold'
+                                    },
+                                    formatter: function(value) {
+                                        return value + '%';
+                                    }
+                                }
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: {
+                            mode: 'index',
+                            intersect: false,
+                        },
+                        scales: {
+                            y: {
+                                type: 'linear',
+                                display: true,
+                                position: 'left',
+                                title: {
+                                    display: true,
+                                    text: '数量'
+                                },
+                                beginAtZero: true
+                            },
+                            y1: {
+                                type: 'linear',
+                                display: true,
+                                position: 'right',
+                                title: {
+                                    display: true,
+                                    text: '成功率(%)'
+                                },
+                                min: 0,
+                                max: 100,
+                                grid: {
+                                    drawOnChartArea: false
+                                }
+                            }
+                        },
+                        plugins: {
+                            datalabels: {
+                                display: showLabels
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        let label = context.dataset.label || '';
+                                        if (label) label += ': ';
+                                        if (context.datasetIndex === 2) label += context.parsed.y + '%';
+                                        else label += context.parsed.y;
+                                        return label;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
+            toggleDataLabels() {
+                if (this.chart) {
+                    const showLabels = this.showDataLabels.checked;
+                    
+                    // 更新所有数据集的标签显示设置
+                    this.chart.data.datasets.forEach(dataset => {
+                        if (dataset.datalabels) {
+                            dataset.datalabels.display = showLabels;
+                        }
+                    });
+                    
+                    // 更新图表
+                    this.chart.update('none'); // 使用 'none' 模式实现即时更新
+                }
+            }
+
+            updateStatCards(stats) {
+                if (!stats || stats.length === 0) {
+                    this.totalCount.textContent = '0';
+                    this.avgCount.textContent = '0';
+                    this.totalFailures.textContent = '0';
+                    this.avgSuccessRate.textContent = '0%';
+                    if (this.maxCount) this.maxCount.textContent = '0';
+                    if (this.minCount) this.minCount.textContent = '0';
+                    if (this.satelliteCount) this.satelliteCount.textContent = '0';
+                    if (this.customerCount) this.customerCount.textContent = '0';
+                    return;
+                }
+
+                const totalCount = stats.reduce((sum, stat) => sum + stat.count, 0);
+                this.totalCount.textContent = totalCount;
+
+                const avgCount = (totalCount / stats.length).toFixed(1);
+                this.avgCount.textContent = avgCount;
+
+                const totalFailures = stats.reduce((sum, stat) => sum + stat.failureCount, 0);
+                this.totalFailures.textContent = totalFailures;
+
+                const validRates = stats.filter(stat => stat.count > 0).map(stat => stat.successRate);
+                const avgSuccessRate = validRates.length > 0 ? (validRates.reduce((sum, rate) => sum + rate, 0) / validRates.length).toFixed(3) : 0;
+                this.avgSuccessRate.textContent = `${avgSuccessRate}%`;
+
+                // 新增：最大和最小周期计划数
+                const counts = stats.map(stat => stat.count);
+                if (this.maxCount) this.maxCount.textContent = Math.max(...counts);
+                if (this.minCount) this.minCount.textContent = Math.min(...counts);
+                
+                // 新增：计算卫星和客户数量
+                this.updateEntityCounts(stats);
+            }
+
+            updateDetailTable(stats) {
+                this.detailTableBody.innerHTML = '';
+
+                if (!stats || stats.length === 0) {
+                    const tr = document.createElement('tr');
+                    const td = document.createElement('td');
+                    td.colSpan = 5;
+                    td.className = 'px-6 py-4 text-center text-gray-500';
+                    td.textContent = '没有符合条件的数据';
+                    tr.appendChild(td);
+                    this.detailTableBody.appendChild(tr);
+                    return;
+                }
+
+                stats.forEach(stat => {
+                    const tr = document.createElement('tr');
+
+                    const cycleTd = document.createElement('td');
+                    cycleTd.className = 'px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900';
+                    cycleTd.textContent = stat.label;
+                    tr.appendChild(cycleTd);
+
+                    const countTd = document.createElement('td');
+                    countTd.className = 'px-6 py-4 whitespace-nowrap text-sm text-gray-500';
+                    countTd.textContent = stat.count;
+                    tr.appendChild(countTd);
+
+                    const failureTd = document.createElement('td');
+                    failureTd.className = 'px-6 py-4 whitespace-nowrap text-sm text-danger';
+                    failureTd.textContent = stat.failureCount;
+                    tr.appendChild(failureTd);
+
+                    const rateTd = document.createElement('td');
+                    rateTd.className = 'px-6 py-4 whitespace-nowrap text-sm text-success';
+                    rateTd.textContent = `${stat.successRate.toFixed(3)}%`;
+                    tr.appendChild(rateTd);
+
+                    const rangeTd = document.createElement('td');
+                    rangeTd.className = 'px-6 py-4 whitespace-nowrap text-sm text-gray-500';
+                    rangeTd.textContent = `${this.formatDateForDisplayCorrected(stat.rangeStart)} 至 ${this.formatDateForDisplayCorrected(stat.rangeEnd)}`;
+                    tr.appendChild(rangeTd);
+
+                    this.detailTableBody.appendChild(tr);
+                });
+            }
+
+            formatDateForDisplay(date) {
+                return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+            }
+
+            // 修正显示时间，消除8小时偏移但不影响计算逻辑
+            formatDateForDisplayCorrected(date) {
+                // 减去8小时(28800000毫秒)来修正显示，但不影响计算
+                const correctedDate = new Date(date.getTime() - 8 * 60 * 60 * 1000);
+                return `${correctedDate.getFullYear()}-${String(correctedDate.getMonth() + 1).padStart(2, '0')}-${String(correctedDate.getDate()).padStart(2, '0')} ${String(correctedDate.getHours()).padStart(2, '0')}:${String(correctedDate.getMinutes()).padStart(2, '0')}`;
+            }
+
+            openGroupingConfig() {
+                console.log('🚀 openGroupingConfig 被调用');
+                console.log('📋 groupingConfigModal:', this.groupingConfigModal);
+                console.log('📋 modalContent:', this.modalContent);
+                
+                this.updateGroupingConfigForm();
+                
+                if (this.groupingConfigModal) {
+                    this.groupingConfigModal.classList.remove('hidden');
+                    console.log('✅ 模态框显示');
+                    
+                    setTimeout(() => {
+                        if (this.modalContent) {
+                            this.modalContent.classList.remove('scale-95', 'opacity-0');
+                            this.modalContent.classList.add('scale-100', 'opacity-100');
+                            console.log('✅ 模态框动画完成');
+                        } else {
+                            console.error('❌ modalContent 未找到');
+                        }
+                    }, 10);
+                } else {
+                    console.error('❌ groupingConfigModal 未找到');
+                }
+            }
+
+            closeGroupingConfig() {
+                this.modalContent.classList.remove('scale-100', 'opacity-100');
+                this.modalContent.classList.add('scale-95', 'opacity-0');
+                setTimeout(() => {
+                    this.groupingConfigModal.classList.add('hidden');
+                }, 300);
+            }
+
+            updateGroupingConfigForm() {
+                const config = this.cycleEngine.config;
+                
+                // 更新日周期配置 - 修正显示偏移
+                const correctedDayStart = this.correctTimeDisplayForGear(config.day.start);
+                this.dayStart.value = correctedDayStart;
+                this.dayStartDisplay.textContent = correctedDayStart;
+                this.dayEndDisplay.textContent = correctedDayStart;
+                
+                // 更新周周期配置 - 修正显示偏移  
+                this.weekStartDay.value = config.week.startDay;
+                this.weekStartTime.value = this.correctTimeDisplayForGear(config.week.startTime);
+                
+                // 更新月周期配置 - 修正显示偏移
+                this.monthStartDate.value = config.month.startDate;
+                this.monthStartTime.value = this.correctTimeDisplayForGear(config.month.startTime);
+                
+                // 更新季度周期配置 - 修正显示偏移
+                this.quarterStartMonth.value = config.quarter.startMonth;
+                this.quarterStartTime.value = this.correctTimeDisplayForGear(config.quarter.startTime);
+            }
+
+            // 修正齿轮配置表单的时间显示，消除8小时偏移
+            correctTimeDisplayForGear(timeString) {
+                try {
+                    // 解析时间字符串 HH:mm
+                    const [hours, minutes] = timeString.split(':').map(num => parseInt(num, 10));
+                    
+                    // 减去8小时进行显示修正
+                    let correctedHours = hours - 8;
+                    if (correctedHours < 0) {
+                        correctedHours += 24; // 处理负数情况
+                    }
+                    
+                    // 格式化回字符串
+                    return `${String(correctedHours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+                } catch (error) {
+                    console.warn('时间格式修正失败:', timeString, error);
+                    return timeString; // 出错时返回原值
+                }
+            }
+
+            // 修正用户输入的时间，保存时加上8小时以保持计算逻辑正确
+            correctTimeInputForStorage(timeString) {
+                try {
+                    // 解析时间字符串 HH:mm
+                    const [hours, minutes] = timeString.split(':').map(num => parseInt(num, 10));
+                    
+                    // 加上8小时进行存储修正
+                    let correctedHours = hours + 8;
+                    if (correctedHours >= 24) {
+                        correctedHours -= 24; // 处理超过24小时的情况
+                    }
+                    
+                    // 格式化回字符串
+                    return `${String(correctedHours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+                } catch (error) {
+                    console.warn('输入时间修正失败:', timeString, error);
+                    return timeString; // 出错时返回原值
+                }
+            }
+
+
+            // 新增：动态查找包含关键词的字段值
+            findFieldValue(item, keywords) {
+                // 首先尝试精确匹配
+                for (const keyword of keywords) {
+                    if (item[keyword] !== undefined && item[keyword] !== null && item[keyword] !== '') {
+                        return item[keyword];
+                    }
+                }
+                
+                // 然后尝试包含匹配
+                const itemKeys = Object.keys(item);
+                for (const keyword of keywords) {
+                    const matchingKey = itemKeys.find(key => 
+                        key.toLowerCase().includes(keyword.toLowerCase()) ||
+                        key.includes(keyword)
+                    );
+                    if (matchingKey && item[matchingKey] !== undefined && item[matchingKey] !== null && item[matchingKey] !== '') {
+                        return item[matchingKey];
+                    }
+                }
+                
+                return null;
+            }
+
+            // 新增：更新卫星和客户实体数量统计
+            updateEntityCounts(stats) {
+                if (!stats || stats.length === 0) {
+                    if (this.satelliteCount) this.satelliteCount.textContent = '0';
+                    if (this.customerCount) this.customerCount.textContent = '0';
+                    return;
+                }
+                
+                // 收集所有周期的卫星和客户数据
+                const allSatellites = new Set();
+                const allCustomers = new Set();
+                
+                const { planIdField, startTimeField, taskResultField } = this.fieldMappingValues;
+                
+                if (this.data) {
+                    // 获取时间范围
+                    const groupType = this.groupBy.value;
+                    const range = this.computeDateRangeForGroup(groupType, this.startDate.value, this.endDate.value);
+                    const startDate = range.startDate;
+                    const endDate = range.endDate;
+                    
+                    this.data.forEach(item => {
+                        try {
+                            // 解析任务开始时间（严格基于文件时间）
+                            const timeValue = item[startTimeField];
+                            let date;
+                            
+                            if (timeValue instanceof Date) {
+                                date = this.cycleEngine.createFileDate(timeValue);
+                            } else if (typeof timeValue === 'string') {
+                                date = new Date(timeValue);
+                            } else if (typeof timeValue === 'number') {
+                                date = new Date((timeValue - 25569) * 86400000);
+                            } else {
+                                return;
+                            }
+                            
+                            // 验证日期有效性
+                            if (isNaN(date.getTime())) return;
+                            
+                            // 如果指定了日期范围，过滤不在范围内的数据
+                            if (startDate && date < startDate) return;
+                            if (endDate && date >= endDate) return;
+                            
+                            // 收集卫星和客户信息 - 动态字段匹配
+                            const satellite = this.findFieldValue(item, ['satellite_name', 'satellite', '卫星名称', '卫星', '星']);
+                            const customer = this.findFieldValue(item, ['customer', 'client', '客户', '用户', '所属客户']);
+                            
+                            if (satellite && satellite.toString().trim() !== '') {
+                                allSatellites.add(satellite.toString().trim());
+                            }
+                            if (customer && customer.toString().trim() !== '') {
+                                allCustomers.add(customer.toString().trim());
+                            }
+                            
+                        } catch (error) {
+                            console.warn('处理实体数据项失败:', item, error);
+                        }
+                    });
+                }
+                
+                // 更新显示
+                if (this.satelliteCount) this.satelliteCount.textContent = allSatellites.size;
+                if (this.customerCount) this.customerCount.textContent = allCustomers.size;
+                
+                console.log('卫星数量统计:', allSatellites.size, '个卫星:', Array.from(allSatellites).slice(0, 10));
+                console.log('客户数量统计:', allCustomers.size, '个客户:', Array.from(allCustomers).slice(0, 10));
+            }
+
+            async saveGroupingConfiguration() {
+                const newConfig = {
+                    day: { start: this.correctTimeInputForStorage(this.dayStart.value) },
+                    week: { startDay: parseInt(this.weekStartDay.value), startTime: this.correctTimeInputForStorage(this.weekStartTime.value) },
+                    month: { startDate: parseInt(this.monthStartDate.value), startTime: this.correctTimeInputForStorage(this.monthStartTime.value) },
+                    quarter: { startMonth: parseInt(this.quarterStartMonth.value), startTime: this.correctTimeInputForStorage(this.quarterStartTime.value) }
+                };
+
+                console.log('💾 保存新的周期配置:', newConfig);
+                console.log('🔧 更新前的配置:', this.cycleEngine.config);
+                
+                this.cycleEngine.updateConfig(newConfig);
+                
+                console.log('✅ 更新后的配置:', this.cycleEngine.config);
+                
+                // 保存配置到本地存储，确保持久化
+                try {
+                    const cacheData = JSON.parse(localStorage.getItem('satelliteAppData') || '{}');
+                    cacheData.cycleConfig = this.cycleEngine.config;
+                    localStorage.setItem('satelliteAppData', JSON.stringify(cacheData));
+                    console.log('💾 配置已保存到本地存储');
+                } catch (error) {
+                    console.warn('保存配置失败:', error);
+                }
+                
+                // 🚨 重要：配置更新后，重新计算当前显示的统计数据
+                console.log('🔄 配置已更新，重新生成统计...');
+                this.generateStatistics();
+                
+                showSuccess('周期配置已更新，统计数据已刷新');
+                this.closeGroupingConfig();
+            }
+
+            // 加载保存的配置
+            loadSavedConfig() {
+                try {
+                    const cacheData = JSON.parse(localStorage.getItem('satelliteAppData') || '{}');
+                    if (cacheData.cycleConfig) {
+                        console.log('🔧 加载保存的配置:', cacheData.cycleConfig);
+                        this.cycleEngine.updateConfig(cacheData.cycleConfig);
+                        console.log('✅ 配置加载完成:', this.cycleEngine.config);
+                        
+                        // 延迟更新表单显示，确保DOM元素已加载
+                        setTimeout(() => {
+                            if (this.updateGroupingConfigForm) {
+                                this.updateGroupingConfigForm();
+                            }
+                        }, 100);
+                    }
+                } catch (error) {
+                    console.warn('加载配置失败:', error);
+                }
+            }
+
+            // 新增：显示卫星数量趋势图
+            showSatelliteCountChart() {
+                if (!this.data || !this.fieldMappingValues) {
+                    showError('当前没有数据，请先导入数据后重试');
+                    return;
+                }
+                
+                // 显示模态框
+                this.satelliteCountModal.classList.remove('hidden');
+                setTimeout(() => {
+                    this.satelliteModalContent.classList.remove('scale-95', 'opacity-0');
+                    this.satelliteModalContent.classList.add('scale-100', 'opacity-100');
+                }, 10);
+                
+                // 生成卫星数量趋势图
+                this.generateSatelliteCountChart();
+            }
+            
+            // 新增：显示客户数量趋势图
+            showCustomerCountChart() {
+                if (!this.data || !this.fieldMappingValues) {
+                    showError('当前没有数据，请先导入数据后重试');
+                    return;
+                }
+                
+                // 显示模态框
+                this.customerCountModal.classList.remove('hidden');
+                setTimeout(() => {
+                    this.customerModalContent.classList.remove('scale-95', 'opacity-0');
+                    this.customerModalContent.classList.add('scale-100', 'opacity-100');
+                }, 10);
+                
+                // 生成客户数量趋势图
+                this.generateCustomerCountChart();
+            }
+            
+            // 新增：关闭卫星数量模态框
+            closeSatelliteCountModal() {
+                this.satelliteModalContent.classList.remove('scale-100', 'opacity-100');
+                this.satelliteModalContent.classList.add('scale-95', 'opacity-0');
+                
+                setTimeout(() => {
+                    this.satelliteCountModal.classList.add('hidden');
+                }, 300);
+            }
+            
+            // 新增：关闭客户数量模态框
+            closeCustomerCountModal() {
+                this.customerModalContent.classList.remove('scale-100', 'opacity-100');
+                this.customerModalContent.classList.add('scale-95', 'opacity-0');
+                
+                setTimeout(() => {
+                    this.customerCountModal.classList.add('hidden');
+                }, 300);
+            }
+            
+            // 新增：生成卫星数量趋势图
+            generateSatelliteCountChart() {
+                // 显示加载状态
+                this.satelliteChartLoading.classList.remove('hidden');
+                this.satelliteChartEmpty.classList.add('hidden');
+                
+                try {
+                    // 如果已有图表，先销毁
+                    if (this.satelliteChart) {
+                        this.satelliteChart.destroy();
+                    }
+                    
+                    const groupType = this.groupBy.value;
+                    const range = this.computeDateRangeForGroup(groupType, this.startDate.value, this.endDate.value);
+                    const startDate = range.startDate;
+                    const endDate = range.endDate;
+                    
+                    // 按周期分组统计卫星数量
+                    const satelliteStats = this.groupSatelliteDataByCycle(groupType, startDate, endDate);
+                    
+                    if (satelliteStats.length === 0) {
+                        this.satelliteChartEmpty.classList.remove('hidden');
+                        return;
+                    }
+                    
+                    // 准备图表数据
+                    const labels = satelliteStats.map(stat => stat.label);
+                    const counts = satelliteStats.map(stat => stat.satelliteCount);
+                    
+                    // 创建图表
+                    const ctx = this.satelliteCountChart.getContext('2d');
+                    
+                    this.satelliteChart = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: labels,
+                            datasets: [{
+                                label: '卫星数量',
+                                data: counts,
+                                borderColor: '#2563eb',
+                                backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                                borderWidth: 3,
+                                fill: true,
+                                tension: 0.3,
+                                pointRadius: 6,
+                                pointBackgroundColor: '#2563eb',
+                                pointBorderColor: '#ffffff',
+                                pointBorderWidth: 2
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            interaction: {
+                                mode: 'index',
+                                intersect: false,
+                            },
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    title: {
+                                        display: true,
+                                        text: '卫星数量'
+                                    }
+                                }
+                            },
+                            plugins: {
+                                tooltip: {
+                                    callbacks: {
+                                        label: function(context) {
+                                            return `卫星数量: ${context.parsed.y}`;
+                                        }
+                                    }
+                                },
+                                datalabels: {
+                                    display: true,
+                                    color: '#2563eb',
+                                    font: {
+                                        size: 12,
+                                        weight: 'bold'
+                                    },
+                                    anchor: 'end',
+                                    align: 'top',
+                                    offset: 4
+                                }
+                            }
+                        }
+                    });
+                    
+                } catch (error) {
+                    console.error('生成卫星数量趋势图失败:', error);
+                    this.satelliteChartEmpty.classList.remove('hidden');
+                } finally {
+                    this.satelliteChartLoading.classList.add('hidden');
+                }
+            }
+            
+            // 新增：生成客户数量趋势图
+            generateCustomerCountChart() {
+                // 显示加载状态
+                this.customerChartLoading.classList.remove('hidden');
+                this.customerChartEmpty.classList.add('hidden');
+                
+                try {
+                    // 如果已有图表，先销毁
+                    if (this.customerChart) {
+                        this.customerChart.destroy();
+                    }
+                    
+                    const groupType = this.groupBy.value;
+                    const range = this.computeDateRangeForGroup(groupType, this.startDate.value, this.endDate.value);
+                    const startDate = range.startDate;
+                    const endDate = range.endDate;
+                    
+                    // 按周期分组统计客户数量
+                    const customerStats = this.groupCustomerDataByCycle(groupType, startDate, endDate);
+                    
+                    if (customerStats.length === 0) {
+                        this.customerChartEmpty.classList.remove('hidden');
+                        return;
+                    }
+                    
+                    // 准备图表数据
+                    const labels = customerStats.map(stat => stat.label);
+                    const counts = customerStats.map(stat => stat.customerCount);
+                    
+                    // 创建图表
+                    const ctx = this.customerCountChart.getContext('2d');
+                    
+                    this.customerChart = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: labels,
+                            datasets: [{
+                                label: '客户数量',
+                                data: counts,
+                                borderColor: '#7c3aed',
+                                backgroundColor: 'rgba(124, 58, 237, 0.1)',
+                                borderWidth: 3,
+                                fill: true,
+                                tension: 0.3,
+                                pointRadius: 6,
+                                pointBackgroundColor: '#7c3aed',
+                                pointBorderColor: '#ffffff',
+                                pointBorderWidth: 2
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            interaction: {
+                                mode: 'index',
+                                intersect: false,
+                            },
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    title: {
+                                        display: true,
+                                        text: '客户数量'
+                                    }
+                                }
+                            },
+                            plugins: {
+                                tooltip: {
+                                    callbacks: {
+                                        label: function(context) {
+                                            return `客户数量: ${context.parsed.y}`;
+                                        }
+                                    }
+                                },
+                                datalabels: {
+                                    display: true,
+                                    color: '#7c3aed',
+                                    font: {
+                                        size: 12,
+                                        weight: 'bold'
+                                    },
+                                    anchor: 'end',
+                                    align: 'top',
+                                    offset: 4
+                                }
+                            }
+                        }
+                    });
+                    
+                } catch (error) {
+                    console.error('生成客户数量趋势图失败:', error);
+                    this.customerChartEmpty.classList.remove('hidden');
+                } finally {
+                    this.customerChartLoading.classList.add('hidden');
+                }
+            }
+            
+            // 新增：按周期分组卫星数据
+            groupSatelliteDataByCycle(groupType, startDate, endDate) {
+                const groups = {};
+                const { planIdField, startTimeField, taskResultField } = this.fieldMappingValues;
+                
+                this.data.forEach(item => {
+                    try {
+                        // 解析任务开始时间
+                        const timeValue = item[startTimeField];
+                        let date;
+                        
+                        if (timeValue instanceof Date) {
+                            date = this.cycleEngine.createFileDate(timeValue);
+                        } else if (typeof timeValue === 'string') {
+                            date = new Date(timeValue);
+                        } else if (typeof timeValue === 'number') {
+                            date = new Date((timeValue - 25569) * 86400000);
+                        } else {
+                            return;
+                        }
+                        
+                        // 验证日期有效性
+                        if (isNaN(date.getTime())) return;
+                        
+                        // 如果指定了日期范围，过滤不在范围内的数据
+                        if (startDate && date < startDate) return;
+                        if (endDate && date > endDate) return;
+                        
+                        // 获取周期组信息
+                        const groupInfo = this.cycleEngine.getGroup(date, groupType);
+                        
+                        // 如果该组不存在，则初始化
+                        if (!groups[groupInfo.key]) {
+                            groups[groupInfo.key] = {
+                                key: groupInfo.key,
+                                label: groupInfo.label,
+                                satellites: new Set(),
+                                rangeStart: groupInfo.rangeStart,
+                                rangeEnd: groupInfo.rangeEnd
+                            };
+                        }
+                        
+                        // 收集卫星信息 - 动态字段匹配
+                        const satellite = this.findFieldValue(item, ['satellite_name', 'satellite', '卫星名称', '卫星', '星']);
+                        if (satellite && satellite.toString().trim() !== '') {
+                            groups[groupInfo.key].satellites.add(satellite.toString().trim());
+                        }
+                        
+                    } catch (error) {
+                        console.warn('处理卫星数据项失败:', item, error);
+                    }
+                });
+                
+                // 转换为数组并按时间排序
+                const statsArray = Object.values(groups).sort((a, b) => {
+                    return a.rangeStart - b.rangeStart;
+                });
+                
+                // 计算每个周期的卫星数量
+                statsArray.forEach(stat => {
+                    stat.satelliteCount = stat.satellites.size;
+                });
+                
+                return statsArray;
+            }
+            
+            // 新增：按周期分组客户数据
+            groupCustomerDataByCycle(groupType, startDate, endDate) {
+                const groups = {};
+                const { planIdField, startTimeField, taskResultField } = this.fieldMappingValues;
+                
+                this.data.forEach(item => {
+                    try {
+                        // 解析任务开始时间
+                        const timeValue = item[startTimeField];
+                        let date;
+                        
+                        if (timeValue instanceof Date) {
+                            date = this.cycleEngine.createFileDate(timeValue);
+                        } else if (typeof timeValue === 'string') {
+                            date = new Date(timeValue);
+                        } else if (typeof timeValue === 'number') {
+                            date = new Date((timeValue - 25569) * 86400000);
+                        } else {
+                            return;
+                        }
+                        
+                        // 验证日期有效性
+                        if (isNaN(date.getTime())) return;
+                        
+                        // 如果指定了日期范围，过滤不在范围内的数据
+                        if (startDate && date < startDate) return;
+                        if (endDate && date > endDate) return;
+                        
+                        // 获取周期组信息
+                        const groupInfo = this.cycleEngine.getGroup(date, groupType);
+                        
+                        // 如果该组不存在，则初始化
+                        if (!groups[groupInfo.key]) {
+                            groups[groupInfo.key] = {
+                                key: groupInfo.key,
+                                label: groupInfo.label,
+                                customers: new Set(),
+                                rangeStart: groupInfo.rangeStart,
+                                rangeEnd: groupInfo.rangeEnd
+                            };
+                        }
+                        
+                        // 收集客户信息 - 动态字段匹配
+                        const customer = this.findFieldValue(item, ['customer', 'client', '客户', '用户', '所属客户']);
+                        if (customer && customer.toString().trim() !== '') {
+                            groups[groupInfo.key].customers.add(customer.toString().trim());
+                        }
+                        
+                    } catch (error) {
+                        console.warn('处理客户数据项失败:', item, error);
+                    }
+                });
+                
+                // 转换为数组并按时间排序
+                const statsArray = Object.values(groups).sort((a, b) => {
+                    return a.rangeStart - b.rangeStart;
+                });
+                
+                // 计算每个周期的客户数量
+                statsArray.forEach(stat => {
+                    stat.customerCount = stat.customers.size;
+                });
+                
+                return statsArray;
+            }
+
+        }
+
+        // 分组逻辑已验证正确
+
+        // 初始化应用 - 添加自动数据预载
+        document.addEventListener('DOMContentLoaded', async () => {
+            try {
+                // 页面加载时自动预载所有数据
+                console.log('🌟 页面加载完成，开始自动预载数据...');
+                
+                // 分组逻辑已验证正确，移除测试代码
+                
+                await dataPreloader.autoPreloadAllData();
+                
+                // 初始化应用
+                window.app = new SatelliteApp();
+                
+                console.log('✅ 应用初始化完成，数据已预载到本地缓存');
+            } catch (error) {
+                console.error('❌ 应用初始化失败:', error);
+                // 即使预载失败也要初始化应用
+                window.app = new SatelliteApp();
+            }
+        });
+    </script>
+</body>
+</html>

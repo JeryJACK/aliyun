@@ -1,0 +1,972 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>数据管理 - 卫星任务数据分析平台</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    
+    <!-- 配置文件 -->
+    <script src="./public/js/config.js"></script>
+    
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#165DFF',
+                        secondary: '#36CFC9',
+                        accent: '#722ED1',
+                        warning: '#FF7D00',
+                        danger: '#F53F3F',
+                        success: '#00B42A',
+                    },
+                }
+            }
+        }
+    </script>
+
+    <style>
+        .card-shadow {
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+        }
+        .stat-card {
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        .stat-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 30px rgba(22, 93, 255, 0.15);
+        }
+        .table-row:hover {
+            background-color: #f8fafc;
+        }
+        .drag-area {
+            border: 2px dashed #cbd5e1;
+            transition: all 0.3s ease;
+        }
+        .drag-area.drag-over {
+            border-color: #165DFF;
+            background-color: rgba(22, 93, 255, 0.05);
+        }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <!-- 顶部导航 -->
+    <header class="bg-white border-b border-gray-200">
+        <div class="container mx-auto px-4 py-3 flex items-center justify-between">
+            <div class="flex items-center space-x-2">
+                <i class="fa fa-database text-primary text-2xl"></i>
+                <h1 class="text-xl font-bold text-primary">数据管理中心</h1>
+            </div>
+
+            <!-- 用户信息和操作 -->
+            <div class="flex items-center space-x-4">
+                <span class="text-sm text-gray-600">欢迎，<span id="username" class="font-medium">管理员</span></span>
+                <a href="index.html" class="text-gray-600 hover:text-primary transition-colors px-3 py-2 rounded-md">
+                    <i class="fa fa-home mr-1"></i>返回首页
+                </a>
+                <button id="logoutBtn" class="text-gray-600 hover:text-danger transition-colors px-3 py-2 rounded-md">
+                    <i class="fa fa-sign-out mr-1"></i>退出登录
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- 主内容区 -->
+    <main class="container mx-auto px-4 py-6">
+        <!-- 统计卡片 -->
+        <section class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+            <div class="stat-card bg-white rounded-lg p-6 card-shadow">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-sm text-gray-500 font-medium">总记录数</p>
+                        <h3 class="text-2xl font-bold text-primary mt-1" id="totalRecords">-</h3>
+                    </div>
+                    <div class="p-3 bg-primary/10 rounded-lg">
+                        <i class="fa fa-database text-primary text-xl"></i>
+                    </div>
+                </div>
+            </div>
+
+            <div class="stat-card bg-white rounded-lg p-6 card-shadow">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-sm text-gray-500 font-medium">计划ID数</p>
+                        <h3 class="text-2xl font-bold text-secondary mt-1" id="totalPlans">-</h3>
+                    </div>
+                    <div class="p-3 bg-secondary/10 rounded-lg">
+                        <i class="fa fa-list-alt text-secondary text-xl"></i>
+                    </div>
+                </div>
+            </div>
+
+            <div class="stat-card bg-white rounded-lg p-6 card-shadow">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-sm text-gray-500 font-medium">失败记录数</p>
+                        <h3 class="text-2xl font-bold text-danger mt-1" id="totalFailures">-</h3>
+                    </div>
+                    <div class="p-3 bg-danger/10 rounded-lg">
+                        <i class="fa fa-exclamation-circle text-danger text-xl"></i>
+                    </div>
+                </div>
+            </div>
+
+            <div class="stat-card bg-white rounded-lg p-6 card-shadow">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-sm text-gray-500 font-medium">数据范围</p>
+                        <h3 class="text-sm font-bold text-success mt-1" id="dataRange">-</h3>
+                    </div>
+                    <div class="p-3 bg-success/10 rounded-lg">
+                        <i class="fa fa-calendar text-success text-xl"></i>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 数据导入区域 -->
+        <section class="bg-white rounded-lg p-6 card-shadow mb-8">
+            <h2 class="text-lg font-semibold mb-4 flex items-center">
+                <i class="fa fa-upload text-primary mr-2"></i>数据导入
+            </h2>
+            
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <!-- 文件上传 -->
+                <div>
+                    <h3 class="text-md font-medium mb-3">Excel 文件上传</h3>
+                    <div id="dropArea" class="drag-area border rounded-lg p-8 text-center cursor-pointer">
+                        <i class="fa fa-cloud-upload text-4xl text-gray-400 mb-4"></i>
+                        <p class="text-gray-600 mb-2">拖拽文件到此处或点击选择文件</p>
+                        <p class="text-sm text-gray-500">支持 .xlsx, .xls 格式</p>
+                        <p class="text-xs text-blue-500 mt-1">
+                            <i class="fa fa-info-circle mr-1"></i>
+                            大文件（>4MB）将自动采用客户端分批处理
+                        </p>
+                        <input type="file" id="fileInput" accept=".xlsx,.xls" class="hidden" />
+                    </div>
+                    
+                    <div id="fileInfo" class="mt-4 p-3 bg-gray-50 rounded-lg hidden">
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center space-x-2">
+                                <i class="fa fa-file-excel-o text-success"></i>
+                                <span id="fileName" class="text-sm font-medium"></span>
+                            </div>
+                            <button id="removeFile" class="text-gray-400 hover:text-danger">
+                                <i class="fa fa-times"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 导入设置 -->
+                <div>
+                    <h3 class="text-md font-medium mb-3">导入设置</h3>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">数据处理模式</label>
+                            <select id="importMode" class="w-full p-2 border border-gray-300 rounded-md">
+                                <option value="append">追加新数据（推荐）</option>
+                                <option value="replace">清空并替换所有数据</option>
+                                <option value="update">更新已存在的数据</option>
+                            </select>
+                        </div>
+                        
+                        <div>
+                            <label class="flex items-center space-x-2">
+                                <input type="checkbox" id="validateData" checked class="rounded">
+                                <span class="text-sm text-gray-700">数据格式验证</span>
+                            </label>
+                        </div>
+
+                        <div>
+                            <label class="flex items-center space-x-2">
+                                <input type="checkbox" id="batchProcess" checked class="rounded">
+                                <span class="text-sm text-gray-700">批量处理（分片上传）</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 导入按钮和进度 -->
+            <div class="mt-6">
+                <button id="importBtn" class="px-6 py-2 bg-primary text-white rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                    <i class="fa fa-upload mr-2"></i>开始导入
+                </button>
+                
+                <div id="importProgress" class="mt-4 hidden">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-sm text-gray-600">导入进度</span>
+                        <span id="progressText" class="text-sm text-gray-600">0%</span>
+                    </div>
+                    <div class="w-full bg-gray-200 rounded-full h-2">
+                        <div id="progressBar" class="bg-primary h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+                    </div>
+                </div>
+
+                <div id="importResult" class="mt-4 p-3 rounded-lg hidden">
+                    <div class="flex items-center">
+                        <i id="resultIcon" class="mr-2"></i>
+                        <span id="resultText"></span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 数据管理区域 -->
+        <section class="bg-white rounded-lg p-6 card-shadow mb-8">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-semibold flex items-center">
+                    <i class="fa fa-table text-primary mr-2"></i>数据管理
+                </h2>
+                
+                <div class="flex items-center space-x-2">
+                    <button id="refreshData" class="px-3 py-2 text-gray-600 hover:text-primary transition-colors">
+                        <i class="fa fa-refresh mr-1"></i>刷新
+                    </button>
+                    <button id="exportData" class="px-3 py-2 text-gray-600 hover:text-success transition-colors">
+                        <i class="fa fa-download mr-1"></i>导出
+                    </button>
+                    <button id="clearAllData" class="px-3 py-2 text-gray-600 hover:text-danger transition-colors">
+                        <i class="fa fa-trash mr-1"></i>清空数据
+                    </button>
+                </div>
+            </div>
+
+            <!-- 搜索和过滤 -->
+            <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4 mb-6">
+                <div>
+                    <input 
+                        type="text" 
+                        id="searchPlanId" 
+                        placeholder="搜索计划ID" 
+                        class="w-full p-2 border border-gray-300 rounded-md"
+                    />
+                </div>
+                <div>
+                    <input 
+                        type="text" 
+                        id="searchCustomer" 
+                        placeholder="搜索客户" 
+                        class="w-full p-2 border border-gray-300 rounded-md"
+                    />
+                </div>
+                <div>
+                    <input 
+                        type="text" 
+                        id="searchSatellite" 
+                        placeholder="搜索卫星" 
+                        class="w-full p-2 border border-gray-300 rounded-md"
+                    />
+                </div>
+                <div>
+                    <input 
+                        type="text" 
+                        id="searchStation" 
+                        placeholder="搜索测站" 
+                        class="w-full p-2 border border-gray-300 rounded-md"
+                    />
+                </div>
+                <div>
+                    <input 
+                        type="date" 
+                        id="filterStartDate" 
+                        class="w-full p-2 border border-gray-300 rounded-md"
+                        title="开始日期"
+                    />
+                </div>
+                <div>
+                    <input 
+                        type="date" 
+                        id="filterEndDate" 
+                        class="w-full p-2 border border-gray-300 rounded-md"
+                        title="结束日期"
+                    />
+                </div>
+            </div>
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                <div>
+                    <select id="filterTaskType" class="w-full p-2 border border-gray-300 rounded-md">
+                        <option value="">全部任务类型</option>
+                    </select>
+                </div>
+                <div>
+                    <select id="filterTaskResult" class="w-full p-2 border border-gray-300 rounded-md">
+                        <option value="">全部结果状态</option>
+                        <option value="正常">正常</option>
+                        <option value="因设备故障失败">因设备故障失败</option>
+                        <option value="因操作失误失败">因操作失误失败</option>
+                        <option value="未跟踪">未跟踪</option>
+                        <option value="因卫星方原因失败">因卫星方原因失败</option>
+                        <option value="任务成功数据处理失误">任务成功数据处理失误</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- 数据表格 -->
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                <input type="checkbox" id="selectAll" class="rounded">
+                            </th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">计划ID</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">开始时间</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">任务结果状态</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="dataTable" class="bg-white divide-y divide-gray-200">
+                        <!-- 数据行将通过JS动态生成 -->
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- 分页 -->
+            <div class="flex items-center justify-between mt-6">
+                <div class="text-sm text-gray-700">
+                    显示 <span id="pageStart">0</span> 到 <span id="pageEnd">0</span> 共 <span id="totalCount">0</span> 条记录
+                </div>
+                <div class="flex items-center space-x-2">
+                    <button id="prevPage" class="px-3 py-2 border border-gray-300 rounded-md text-sm hover:bg-gray-50 disabled:opacity-50">上一页</button>
+                    <span id="currentPage" class="px-3 py-2 text-sm">1</span>
+                    <button id="nextPage" class="px-3 py-2 border border-gray-300 rounded-md text-sm hover:bg-gray-50 disabled:opacity-50">下一页</button>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- 编辑记录模态框 -->
+    <div id="editModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 hidden">
+        <div class="bg-white rounded-lg w-full max-w-md p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-lg font-semibold">编辑记录</h3>
+                <button id="closeEditModal" class="text-gray-500 hover:text-gray-700">
+                    <i class="fa fa-times"></i>
+                </button>
+            </div>
+            
+            <form id="editForm" class="space-y-4">
+                <input type="hidden" id="editId" />
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">计划ID</label>
+                    <input type="text" id="editPlanId" class="w-full p-2 border border-gray-300 rounded-md" />
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">开始时间</label>
+                    <input type="datetime-local" id="editStartTime" class="w-full p-2 border border-gray-300 rounded-md" />
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">任务结果状态</label>
+                    <select id="editTaskResult" class="w-full p-2 border border-gray-300 rounded-md">
+                        <option value="正常">正常</option>
+                        <option value="因设备故障失败">因设备故障失败</option>
+                        <option value="因操作失误失败">因操作失误失败</option>
+                        <option value="未跟踪">未跟踪</option>
+                        <option value="因卫星方原因失败">因卫星方原因失败</option>
+                        <option value="任务成功数据处理失误">任务成功数据处理失误</option>
+                    </select>
+                </div>
+                
+                <div class="flex justify-end space-x-2 pt-4">
+                    <button type="button" id="cancelEdit" class="px-4 py-2 text-gray-600 border border-gray-300 rounded-md hover:bg-gray-50">
+                        取消
+                    </button>
+                    <button type="submit" class="px-4 py-2 bg-primary text-white rounded-md hover:bg-primary/90">
+                        保存
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        // 应用状态管理
+        class AdminApp {
+            constructor() {
+                this.token = localStorage.getItem('authToken') || sessionStorage.getItem('authToken');
+                this.currentPage = 1;
+                this.pageSize = 20;
+                this.filters = {};
+                
+                this.init();
+            }
+
+            async init() {
+                // 检查认证状态
+                if (!this.token) {
+                    window.location.href = 'login.html';
+                    return;
+                }
+
+                try {
+                    await this.verifyAuth();
+                    this.bindEvents();
+                    await this.loadStats();
+                    await this.loadData();
+                } catch (error) {
+                    console.error('初始化失败:', error);
+                    this.logout();
+                }
+            }
+
+            async verifyAuth() {
+                const response = await fetch(`${CONFIG.API_BASE_URL}/verify`, {
+                    headers: { 'Authorization': `Bearer ${this.token}` }
+                });
+
+                if (!response.ok) {
+                    throw new Error('认证失败');
+                }
+
+                const result = await response.json();
+                document.getElementById('username').textContent = result.data.username;
+            }
+
+            bindEvents() {
+                // 文件上传相关
+                const dropArea = document.getElementById('dropArea');
+                const fileInput = document.getElementById('fileInput');
+                
+                dropArea.addEventListener('click', () => fileInput.click());
+                dropArea.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    dropArea.classList.add('drag-over');
+                });
+                dropArea.addEventListener('dragleave', () => {
+                    dropArea.classList.remove('drag-over');
+                });
+                dropArea.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    dropArea.classList.remove('drag-over');
+                    const files = e.dataTransfer.files;
+                    if (files.length > 0) {
+                        this.handleFileSelect(files[0]);
+                    }
+                });
+                
+                fileInput.addEventListener('change', (e) => {
+                    if (e.target.files.length > 0) {
+                        this.handleFileSelect(e.target.files[0]);
+                    }
+                });
+
+                // 导入按钮
+                document.getElementById('importBtn').addEventListener('click', () => this.importData());
+
+                // 数据管理按钮
+                document.getElementById('refreshData').addEventListener('click', () => this.loadData());
+                document.getElementById('exportData').addEventListener('click', () => this.exportData());
+                document.getElementById('clearAllData').addEventListener('click', () => this.clearAllData());
+
+                // 搜索和过滤
+                ['searchPlanId', 'filterStartDate', 'filterEndDate', 'filterTaskResult'].forEach(id => {
+                    document.getElementById(id).addEventListener('input', () => this.applyFilters());
+                });
+
+                // 分页
+                document.getElementById('prevPage').addEventListener('click', () => this.prevPage());
+                document.getElementById('nextPage').addEventListener('click', () => this.nextPage());
+
+                // 编辑模态框
+                document.getElementById('closeEditModal').addEventListener('click', () => this.closeEditModal());
+                document.getElementById('cancelEdit').addEventListener('click', () => this.closeEditModal());
+                document.getElementById('editForm').addEventListener('submit', (e) => this.saveEdit(e));
+
+                // 登出
+                document.getElementById('logoutBtn').addEventListener('click', () => this.logout());
+            }
+
+            handleFileSelect(file) {
+                if (!file.name.match(/\.(xlsx|xls)$/)) {
+                    this.showMessage('请选择Excel文件（.xlsx 或 .xls）', 'error');
+                    return;
+                }
+
+                document.getElementById('fileName').textContent = file.name;
+                document.getElementById('fileInfo').classList.remove('hidden');
+                this.selectedFile = file;
+
+                document.getElementById('removeFile').addEventListener('click', () => {
+                    document.getElementById('fileInfo').classList.add('hidden');
+                    this.selectedFile = null;
+                });
+            }
+
+            async importData() {
+                if (!this.selectedFile) {
+                    this.showMessage('请先选择文件', 'error');
+                    return;
+                }
+
+                // 调试信息
+                console.log('选中的文件:', this.selectedFile);
+                console.log('文件名:', this.selectedFile.name);
+                console.log('文件大小:', this.selectedFile.size);
+                console.log('文件类型:', this.selectedFile.type);
+
+                // 检查文件大小，如果超过4MB则使用客户端处理
+                if (this.selectedFile.size > 4 * 1024 * 1024) {
+                    return await this.importLargeFile();
+                }
+
+                const formData = new FormData();
+                formData.append('file', this.selectedFile);
+                formData.append('mode', document.getElementById('importMode').value);
+                formData.append('validate', document.getElementById('validateData').checked);
+                formData.append('batch', document.getElementById('batchProcess').checked);
+                
+                // 调试FormData内容
+                console.log('FormData内容:');
+                for (let [key, value] of formData.entries()) {
+                    console.log(key, ':', value);
+                }
+
+                try {
+                    this.showImportProgress(true);
+                    
+                    const response = await fetch(`${CONFIG.API_BASE_URL}/import`, {
+                        method: 'POST',
+                        headers: { 'Authorization': `Bearer ${this.token}` },
+                        body: formData
+                    });
+
+                    // 先检查响应状态
+                    console.log('Response status:', response.status);
+                    console.log('Response headers:', Object.fromEntries(response.headers.entries()));
+
+                    // 获取响应文本用于调试
+                    const responseText = await response.text();
+                    console.log('Raw response:', responseText);
+
+                    // 尝试解析JSON
+                    let result;
+                    try {
+                        result = JSON.parse(responseText);
+                    } catch (parseError) {
+                        console.error('JSON解析失败:', parseError);
+                        throw new Error(`服务器返回非JSON格式响应 (状态: ${response.status}): ${responseText.substring(0, 100)}...`);
+                    }
+
+                    if (response.ok && result.success) {
+                        const importedCount = result.data?.imported || 0;
+                        this.showImportResult('success', `成功导入 ${importedCount} 条记录`);
+                        await this.loadStats();
+                        await this.loadData();
+                    } else {
+                        throw new Error(result.error || `导入失败 (状态: ${response.status})`);
+                    }
+
+                } catch (error) {
+                    console.error('导入失败:', error);
+                    this.showImportResult('error', '导入失败: ' + error.message);
+                } finally {
+                    this.showImportProgress(false);
+                }
+            }
+
+            showImportProgress(show) {
+                const progress = document.getElementById('importProgress');
+                if (show) {
+                    progress.classList.remove('hidden');
+                    // 模拟进度条动画
+                    let percent = 0;
+                    const interval = setInterval(() => {
+                        percent += Math.random() * 20;
+                        if (percent >= 100) {
+                            clearInterval(interval);
+                            percent = 100;
+                        }
+                        document.getElementById('progressBar').style.width = percent + '%';
+                        document.getElementById('progressText').textContent = Math.round(percent) + '%';
+                    }, 200);
+                } else {
+                    progress.classList.add('hidden');
+                }
+            }
+
+            showImportResult(type, message) {
+                const result = document.getElementById('importResult');
+                const icon = document.getElementById('resultIcon');
+                const text = document.getElementById('resultText');
+
+                result.className = `mt-4 p-3 rounded-lg ${type === 'success' ? 'bg-success/10 text-success' : 'bg-danger/10 text-danger'}`;
+                icon.className = `fa ${type === 'success' ? 'fa-check-circle' : 'fa-exclamation-circle'} mr-2`;
+                text.textContent = message;
+
+                result.classList.remove('hidden');
+                setTimeout(() => result.classList.add('hidden'), 5000);
+            }
+
+            async importLargeFile() {
+                try {
+                    this.showImportProgress(true);
+                    this.showImportResult('info', '正在处理大文件，请稍候...');
+
+                    // 客户端读取Excel文件
+                    const fileBuffer = await this.readFileAsArrayBuffer(this.selectedFile);
+                    const workbook = XLSX.read(fileBuffer, { type: 'array' });
+                    const sheetName = workbook.SheetNames[0];
+                    const worksheet = workbook.Sheets[sheetName];
+                    const data = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
+
+                    if (data.length === 0) {
+                        throw new Error('Excel文件中没有数据');
+                    }
+
+                    console.log(`客户端解析完成，共${data.length}条记录`);
+                    
+                    // 分批处理数据
+                    const batchSize = 100;
+                    let totalImported = 0;
+                    
+                    for (let i = 0; i < data.length; i += batchSize) {
+                        const batch = data.slice(i, i + batchSize);
+                        const progress = Math.round(((i + batch.length) / data.length) * 100);
+                        
+                        // 更新进度
+                        document.getElementById('progressBar').style.width = progress + '%';
+                        document.getElementById('progressText').textContent = `${progress}% (${i + batch.length}/${data.length})`;
+                        
+                        try {
+                            const imported = await this.uploadBatch(batch, i === 0 ? document.getElementById('importMode').value : 'append');
+                            totalImported += imported;
+                        } catch (error) {
+                            console.warn(`批次 ${Math.floor(i/batchSize) + 1} 处理失败:`, error);
+                        }
+                        
+                        // 短暂延迟避免过于频繁的请求
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                    }
+
+                    this.showImportResult('success', `成功导入 ${totalImported} 条记录（共处理 ${data.length} 条）`);
+                    await this.loadStats();
+                    await this.loadData();
+
+                } catch (error) {
+                    console.error('大文件导入失败:', error);
+                    this.showImportResult('error', '大文件导入失败: ' + error.message);
+                } finally {
+                    this.showImportProgress(false);
+                }
+            }
+
+            async readFileAsArrayBuffer(file) {
+                return new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = (e) => resolve(e.target.result);
+                    reader.onerror = (e) => reject(new Error('文件读取失败'));
+                    reader.readAsArrayBuffer(file);
+                });
+            }
+
+            async uploadBatch(batchData, mode) {
+                const response = await fetch(`${CONFIG.API_BASE_URL}/import-batch`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${this.token}`
+                    },
+                    body: JSON.stringify({
+                        data: batchData,
+                        mode: mode,
+                        validate: document.getElementById('validateData').checked
+                    })
+                });
+
+                const result = await response.json();
+                if (!response.ok || !result.success) {
+                    throw new Error(result.error || '批次上传失败');
+                }
+
+                return result.data?.imported || 0;
+            }
+
+            async loadStats() {
+                try {
+                    const response = await fetch(`${CONFIG.API_BASE_URL}/stats`, {
+                        headers: { 'Authorization': `Bearer ${this.token}` }
+                    });
+
+                    const result = await response.json();
+                    if (response.ok && result.success) {
+                        const stats = result.data;
+                        document.getElementById('totalRecords').textContent = stats.total_records || 0;
+                        document.getElementById('totalPlans').textContent = stats.total_plans || 0;
+                        document.getElementById('totalFailures').textContent = stats.total_failures || 0;
+                        
+                        if (stats.earliest_time && stats.latest_time) {
+                            const start = new Date(stats.earliest_time).toLocaleDateString();
+                            const end = new Date(stats.latest_time).toLocaleDateString();
+                            document.getElementById('dataRange').textContent = `${start} - ${end}`;
+                        } else {
+                            document.getElementById('dataRange').textContent = '暂无数据';
+                        }
+                    }
+                } catch (error) {
+                    console.error('加载统计数据失败:', error);
+                }
+            }
+
+            async loadData() {
+                try {
+                    const params = new URLSearchParams({
+                        page: this.currentPage,
+                        limit: this.pageSize,
+                        ...this.filters
+                    });
+
+                    const response = await fetch(`${CONFIG.API_BASE_URL}/records?${params}`, {
+                        headers: { 'Authorization': `Bearer ${this.token}` }
+                    });
+
+                    const result = await response.json();
+                    if (response.ok && result.success) {
+                        this.renderTable(result.data.records);
+                        this.updatePagination(result.data);
+                    }
+                } catch (error) {
+                    console.error('加载数据失败:', error);
+                }
+            }
+
+            renderTable(records) {
+                const tbody = document.getElementById('dataTable');
+                tbody.innerHTML = '';
+
+                records.forEach(record => {
+                    const tr = document.createElement('tr');
+                    tr.className = 'table-row';
+                    tr.innerHTML = `
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            <input type="checkbox" class="row-checkbox rounded" data-id="${record.id}">
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                            ${record.plan_id}
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            ${new Date(record.start_time).toLocaleString()}
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${this.getStatusColor(record.task_result)}">
+                                ${record.task_result || '未知'}
+                            </span>
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-2">
+                            <button onclick="app.editRecord(${record.id})" class="text-primary hover:text-primary/70">
+                                <i class="fa fa-edit mr-1"></i>编辑
+                            </button>
+                            <button onclick="app.deleteRecord(${record.id})" class="text-danger hover:text-danger/70">
+                                <i class="fa fa-trash mr-1"></i>删除
+                            </button>
+                        </td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            }
+
+            getStatusColor(status) {
+                if (status === '正常') return 'bg-success/10 text-success';
+                if (status && status.includes('失败')) return 'bg-danger/10 text-danger';
+                if (status === '未跟踪') return 'bg-warning/10 text-warning';
+                return 'bg-gray/10 text-gray-600';
+            }
+
+            updatePagination(data) {
+                document.getElementById('totalCount').textContent = data.total;
+                document.getElementById('pageStart').textContent = ((data.page - 1) * data.limit) + 1;
+                document.getElementById('pageEnd').textContent = Math.min(data.page * data.limit, data.total);
+                document.getElementById('currentPage').textContent = data.page;
+
+                document.getElementById('prevPage').disabled = data.page <= 1;
+                document.getElementById('nextPage').disabled = data.page >= data.totalPages;
+            }
+
+            applyFilters() {
+                this.filters = {
+                    planId: document.getElementById('searchPlanId').value,
+                    startDate: document.getElementById('filterStartDate').value,
+                    endDate: document.getElementById('filterEndDate').value,
+                    taskResult: document.getElementById('filterTaskResult').value
+                };
+                this.currentPage = 1;
+                this.loadData();
+            }
+
+            prevPage() {
+                if (this.currentPage > 1) {
+                    this.currentPage--;
+                    this.loadData();
+                }
+            }
+
+            nextPage() {
+                this.currentPage++;
+                this.loadData();
+            }
+
+            async editRecord(id) {
+                try {
+                    const response = await fetch(`${CONFIG.API_BASE_URL}/records/${id}`, {
+                        headers: { 'Authorization': `Bearer ${this.token}` }
+                    });
+
+                    const result = await response.json();
+                    if (response.ok && result.success) {
+                        const record = result.data;
+                        document.getElementById('editId').value = record.id;
+                        document.getElementById('editPlanId').value = record.plan_id;
+                        document.getElementById('editStartTime').value = new Date(record.start_time).toISOString().slice(0, 16);
+                        document.getElementById('editTaskResult').value = record.task_result;
+                        
+                        document.getElementById('editModal').classList.remove('hidden');
+                    }
+                } catch (error) {
+                    console.error('获取记录详情失败:', error);
+                }
+            }
+
+            async deleteRecord(id) {
+                if (!confirm('确定要删除这条记录吗？此操作不可恢复。')) {
+                    return;
+                }
+
+                try {
+                    const response = await fetch(`${CONFIG.API_BASE_URL}/records/${id}`, {
+                        method: 'DELETE',
+                        headers: { 'Authorization': `Bearer ${this.token}` }
+                    });
+
+                    const result = await response.json();
+                    if (response.ok && result.success) {
+                        this.showMessage('记录删除成功', 'success');
+                        await this.loadStats();
+                        await this.loadData();
+                    }
+                } catch (error) {
+                    console.error('删除记录失败:', error);
+                    this.showMessage('删除失败: ' + error.message, 'error');
+                }
+            }
+
+            async saveEdit(e) {
+                e.preventDefault();
+                
+                const id = document.getElementById('editId').value;
+                const data = {
+                    plan_id: document.getElementById('editPlanId').value,
+                    start_time: document.getElementById('editStartTime').value,
+                    task_result: document.getElementById('editTaskResult').value
+                };
+
+                try {
+                    const response = await fetch(`${CONFIG.API_BASE_URL}/records/${id}`, {
+                        method: 'PUT',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${this.token}`
+                        },
+                        body: JSON.stringify(data)
+                    });
+
+                    const result = await response.json();
+                    if (response.ok && result.success) {
+                        this.closeEditModal();
+                        this.showMessage('记录更新成功', 'success');
+                        await this.loadData();
+                    }
+                } catch (error) {
+                    console.error('更新记录失败:', error);
+                    this.showMessage('更新失败: ' + error.message, 'error');
+                }
+            }
+
+            closeEditModal() {
+                document.getElementById('editModal').classList.add('hidden');
+            }
+
+            async exportData() {
+                try {
+                    const params = new URLSearchParams(this.filters);
+                    const response = await fetch(`${CONFIG.API_BASE_URL}/export?${params}`, {
+                        headers: { 'Authorization': `Bearer ${this.token}` }
+                    });
+
+                    if (response.ok) {
+                        const blob = await response.blob();
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `satellite-data-${new Date().toISOString().slice(0, 10)}.xlsx`;
+                        a.click();
+                        window.URL.revokeObjectURL(url);
+                    }
+                } catch (error) {
+                    console.error('导出失败:', error);
+                    this.showMessage('导出失败: ' + error.message, 'error');
+                }
+            }
+
+            async clearAllData() {
+                if (!confirm('确定要清空所有数据吗？此操作不可恢复！')) {
+                    return;
+                }
+
+                if (!prompt('请输入 "确认清空" 来确认此操作：') === '确认清空') {
+                    return;
+                }
+
+                try {
+                    const response = await fetch(`${CONFIG.API_BASE_URL}/clear`, {
+                        method: 'DELETE',
+                        headers: { 'Authorization': `Bearer ${this.token}` }
+                    });
+
+                    const result = await response.json();
+                    if (response.ok && result.success) {
+                        this.showMessage('数据清空成功', 'success');
+                        await this.loadStats();
+                        await this.loadData();
+                    }
+                } catch (error) {
+                    console.error('清空数据失败:', error);
+                    this.showMessage('清空失败: ' + error.message, 'error');
+                }
+            }
+
+            showMessage(message, type) {
+                // 简单的消息提示实现
+                const div = document.createElement('div');
+                div.className = `fixed top-4 right-4 p-3 rounded-lg z-50 ${
+                    type === 'success' ? 'bg-success text-white' : 'bg-danger text-white'
+                }`;
+                div.textContent = message;
+                document.body.appendChild(div);
+                
+                setTimeout(() => {
+                    document.body.removeChild(div);
+                }, 3000);
+            }
+
+            logout() {
+                localStorage.removeItem('authToken');
+                sessionStorage.removeItem('authToken');
+                localStorage.removeItem('userInfo');
+                sessionStorage.removeItem('userInfo');
+                window.location.href = 'login.html';
+            }
+        }
+
+        // 初始化应用
+        let app;
+        document.addEventListener('DOMContentLoaded', () => {
+            app = new AdminApp();
+        });
+    </script>
+</body>
+</html>
