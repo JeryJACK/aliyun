@@ -1845,6 +1845,15 @@
                         console.log('✅ 页面状态已从sessionStorage恢复');
                     }
 
+                    // 恢复统计结果（如果有保存的结果）
+                    const statsRestored = this.restoreStatisticsResult();
+                    if (statsRestored) {
+                        console.log('✅ 统计结果已从sessionStorage恢复');
+                        // 隐藏加载状态，显示图表
+                        this.chartLoadingState.classList.add('hidden');
+                        this.chartEmptyState.classList.add('hidden');
+                    }
+
                 } catch (error) {
                     console.error('❌ 应用初始化失败:', error);
                     showError('应用初始化失败: ' + (error.message || error));
@@ -2030,19 +2039,22 @@
 
                 try {
                     console.log('📊 开始生成统计结果（基于本地缓存数据）...');
-                    
+
                     const groupType = this.groupBy.value;
                     const range = this.computeDateRangeForGroup(groupType, this.startDate.value, this.endDate.value);
                     const startDate = range.startDate;
                     const endDate = range.endDate;
 
                     const stats = this.groupDataByCycle(groupType, startDate, endDate);
-                    
+
                     console.log(`📈 生成统计组数: ${stats.length}`);
-                    
+
                     this.updateChart(stats, groupType);
                     this.updateStatCards(stats);
                     this.updateDetailTable(stats);
+
+                    // 保存统计结果到 sessionStorage
+                    this.saveStatisticsResult(stats, groupType);
 
                 } catch (error) {
                     console.error('❌ 生成统计结果失败:', error);
@@ -2681,6 +2693,69 @@
                     console.log('🗑️ 页面状态已清空');
                 } catch (error) {
                     console.warn('清空页面状态失败:', error);
+                }
+            }
+
+            // 保存统计结果到 sessionStorage
+            saveStatisticsResult(stats, groupType) {
+                try {
+                    if (!stats || stats.length === 0) {
+                        console.log('📊 统计结果为空，不保存');
+                        return;
+                    }
+
+                    const statisticsData = {
+                        stats: stats,
+                        groupType: groupType,
+                        generatedAt: Date.now()
+                    };
+
+                    sessionStorage.setItem('satelliteStatistics', JSON.stringify(statisticsData));
+                    console.log('💾 统计结果已保存:', {
+                        statsCount: stats.length,
+                        groupType: groupType
+                    });
+                } catch (error) {
+                    console.warn('保存统计结果失败:', error);
+                }
+            }
+
+            // 恢复统计结果并重新渲染图表
+            restoreStatisticsResult() {
+                try {
+                    const savedStats = sessionStorage.getItem('satelliteStatistics');
+                    if (!savedStats) {
+                        console.log('📊 无保存的统计结果');
+                        return false;
+                    }
+
+                    const statisticsData = JSON.parse(savedStats);
+                    console.log('🔄 恢复统计结果:', {
+                        statsCount: statisticsData.stats.length,
+                        groupType: statisticsData.groupType,
+                        generatedAt: new Date(statisticsData.generatedAt).toLocaleString()
+                    });
+
+                    // 重新渲染图表、统计卡片和详情表格
+                    this.updateChart(statisticsData.stats, statisticsData.groupType);
+                    this.updateStatCards(statisticsData.stats);
+                    this.updateDetailTable(statisticsData.stats);
+
+                    console.log('✅ 统计结果恢复完成');
+                    return true;
+                } catch (error) {
+                    console.warn('恢复统计结果失败:', error);
+                    return false;
+                }
+            }
+
+            // 清空统计结果
+            clearStatisticsResult() {
+                try {
+                    sessionStorage.removeItem('satelliteStatistics');
+                    console.log('🗑️ 统计结果已清空');
+                } catch (error) {
+                    console.warn('清空统计结果失败:', error);
                 }
             }
 
