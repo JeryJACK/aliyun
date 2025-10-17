@@ -1684,9 +1684,21 @@
 
                     this.data = cachedData;
                     this.noDataAlert.classList.add('hidden');
-                    
+
                     console.log(`✅ 从本地缓存加载了 ${cachedData.length} 条数据`);
-                    console.log(`📊 数据时间范围: ${new Date(Math.min(...cachedData.map(d => d.timestamp))).toLocaleString()} 至 ${new Date(Math.max(...cachedData.map(d => d.timestamp))).toLocaleString()}`);
+
+                    // 使用 reduce 方法高效查找最小/最大时间戳，支持任意大小的数据集
+                    if (cachedData.length > 0) {
+                        const { minTimestamp, maxTimestamp } = cachedData.reduce((acc, d) => {
+                            const ts = d.timestamp;
+                            return {
+                                minTimestamp: ts < acc.minTimestamp ? ts : acc.minTimestamp,
+                                maxTimestamp: ts > acc.maxTimestamp ? ts : acc.maxTimestamp
+                            };
+                        }, { minTimestamp: Infinity, maxTimestamp: -Infinity });
+
+                        console.log(`📊 数据时间范围: ${new Date(minTimestamp).toLocaleString()} 至 ${new Date(maxTimestamp).toLocaleString()}`);
+                    }
                     
                     this.setDefaultDates();
                     this.updateCacheStatus();
