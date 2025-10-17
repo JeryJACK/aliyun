@@ -1635,16 +1635,20 @@
                 this.cycleEngine = new CycleRuleEngine();
                 this.taskAnalyzer = new TaskResultAnalyzer();
                 this.chart = null;
-                
+
+                // 预检查 sessionStorage，判断是否有保存的状态（加快恢复速度）
+                this.hasSavedState = !!sessionStorage.getItem('satellitePageState');
+                this.hasSavedStats = !!sessionStorage.getItem('satelliteStatistics');
+
                 // 加载保存的配置
                 this.loadSavedConfig();
-                
+
                 this.bindElements();
                 this.bindEvents();
                 this.data = null;
                 this.fieldMappingValues = {
                     planIdField: 'plan_id',
-                    startTimeField: 'start_time', 
+                    startTimeField: 'start_time',
                     taskResultField: 'task_result'
                 };
                 this.init();
@@ -1809,6 +1813,13 @@
                 try {
                     console.log('🔧 SatelliteApp 初始化：从本地缓存加载数据...');
 
+                    // 如果有保存的统计结果，立即隐藏空状态提示（减少闪烁）
+                    if (this.hasSavedStats) {
+                        console.log('🚀 检测到保存的统计结果，预先隐藏加载状态');
+                        if (this.chartLoadingState) this.chartLoadingState.classList.add('hidden');
+                        if (this.chartEmptyState) this.chartEmptyState.classList.add('hidden');
+                    }
+
                     // 从本地缓存获取所有数据
                     const cachedData = await cacheManager.queryAllData();
 
@@ -1836,22 +1847,29 @@
                         console.log(`📊 数据时间范围: ${new Date(minTimestamp).toLocaleString()} 至 ${new Date(maxTimestamp).toLocaleString()}`);
                     }
 
-                    this.setDefaultDates();
+                    // 只在没有保存状态时设置默认日期（避免覆盖）
+                    if (!this.hasSavedState) {
+                        this.setDefaultDates();
+                    }
+
                     this.updateCacheStatus();
 
                     // 恢复页面状态（如果有保存的状态）
-                    const restored = this.restorePageState();
-                    if (restored) {
-                        console.log('✅ 页面状态已从sessionStorage恢复');
+                    if (this.hasSavedState) {
+                        const restored = this.restorePageState();
+                        if (restored) {
+                            console.log('✅ 页面状态已从sessionStorage恢复');
+                        }
+                    } else {
+                        this.setDefaultDates();
                     }
 
                     // 恢复统计结果（如果有保存的结果）
-                    const statsRestored = this.restoreStatisticsResult();
-                    if (statsRestored) {
-                        console.log('✅ 统计结果已从sessionStorage恢复');
-                        // 隐藏加载状态，显示图表
-                        this.chartLoadingState.classList.add('hidden');
-                        this.chartEmptyState.classList.add('hidden');
+                    if (this.hasSavedStats) {
+                        const statsRestored = this.restoreStatisticsResult();
+                        if (statsRestored) {
+                            console.log('✅ 统计结果已从sessionStorage恢复');
+                        }
                     }
 
                 } catch (error) {
@@ -2648,7 +2666,7 @@
                 }
             }
 
-            // 恢复页面状态从sessionStorage
+            // 恢复页面状态从sessionStorage（优化版：同步恢复，减少延迟）
             restorePageState() {
                 try {
                     const savedState = sessionStorage.getItem('satellitePageState');
@@ -2660,6 +2678,7 @@
                     const pageState = JSON.parse(savedState);
                     console.log('🔄 恢复页面状态:', pageState);
 
+                    // 同步恢复，不使用延迟，减少闪烁
                     // 恢复日期范围
                     if (pageState.startDate && this.startDate) {
                         this.startDate.value = pageState.startDate;
@@ -2720,7 +2739,7 @@
                 }
             }
 
-            // 恢复统计结果并重新渲染图表
+            // 恢复统计结果并重新渲染图表（优化版：减少闪烁）
             restoreStatisticsResult() {
                 try {
                     const savedStats = sessionStorage.getItem('satelliteStatistics');
@@ -2736,12 +2755,24 @@
                         generatedAt: new Date(statisticsData.generatedAt).toLocaleString()
                     });
 
-                    // 重新渲染图表、统计卡片和详情表格
-                    this.updateChart(statisticsData.stats, statisticsData.groupType);
-                    this.updateStatCards(statisticsData.stats);
-                    this.updateDetailTable(statisticsData.stats);
+                    // 立即隐藏加载状态，避免闪烁
+                    if (this.chartLoadingState) {
+                        this.chartLoadingState.classList.add('hidden');
+                    }
+                    if (this.chartEmptyState) {
+                        this.chartEmptyState.classList.add('hidden');
+                    }
 
-                    console.log('✅ 统计结果恢复完成');
+                    // 使用 requestAnimationFrame 优化渲染时机
+                    requestAnimationFrame(() => {
+                        // 重新渲染图表、统计卡片和详情表格
+                        this.updateChart(statisticsData.stats, statisticsData.groupType);
+                        this.updateStatCards(statisticsData.stats);
+                        this.updateDetailTable(statisticsData.stats);
+
+                        console.log('✅ 统计结果恢复完成');
+                    });
+
                     return true;
                 } catch (error) {
                     console.warn('恢复统计结果失败:', error);
