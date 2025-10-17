@@ -94,11 +94,15 @@
 
 
         <!-- 系统说明 -->
-        <section class="mb-8 bg-white rounded-lg p-6 card-shadow">
-            <h2 class="text-lg font-semibold mb-4 flex items-center">
-                <i class="fa fa-info-circle text-primary mr-2"></i>系统说明
+        <section id="instructionsSection" class="mb-8 bg-white rounded-lg p-6 card-shadow">
+            <h2 class="text-lg font-semibold mb-4 flex items-center justify-between cursor-pointer" id="instructionsToggle">
+                <span class="flex items-center">
+                    <i class="fa fa-info-circle text-primary mr-2"></i>系统说明
+                </span>
+                <i id="instructionsIcon" class="fa fa-chevron-up text-gray-500 transition-transform duration-300"></i>
             </h2>
-            <div class="bg-blue-50 p-4 rounded-lg">
+            <div id="instructionsContent" class="overflow-hidden transition-all duration-300">
+                <div class="bg-blue-50 p-4 rounded-lg">
                 <p class="text-sm text-gray-700 mb-2">✅ 数据现在存储在 Postgres 数据库中，通过后端 API 提供</p>
                 <p class="text-sm text-gray-700 mb-2">⚡ 已启用智能本地缓存，首次访问后将秒速加载数据</p>
                 <p class="text-sm text-gray-700 mb-2">📊 数据管理请访问 <a href="admin.html" class="text-primary hover:underline font-medium">管理页面</a> 进行数据导入和管理</p>
@@ -123,6 +127,7 @@
                     </button>
                     <span id="cacheInfo" class="text-xs text-gray-500 self-center"></span>
                 </div>
+            </div>
             </div>
         </section>
 
@@ -2238,6 +2243,16 @@
                             }
                         },
                         plugins: {
+                            legend: {
+                                display: true,
+                                position: 'bottom',
+                                labels: {
+                                    padding: 15,
+                                    font: {
+                                        size: 12
+                                    }
+                                }
+                            },
                             datalabels: {
                                 display: showLabels
                             },
@@ -2985,20 +3000,55 @@
             try {
                 // 页面加载时自动预载所有数据
                 console.log('🌟 页面加载完成，开始自动预载数据...');
-                
+
                 // 分组逻辑已验证正确，移除测试代码
-                
+
                 await dataPreloader.autoPreloadAllData();
-                
+
                 // 初始化应用
                 window.app = new SatelliteApp();
-                
+
                 console.log('✅ 应用初始化完成，数据已预载到本地缓存');
             } catch (error) {
                 console.error('❌ 应用初始化失败:', error);
                 // 即使预载失败也要初始化应用
                 window.app = new SatelliteApp();
             }
+
+            // 系统说明自动折叠功能
+            const instructionsToggle = document.getElementById('instructionsToggle');
+            const instructionsContent = document.getElementById('instructionsContent');
+            const instructionsIcon = document.getElementById('instructionsIcon');
+            let isExpanded = true;
+
+            // 折叠/展开函数
+            function toggleInstructions() {
+                if (isExpanded) {
+                    instructionsContent.style.maxHeight = '0px';
+                    instructionsIcon.classList.remove('fa-chevron-up');
+                    instructionsIcon.classList.add('fa-chevron-down');
+                    instructionsIcon.style.transform = 'rotate(0deg)';
+                } else {
+                    instructionsContent.style.maxHeight = instructionsContent.scrollHeight + 'px';
+                    instructionsIcon.classList.remove('fa-chevron-down');
+                    instructionsIcon.classList.add('fa-chevron-up');
+                    instructionsIcon.style.transform = 'rotate(0deg)';
+                }
+                isExpanded = !isExpanded;
+            }
+
+            // 初始设置展开状态
+            instructionsContent.style.maxHeight = instructionsContent.scrollHeight + 'px';
+
+            // 点击标题切换折叠状态
+            instructionsToggle.addEventListener('click', toggleInstructions);
+
+            // 5秒后自动折叠
+            setTimeout(() => {
+                if (isExpanded) {
+                    toggleInstructions();
+                }
+            }, 5000);
         });
     </script>
 </body>
