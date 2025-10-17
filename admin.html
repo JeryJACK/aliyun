@@ -416,16 +416,35 @@
             }
 
             async verifyAuth() {
-                const response = await fetch(`${CONFIG.API_BASE_URL}/verify`, {
-                    headers: { 'Authorization': `Bearer ${this.token}` }
-                });
+                try {
+                    console.log('🔐 开始验证token...');
+                    console.log('Token:', this.token);
+                    console.log('API URL:', `${CONFIG.API_BASE_URL}/verify`);
 
-                if (!response.ok) {
-                    throw new Error('认证失败');
+                    const response = await fetch(`${CONFIG.API_BASE_URL}/verify`, {
+                        headers: { 'Authorization': `Bearer ${this.token}` }
+                    });
+
+                    console.log('验证响应状态:', response.status);
+
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        console.error('验证失败:', errorText);
+                        throw new Error(`认证失败 (${response.status}): ${errorText}`);
+                    }
+
+                    const result = await response.json();
+                    console.log('验证成功:', result);
+
+                    if (result.success && result.data) {
+                        document.getElementById('username').textContent = result.data.username || '管理员';
+                    } else {
+                        throw new Error('验证响应格式不正确');
+                    }
+                } catch (error) {
+                    console.error('❌ verifyAuth 失败:', error);
+                    throw error;
                 }
-
-                const result = await response.json();
-                document.getElementById('username').textContent = result.data.username;
             }
 
             bindEvents() {
