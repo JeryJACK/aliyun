@@ -400,12 +400,23 @@
             async init() {
                 // 检查认证状态
                 if (!this.token) {
+                    console.log('❌ 未找到token，跳转到登录页');
                     window.location.href = 'login.html';
                     return;
                 }
 
                 try {
-                    await this.verifyAuth();
+                    // GitHub Pages环境下跳过验证（因为没有统一的verify端点）
+                    if (CONFIG.isGitHubPages) {
+                        console.log('🌐 GitHub Pages环境，跳过token验证');
+                        // 尝试从userInfo获取用户名
+                        const userInfo = JSON.parse(localStorage.getItem('userInfo') || sessionStorage.getItem('userInfo') || '{}');
+                        document.getElementById('username').textContent = userInfo.username || '管理员';
+                    } else {
+                        // 本地开发环境才进行验证
+                        await this.verifyAuth();
+                    }
+
                     this.bindEvents();
                     await this.loadStats();
                     await this.loadData();
