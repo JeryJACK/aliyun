@@ -297,25 +297,31 @@
             // 检查是否已登录
             const token = localStorage.getItem('authToken') || sessionStorage.getItem('authToken');
             if (token) {
-                // 验证token是否有效
-                fetch('/api/verify', {
-                    headers: {
-                        'Authorization': `Bearer ${token}`
-                    }
-                })
-                .then(response => {
-                    if (response.ok) {
-                        // token有效，直接跳转
-                        window.location.href = 'admin.html';
-                    }
-                })
-                .catch(error => {
-                    // token无效，清除
-                    localStorage.removeItem('authToken');
-                    sessionStorage.removeItem('authToken');
-                    localStorage.removeItem('userInfo');
-                    sessionStorage.removeItem('userInfo');
-                });
+                // GitHub Pages环境下直接跳转（没有验证端点）
+                if (CONFIG.isGitHubPages) {
+                    console.log('🌐 检测到已登录token，直接跳转到管理页面');
+                    window.location.href = 'admin.html';
+                } else {
+                    // 本地开发环境验证token是否有效
+                    fetch('/api/verify', {
+                        headers: {
+                            'Authorization': `Bearer ${token}`
+                        }
+                    })
+                    .then(response => {
+                        if (response.ok) {
+                            // token有效，直接跳转
+                            window.location.href = 'admin.html';
+                        }
+                    })
+                    .catch(error => {
+                        // token无效，清除
+                        localStorage.removeItem('authToken');
+                        sessionStorage.removeItem('authToken');
+                        localStorage.removeItem('userInfo');
+                        sessionStorage.removeItem('userInfo');
+                    });
+                }
             }
 
             // 键盘事件处理
