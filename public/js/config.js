@@ -13,7 +13,11 @@ const CONFIG = {
         records: 'https://records-bsjjdmpsel.cn-hangzhou.fcapp.run',
         import: 'https://import-rlctokgdul.cn-hangzhou.fcapp.run',
         export: 'https://stats-paixwbwiuk.cn-hangzhou.fcapp.run/export',
-        clear: 'https://stats-paixwbwiuk.cn-hangzhou.fcapp.run/clear'
+        clear: 'https://stats-paixwbwiuk.cn-hangzhou.fcapp.run/clear',
+
+        // WebSocket 实时同步配置
+        websocket: 'ws://120.26.182.38:3000/ws',  // WebSocket 服务器地址
+        catchup: 'http://120.26.182.38:3000/api/satellite/changes'  // 断线补同步 API
     },
     
     // 请求配置
