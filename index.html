@@ -875,24 +875,174 @@
             // 清空全数据缓存
             async clearAllDataCache() {
                 if (!this.db) await this.init();
-                
+
                 return new Promise((resolve) => {
                     const transaction = this.db.transaction([this.allDataStoreName, this.metaStoreName], 'readwrite');
                     const allDataStore = transaction.objectStore(this.allDataStoreName);
                     const metaStore = transaction.objectStore(this.metaStoreName);
-                    
+
                     allDataStore.clear();
                     metaStore.delete('allDataMeta');
-                    
+
                     transaction.oncomplete = () => {
                         console.log('🧹 本地缓存已清空');
                         resolve();
                     };
-                    
+
                     transaction.onerror = () => {
                         console.error('❌ 清空本地缓存失败:', transaction.error);
                         resolve();
                     };
+                });
+            }
+
+            // ==================== 增量更新方法（WebSocket 实时同步） ====================
+
+            // 增量更新单条数据（新增或更新）
+            async updateRecord(record) {
+                if (!this.db) await this.init();
+
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction([this.allDataStoreName, this.metaStoreName], 'readwrite');
+                    const allDataStore = transaction.objectStore(this.allDataStoreName);
+                    const metaStore = transaction.objectStore(this.metaStoreName);
+
+                    // 添加必要字段
+                    if (!record.timestamp) {
+                        record.timestamp = new Date(record.start_time).getTime();
+                    }
+
+                    // 使用 put 方法：存在则更新，不存在则插入
+                    const putRequest = allDataStore.put(record);
+
+                    putRequest.onsuccess = () => {
+                        // 更新元数据的最后同步时间
+                        const metaRequest = metaStore.get('allDataMeta');
+                        metaRequest.onsuccess = () => {
+                            const meta = metaRequest.result || {
+                                key: 'allDataMeta',
+                                totalCount: 0,
+                                lastUpdated: Date.now(),
+                                lastSyncTime: Date.now()
+                            };
+
+                            meta.lastUpdated = Date.now();
+                            meta.lastSyncTime = Date.now();
+                            metaStore.put(meta);
+                        };
+
+                        console.log(`✅ 增量更新记录 ID: ${record.id}`);
+                        resolve(record);
+                    };
+
+                    putRequest.onerror = () => {
+                        console.error('❌ 增量更新失败:', putRequest.error);
+                        reject(putRequest.error);
+                    };
+                });
+            }
+
+            // 批量增量更新（用于断线补同步）
+            async batchUpdateRecords(records) {
+                if (!this.db) await this.init();
+                if (!records || records.length === 0) return 0;
+
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction([this.allDataStoreName, this.metaStoreName], 'readwrite');
+                    const allDataStore = transaction.objectStore(this.allDataStoreName);
+                    const metaStore = transaction.objectStore(this.metaStoreName);
+
+                    let successCount = 0;
+
+                    // 批量更新
+                    records.forEach(record => {
+                        if (!record.timestamp) {
+                            record.timestamp = new Date(record.start_time).getTime();
+                        }
+
+                        const putRequest = allDataStore.put(record);
+                        putRequest.onsuccess = () => successCount++;
+                    });
+
+                    transaction.oncomplete = () => {
+                        // 更新元数据
+                        const metaTransaction = this.db.transaction([this.metaStoreName], 'readwrite');
+                        const ms = metaTransaction.objectStore(this.metaStoreName);
+                        const metaRequest = ms.get('allDataMeta');
+
+                        metaRequest.onsuccess = () => {
+                            const meta = metaRequest.result || {
+                                key: 'allDataMeta',
+                                totalCount: 0,
+                                lastUpdated: Date.now(),
+                                lastSyncTime: Date.now()
+                            };
+
+                            meta.lastUpdated = Date.now();
+                            meta.lastSyncTime = Date.now();
+                            ms.put(meta);
+                        };
+
+                        console.log(`✅ 批量增量更新完成: ${successCount}/${records.length} 条记录`);
+                        resolve(successCount);
+                    };
+
+                    transaction.onerror = () => {
+                        console.error('❌ 批量增量更新失败:', transaction.error);
+                        reject(transaction.error);
+                    };
+                });
+            }
+
+            // 删除单条数据
+            async deleteRecord(recordId) {
+                if (!this.db) await this.init();
+
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction([this.allDataStoreName, this.metaStoreName], 'readwrite');
+                    const allDataStore = transaction.objectStore(this.allDataStoreName);
+                    const metaStore = transaction.objectStore(this.metaStoreName);
+
+                    const deleteRequest = allDataStore.delete(recordId);
+
+                    deleteRequest.onsuccess = () => {
+                        // 更新元数据
+                        const metaRequest = metaStore.get('allDataMeta');
+                        metaRequest.onsuccess = () => {
+                            const meta = metaRequest.result;
+                            if (meta) {
+                                meta.lastUpdated = Date.now();
+                                meta.lastSyncTime = Date.now();
+                                metaStore.put(meta);
+                            }
+                        };
+
+                        console.log(`✅ 删除记录 ID: ${recordId}`);
+                        resolve(recordId);
+                    };
+
+                    deleteRequest.onerror = () => {
+                        console.error('❌ 删除记录失败:', deleteRequest.error);
+                        reject(deleteRequest.error);
+                    };
+                });
+            }
+
+            // 获取最后同步时间
+            async getLastSyncTime() {
+                if (!this.db) await this.init();
+
+                return new Promise((resolve) => {
+                    const transaction = this.db.transaction([this.metaStoreName], 'readonly');
+                    const store = transaction.objectStore(this.metaStoreName);
+                    const request = store.get('allDataMeta');
+
+                    request.onsuccess = () => {
+                        const meta = request.result;
+                        resolve(meta?.lastSyncTime || 0);
+                    };
+
+                    request.onerror = () => resolve(0);
                 });
             }
         }
@@ -1139,9 +1289,318 @@
             }
         }
 
+        // ==================== WebSocket 实时同步管理器 ====================
+
+        class WebSocketSyncManager {
+            constructor(cacheManager) {
+                this.cacheManager = cacheManager;
+                this.ws = null;
+                this.wsUrl = this.getWebSocketUrl();
+                this.reconnectInterval = 5000; // 5秒重连间隔
+                this.reconnectTimer = null;
+                this.isConnected = false;
+                this.isReconnecting = false;
+                this.heartbeatInterval = null;
+                this.missedHeartbeats = 0;
+                this.maxMissedHeartbeats = 3;
+
+                // 事件回调
+                this.onSyncUpdate = null; // 收到数据更新时的回调
+                this.onConnectionChange = null; // 连接状态变化回调
+            }
+
+            // 获取 WebSocket URL（根据环境自动配置）
+            getWebSocketUrl() {
+                // 本地开发环境
+                if (CONFIG.isDevelopment) {
+                    return 'ws://localhost:3000/ws';
+                }
+
+                // GitHub Pages 环境 - 使用阿里云函数计算的 WebSocket 地址
+                // 注意：这里需要后端提供 WebSocket 端点
+                // 示例：wss://ws-sync-xxxxx.cn-hangzhou.fcapp.run
+                if (CONFIG.isGitHubPages && CONFIG.API_ENDPOINTS.websocket) {
+                    return CONFIG.API_ENDPOINTS.websocket;
+                }
+
+                // 默认值（需要配置）
+                return null;
+            }
+
+            // 启动 WebSocket 连接
+            connect() {
+                if (!this.wsUrl) {
+                    console.warn('⚠️ WebSocket URL 未配置，跳过实时同步');
+                    return;
+                }
+
+                if (this.ws && (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)) {
+                    console.log('🔗 WebSocket 已连接，无需重复连接');
+                    return;
+                }
+
+                try {
+                    console.log(`🔗 正在连接 WebSocket: ${this.wsUrl}`);
+                    this.ws = new WebSocket(this.wsUrl);
+
+                    this.ws.onopen = () => this.handleOpen();
+                    this.ws.onmessage = (event) => this.handleMessage(event);
+                    this.ws.onclose = (event) => this.handleClose(event);
+                    this.ws.onerror = (error) => this.handleError(error);
+
+                } catch (error) {
+                    console.error('❌ WebSocket 连接失败:', error);
+                    this.scheduleReconnect();
+                }
+            }
+
+            // 连接成功处理
+            async handleOpen() {
+                console.log('✅ WebSocket 连接成功');
+                this.isConnected = true;
+                this.isReconnecting = false;
+                this.missedHeartbeats = 0;
+
+                // 通知连接状态变化
+                if (this.onConnectionChange) {
+                    this.onConnectionChange(true);
+                }
+
+                // 启动心跳检测
+                this.startHeartbeat();
+
+                // 执行断线补同步
+                await this.performCatchupSync();
+            }
+
+            // 接收消息处理
+            async handleMessage(event) {
+                try {
+                    const message = JSON.parse(event.data);
+                    console.log('📨 收到 WebSocket 消息:', message);
+
+                    switch (message.type) {
+                        case 'heartbeat':
+                            // 心跳响应
+                            this.missedHeartbeats = 0;
+                            break;
+
+                        case 'data_change':
+                            // 数据变更通知
+                            await this.handleDataChange(message.data);
+                            break;
+
+                        case 'batch_update':
+                            // 批量更新通知
+                            await this.handleBatchUpdate(message.data);
+                            break;
+
+                        default:
+                            console.warn('⚠️ 未知消息类型:', message.type);
+                    }
+                } catch (error) {
+                    console.error('❌ 处理 WebSocket 消息失败:', error);
+                }
+            }
+
+            // 处理数据变更
+            async handleDataChange(changeData) {
+                const { operation, record } = changeData;
+
+                try {
+                    switch (operation) {
+                        case 'insert':
+                        case 'update':
+                            await this.cacheManager.updateRecord(record);
+                            console.log(`🔄 实时同步：${operation === 'insert' ? '新增' : '更新'} 记录 ID: ${record.id}`);
+                            break;
+
+                        case 'delete':
+                            await this.cacheManager.deleteRecord(record.id);
+                            console.log(`🔄 实时同步：删除记录 ID: ${record.id}`);
+                            break;
+
+                        default:
+                            console.warn('⚠️ 未知操作类型:', operation);
+                    }
+
+                    // 触发更新回调
+                    if (this.onSyncUpdate) {
+                        this.onSyncUpdate({ operation, record });
+                    }
+
+                } catch (error) {
+                    console.error('❌ 处理数据变更失败:', error);
+                }
+            }
+
+            // 处理批量更新
+            async handleBatchUpdate(batchData) {
+                const { records } = batchData;
+
+                try {
+                    const count = await this.cacheManager.batchUpdateRecords(records);
+                    console.log(`🔄 批量实时同步：更新 ${count} 条记录`);
+
+                    // 触发更新回调
+                    if (this.onSyncUpdate) {
+                        this.onSyncUpdate({ operation: 'batch_update', count });
+                    }
+
+                } catch (error) {
+                    console.error('❌ 批量更新失败:', error);
+                }
+            }
+
+            // 连接关闭处理
+            handleClose(event) {
+                console.log(`🔌 WebSocket 连接关闭 (code: ${event.code}, reason: ${event.reason})`);
+                this.isConnected = false;
+                this.stopHeartbeat();
+
+                // 通知连接状态变化
+                if (this.onConnectionChange) {
+                    this.onConnectionChange(false);
+                }
+
+                // 非正常关闭时自动重连
+                if (!event.wasClean && !this.isReconnecting) {
+                    this.scheduleReconnect();
+                }
+            }
+
+            // 错误处理
+            handleError(error) {
+                console.error('❌ WebSocket 错误:', error);
+            }
+
+            // 安排重连
+            scheduleReconnect() {
+                if (this.isReconnecting) return;
+
+                this.isReconnecting = true;
+                console.log(`🔄 将在 ${this.reconnectInterval / 1000} 秒后重连...`);
+
+                this.reconnectTimer = setTimeout(() => {
+                    console.log('🔄 尝试重新连接 WebSocket...');
+                    this.connect();
+                }, this.reconnectInterval);
+            }
+
+            // 启动心跳检测
+            startHeartbeat() {
+                this.stopHeartbeat();
+
+                this.heartbeatInterval = setInterval(() => {
+                    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                        this.missedHeartbeats++;
+
+                        if (this.missedHeartbeats >= this.maxMissedHeartbeats) {
+                            console.warn('⚠️ 心跳超时，关闭连接并重连');
+                            this.ws.close();
+                            return;
+                        }
+
+                        // 发送心跳
+                        this.send({ type: 'heartbeat', timestamp: Date.now() });
+                    }
+                }, 30000); // 每30秒发送心跳
+            }
+
+            // 停止心跳检测
+            stopHeartbeat() {
+                if (this.heartbeatInterval) {
+                    clearInterval(this.heartbeatInterval);
+                    this.heartbeatInterval = null;
+                }
+            }
+
+            // 断线补同步（获取断线期间的变更）
+            async performCatchupSync() {
+                try {
+                    const lastSyncTime = await this.cacheManager.getLastSyncTime();
+                    console.log(`🔄 开始断线补同步，最后同步时间: ${new Date(lastSyncTime).toLocaleString()}`);
+
+                    // 调用后端补同步 API
+                    const catchupUrl = CONFIG.isGitHubPages
+                        ? CONFIG.API_ENDPOINTS.catchup || `${CONFIG.API_ENDPOINTS.records}/changes`
+                        : `${CONFIG.API_BASE_URL}/satellite/changes`;
+
+                    const response = await fetch(`${catchupUrl}?since=${lastSyncTime}`, {
+                        method: 'GET',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        }
+                    });
+
+                    if (!response.ok) {
+                        console.warn('⚠️ 补同步请求失败');
+                        return;
+                    }
+
+                    const result = await response.json();
+                    if (result.success && result.data && result.data.changes) {
+                        const changes = result.data.changes;
+
+                        if (changes.length > 0) {
+                            console.log(`📦 收到 ${changes.length} 条补同步变更`);
+
+                            // 批量更新
+                            await this.cacheManager.batchUpdateRecords(changes);
+
+                            // 触发更新回调
+                            if (this.onSyncUpdate) {
+                                this.onSyncUpdate({ operation: 'catchup_sync', count: changes.length });
+                            }
+                        } else {
+                            console.log('✅ 无需补同步，数据已是最新');
+                        }
+                    }
+
+                } catch (error) {
+                    console.error('❌ 断线补同步失败:', error);
+                }
+            }
+
+            // 发送消息
+            send(data) {
+                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                    this.ws.send(JSON.stringify(data));
+                } else {
+                    console.warn('⚠️ WebSocket 未连接，无法发送消息');
+                }
+            }
+
+            // 断开连接
+            disconnect() {
+                console.log('🔌 主动断开 WebSocket 连接');
+                this.isReconnecting = false;
+
+                if (this.reconnectTimer) {
+                    clearTimeout(this.reconnectTimer);
+                    this.reconnectTimer = null;
+                }
+
+                this.stopHeartbeat();
+
+                if (this.ws) {
+                    this.ws.close();
+                    this.ws = null;
+                }
+
+                this.isConnected = false;
+
+                // 通知连接状态变化
+                if (this.onConnectionChange) {
+                    this.onConnectionChange(false);
+                }
+            }
+        }
+
         // 全局实例
         const cacheManager = new CacheManager();
         const dataPreloader = new DataPreloader();
+        const wsSyncManager = new WebSocketSyncManager(cacheManager);
 
         // ==================== 原有的API函数（改为从缓存获取）====================
         
@@ -3221,6 +3680,70 @@
                 window.app = new SatelliteApp();
 
                 console.log('✅ 应用初始化完成，数据已预载到本地缓存');
+
+                // ==================== WebSocket 实时同步初始化 ====================
+
+                // 启动 WebSocket 实时同步
+                console.log('🔌 启动 WebSocket 实时同步...');
+                wsSyncManager.connect();
+
+                // 监听实时同步更新
+                wsSyncManager.onSyncUpdate = (update) => {
+                    const { operation, record } = update;
+                    console.log(`🔄 实时同步更新: ${operation}`, record);
+
+                    // 如果当前正在显示数据，刷新界面
+                    if (window.app && window.app.hasSavedStats) {
+                        console.log('📊 检测到数据变更，刷新统计结果...');
+                        // 重新生成统计（会自动从 IndexedDB 读取最新数据）
+                        window.app.generateStatistics();
+                    }
+                };
+
+                // 监听连接状态变化
+                wsSyncManager.onConnectionChange = (connected) => {
+                    const statusText = connected ? '已连接' : '未连接';
+                    console.log(`🔌 WebSocket 状态: ${statusText}`);
+
+                    // 可选：在页面上显示连接状态指示器
+                    // 例如：在页面右上角显示一个绿点/红点
+                    updateConnectionIndicator(connected);
+                };
+
+                // 添加连接状态指示器到页面
+                function updateConnectionIndicator(connected) {
+                    let indicator = document.getElementById('ws-connection-indicator');
+
+                    // 如果指示器不存在，创建一个
+                    if (!indicator) {
+                        indicator = document.createElement('div');
+                        indicator.id = 'ws-connection-indicator';
+                        indicator.style.cssText = `
+                            position: fixed;
+                            top: 20px;
+                            right: 20px;
+                            width: 12px;
+                            height: 12px;
+                            border-radius: 50%;
+                            z-index: 9999;
+                            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+                            transition: all 0.3s ease;
+                        `;
+                        indicator.title = 'WebSocket 连接状态';
+                        document.body.appendChild(indicator);
+                    }
+
+                    // 更新指示器颜色
+                    if (connected) {
+                        indicator.style.backgroundColor = '#10b981'; // 绿色
+                        indicator.title = 'WebSocket 已连接 - 实时同步开启';
+                    } else {
+                        indicator.style.backgroundColor = '#ef4444'; // 红色
+                        indicator.title = 'WebSocket 未连接 - 正在重连...';
+                    }
+                }
+
+                console.log('✅ WebSocket 实时同步已配置');
             } catch (error) {
                 console.error('❌ 应用初始化失败:', error);
                 // 即使预载失败也要初始化应用
