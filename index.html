@@ -178,7 +178,19 @@
 
         <!-- 图表展示区 -->
         <section class="bg-white rounded-lg p-6 card-shadow mb-8">
-            <h2 class="text-lg font-semibold mb-4">计划ID计数与任务状态趋势图</h2>
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-lg font-semibold">计划ID计数与任务状态趋势图</h2>
+                <div class="flex items-center gap-2">
+                    <button class="chart-download-btn px-2 py-1 bg-primary/10 text-primary rounded hover:bg-primary/20 transition text-sm"
+                            data-chart="mainChart" data-type="image" title="下载图表图片">
+                        <i class="fa fa-download mr-1"></i>下载图表
+                    </button>
+                    <button class="chart-download-btn px-2 py-1 bg-primary/10 text-primary rounded hover:bg-primary/20 transition text-sm"
+                            data-chart="mainChart" data-type="csv" title="下载图表数据">
+                        <i class="fa fa-table mr-1"></i>下载数据
+                    </button>
+                </div>
+            </div>
 
             <div class="h-96 border border-gray-200 rounded-lg p-4 relative">
                 <!-- 图表容器 -->
@@ -1747,6 +1759,8 @@
                             chart = this.satelliteChart;
                         } else if (chartId === 'customerChart') {
                             chart = this.customerChart;
+                        } else if (chartId === 'mainChart') {
+                            chart = this.chart;
                         }
 
                         if (!chart) {
