@@ -1729,6 +1729,11 @@
                 if (this.closeConfigModal) this.closeConfigModal.addEventListener('click', () => this.closeGroupingConfig());
                 if (this.saveGroupingConfig) this.saveGroupingConfig.addEventListener('click', () => this.saveGroupingConfiguration());
                 if (this.showDataLabels) this.showDataLabels.addEventListener('change', () => this.toggleDataLabels());
+
+                // 添加页面状态自动保存监听器
+                if (this.startDate) this.startDate.addEventListener('change', () => this.savePageState());
+                if (this.endDate) this.endDate.addEventListener('change', () => this.savePageState());
+                if (this.groupBy) this.groupBy.addEventListener('change', () => this.savePageState());
                 if (this.dayStart) {
                     this.dayStart.addEventListener('change', (e) => {
                         this.dayStartDisplay.textContent = e.target.value;
@@ -1803,10 +1808,10 @@
             async init() {
                 try {
                     console.log('🔧 SatelliteApp 初始化：从本地缓存加载数据...');
-                    
+
                     // 从本地缓存获取所有数据
                     const cachedData = await cacheManager.queryAllData();
-                    
+
                     if (!cachedData || cachedData.length === 0) {
                         console.warn('⚠️ 本地缓存为空，显示无数据提示');
                         this.noDataAlert.classList.remove('hidden');
@@ -1830,9 +1835,15 @@
 
                         console.log(`📊 数据时间范围: ${new Date(minTimestamp).toLocaleString()} 至 ${new Date(maxTimestamp).toLocaleString()}`);
                     }
-                    
+
                     this.setDefaultDates();
                     this.updateCacheStatus();
+
+                    // 恢复页面状态（如果有保存的状态）
+                    const restored = this.restorePageState();
+                    if (restored) {
+                        console.log('✅ 页面状态已从sessionStorage恢复');
+                    }
 
                 } catch (error) {
                     console.error('❌ 应用初始化失败:', error);
@@ -2594,7 +2605,7 @@
                         console.log('🔧 加载保存的配置:', cacheData.cycleConfig);
                         this.cycleEngine.updateConfig(cacheData.cycleConfig);
                         console.log('✅ 配置加载完成:', this.cycleEngine.config);
-                        
+
                         // 延迟更新表单显示，确保DOM元素已加载
                         setTimeout(() => {
                             if (this.updateGroupingConfigForm) {
@@ -2604,6 +2615,72 @@
                     }
                 } catch (error) {
                     console.warn('加载配置失败:', error);
+                }
+            }
+
+            // 保存页面状态到sessionStorage（会话级别，关闭标签页清空）
+            savePageState() {
+                try {
+                    const pageState = {
+                        startDate: this.startDate?.value || '',
+                        endDate: this.endDate?.value || '',
+                        groupBy: this.groupBy?.value || 'day',
+                        showDataLabels: this.showDataLabels?.checked || false,
+                        timestamp: Date.now()
+                    };
+
+                    sessionStorage.setItem('satellitePageState', JSON.stringify(pageState));
+                    console.log('💾 页面状态已保存:', pageState);
+                } catch (error) {
+                    console.warn('保存页面状态失败:', error);
+                }
+            }
+
+            // 恢复页面状态从sessionStorage
+            restorePageState() {
+                try {
+                    const savedState = sessionStorage.getItem('satellitePageState');
+                    if (!savedState) {
+                        console.log('📋 无保存的页面状态');
+                        return false;
+                    }
+
+                    const pageState = JSON.parse(savedState);
+                    console.log('🔄 恢复页面状态:', pageState);
+
+                    // 恢复日期范围
+                    if (pageState.startDate && this.startDate) {
+                        this.startDate.value = pageState.startDate;
+                    }
+                    if (pageState.endDate && this.endDate) {
+                        this.endDate.value = pageState.endDate;
+                    }
+
+                    // 恢复分组方式
+                    if (pageState.groupBy && this.groupBy) {
+                        this.groupBy.value = pageState.groupBy;
+                    }
+
+                    // 恢复数据标签显示状态
+                    if (this.showDataLabels) {
+                        this.showDataLabels.checked = pageState.showDataLabels || false;
+                    }
+
+                    console.log('✅ 页面状态恢复完成');
+                    return true;
+                } catch (error) {
+                    console.warn('恢复页面状态失败:', error);
+                    return false;
+                }
+            }
+
+            // 清空页面状态
+            clearPageState() {
+                try {
+                    sessionStorage.removeItem('satellitePageState');
+                    console.log('🗑️ 页面状态已清空');
+                } catch (error) {
+                    console.warn('清空页面状态失败:', error);
                 }
             }
 
