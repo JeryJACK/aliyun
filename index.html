@@ -2576,7 +2576,10 @@
             async generateStatistics(options = {}) {
                 const { silent = false } = options; // 静默模式：不显示加载状态，用于实时同步
 
+                console.log(`🔍 [DEBUG] generateStatistics 被调用, silent=${silent}, this.data长度=${this.data ? this.data.length : 'null'}`);
+
                 if (!this.data) {
+                    console.error('❌ [DEBUG] this.data 为空，无法生成统计');
                     showError('当前没有数据，请先导入数据后重试');
                     return;
                 }
@@ -2601,7 +2604,9 @@
 
                     console.log(`📈 生成统计组数: ${stats.length}`);
 
+                    console.log(`🔍 [DEBUG] 准备更新图表, stats数量=${stats.length}, groupType=${groupType}`);
                     this.updateChart(stats, groupType);
+                    console.log(`🔍 [DEBUG] updateChart完成`);
                     this.updateStatCards(stats);
                     this.updateDetailTable(stats);
 
@@ -2698,11 +2703,15 @@
             }
 
             updateChart(stats, groupType) {
+                console.log(`🔍 [DEBUG] updateChart 开始, stats=${stats ? stats.length : 'null'}, 当前chart对象=${this.chart ? '存在' : '不存在'}`);
+
                 if (this.chart) {
+                    console.log(`🔍 [DEBUG] 销毁旧图表`);
                     this.chart.destroy();
                 }
 
                 if (!stats || stats.length === 0) {
+                    console.log(`🔍 [DEBUG] stats为空，显示空状态`);
                     this.chartEmptyState.classList.remove('hidden');
                     return;
                 }
