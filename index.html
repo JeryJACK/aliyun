@@ -2435,10 +2435,15 @@
                     
                     if (result.success) {
                         showSuccess(`缓存刷新成功！更新了 ${result.totalCount} 条数据`);
+
+                        // 清除sessionStorage中的旧统计结果，确保数据一致性
+                        sessionStorage.removeItem('satelliteStatistics');
+                        console.log('🗑️ 已清除缓存的统计结果，确保数据一致性');
+
                         // 重新加载数据到应用
                         await this.init();
                     }
-                    
+
                     this.updateCacheStatus();
                     
                 } catch (error) {
@@ -3781,6 +3786,11 @@
                         // 如果增量更新成功，静默刷新统计
                         if (updated) {
                             console.log('📊 增量更新成功，静默刷新统计结果...');
+
+                            // 清除sessionStorage中的旧统计结果，确保下次刷新页面时重新计算
+                            sessionStorage.removeItem('satelliteStatistics');
+                            console.log('🗑️ 已清除缓存的统计结果，确保数据一致性');
+
                             window.app.generateStatistics({ silent: true });
                         } else {
                             // 增量更新失败时，降级到全量加载
@@ -3789,6 +3799,11 @@
                             if (cachedData && cachedData.length > 0) {
                                 window.app.data = cachedData;
                                 console.log(`✅ 已重新加载 ${cachedData.length} 条数据到内存`);
+
+                                // 清除sessionStorage中的旧统计结果
+                                sessionStorage.removeItem('satelliteStatistics');
+                                console.log('🗑️ 已清除缓存的统计结果，确保数据一致性');
+
                                 window.app.generateStatistics({ silent: true });
                             }
                         }
