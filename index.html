@@ -11,7 +11,7 @@
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
     
     <!-- 配置文件 -->
-    <script src="./public/js/config.js?v=3"></script>
+    <script src="./public/js/config.js?v=4"></script>
 
     <!-- Tailwind 配置 -->
     <script>
@@ -1316,14 +1316,18 @@
                     return 'ws://localhost:3000/ws';
                 }
 
-                // GitHub Pages 环境 - 使用阿里云函数计算的 WebSocket 地址
-                // 注意：这里需要后端提供 WebSocket 端点
-                // 示例：wss://ws-sync-xxxxx.cn-hangzhou.fcapp.run
+                // 使用 config.js 中的 getWebSocketUrl 函数
+                // 该函数会根据页面协议自动处理 ws/wss 转换
+                if (typeof window.getWebSocketUrl === 'function') {
+                    return window.getWebSocketUrl();
+                }
+
+                // GitHub Pages 环境 - 使用配置的 WebSocket 地址
                 if (CONFIG.isGitHubPages && CONFIG.API_ENDPOINTS.websocket) {
                     return CONFIG.API_ENDPOINTS.websocket;
                 }
 
-                // 默认值（需要配置）
+                // 默认值（禁用 WebSocket）
                 return null;
             }
 
