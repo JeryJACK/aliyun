@@ -16,8 +16,8 @@ const CONFIG = {
         clear: 'https://stats-paixwbwiuk.cn-hangzhou.fcapp.run/clear',
 
         // WebSocket 实时同步配置
-        websocket: 'ws://120.26.182.38:3000/ws',  // WebSocket 服务器地址
-        catchup: 'http://120.26.182.38:3000/api/satellite/changes'  // 断线补同步 API
+        websocket: 'wss://ws.nxjyx.com.cn/ws',  // WebSocket SSL 服务器地址
+        catchup: 'https://ws.nxjyx.com.cn/api/satellite/changes'  // 断线补同步 API
     },
     
     // 请求配置
@@ -268,9 +268,39 @@ const ErrorHandler = {
     }
 };
 
+// 获取 WebSocket URL（根据页面协议自动选择 ws 或 wss）
+function getWebSocketUrl() {
+    let wsUrl = CONFIG.API_ENDPOINTS.websocket;
+
+    // 本地开发环境
+    if (CONFIG.isDevelopment) {
+        // 如果是 HTTPS 页面，禁用 WebSocket（因为本地开发服务器通常不支持 WSS）
+        if (window.location.protocol === 'https:') {
+            console.warn('⚠️ HTTPS 页面无法连接到本地 WebSocket (ws://localhost)');
+            console.warn('💡 WebSocket 实时同步已禁用');
+            return null;
+        }
+        // HTTP 页面使用 ws://
+        return 'ws://localhost:3000/ws';
+    }
+
+    // 如果页面是 HTTPS，但 WebSocket 服务器不支持 WSS，返回 null 禁用 WebSocket
+    // 注意：HTTPS 页面无法连接到 WS（非安全）协议，只能连接 WSS（安全）协议
+    if (window.location.protocol === 'https:' && wsUrl && wsUrl.startsWith('ws://')) {
+        console.warn('⚠️ HTTPS 页面无法连接到非安全的 WebSocket (ws://)');
+        console.warn('💡 WebSocket 实时同步已禁用，将使用轮询模式');
+        return null; // 返回 null 禁用 WebSocket
+    }
+
+    // 生产环境使用配置的 WSS URL
+    console.log('🔐 使用安全 WebSocket 连接 (WSS):', wsUrl);
+    return wsUrl;
+}
+
 // 导出配置和API
 window.CONFIG = CONFIG;
 window.getApiUrl = getApiUrl;
+window.getWebSocketUrl = getWebSocketUrl;
 window.API = API;
 window.Auth = Auth;
 window.ErrorHandler = ErrorHandler;
