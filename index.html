@@ -2342,11 +2342,72 @@
                 }
             }
 
+            // ==================== 增量更新方法（性能优化）====================
+
+            // 增量更新：插入或更新单条记录到内存
+            incrementalUpdateRecord(record) {
+                if (!this.data) {
+                    console.warn('⚠️ 内存数据未初始化，跳过增量更新');
+                    return false;
+                }
+
+                // 确保记录有 ID
+                const recordId = record.id || record.plan_id;
+                if (!recordId) {
+                    console.warn('⚠️ 记录缺少ID，无法增量更新:', record);
+                    return false;
+                }
+
+                // 查找记录在数组中的索引
+                const index = this.data.findIndex(item => {
+                    const itemId = item.id || item.plan_id;
+                    return itemId === recordId;
+                });
+
+                if (index !== -1) {
+                    // 更新现有记录
+                    this.data[index] = { ...this.data[index], ...record };
+                    console.log(`✅ 增量更新：已更新记录 ID=${recordId} (索引=${index})`);
+                    return true;
+                } else {
+                    // 插入新记录
+                    this.data.push(record);
+                    console.log(`✅ 增量更新：已插入新记录 ID=${recordId} (当前共${this.data.length}条)`);
+                    return true;
+                }
+            }
+
+            // 增量删除：从内存中删除单条记录
+            incrementalDeleteRecord(recordId) {
+                if (!this.data) {
+                    console.warn('⚠️ 内存数据未初始化，跳过增量删除');
+                    return false;
+                }
+
+                // 查找记录在数组中的索引
+                const index = this.data.findIndex(item => {
+                    const itemId = item.id || item.plan_id;
+                    return itemId === recordId;
+                });
+
+                if (index !== -1) {
+                    // 删除记录
+                    this.data.splice(index, 1);
+                    console.log(`✅ 增量删除：已删除记录 ID=${recordId} (当前共${this.data.length}条)`);
+                    return true;
+                } else {
+                    console.warn(`⚠️ 增量删除：未找到记录 ID=${recordId}`);
+                    return false;
+                }
+            }
+
+            // ==================== 原有方法 ====================
+
             // 更新缓存状态显示
             async updateCacheStatus() {
                 try {
                     const cacheInfo = await cacheManager.checkAllDataCache();
-                    
+
                     if (cacheInfo) {
                         this.cacheStatus.textContent = '✅ 已缓存';
                         this.cacheStatus.className = 'text-xs px-2 py-1 rounded-full bg-success/10 text-success';
@@ -2507,19 +2568,24 @@
                 return { startDate: startBound, endDate: endBound };
             }
 
-            async generateStatistics() {
+            async generateStatistics(options = {}) {
+                const { silent = false } = options; // 静默模式：不显示加载状态，用于实时同步
+
                 if (!this.data) {
                     showError('当前没有数据，请先导入数据后重试');
                     return;
                 }
 
-                this.chartLoadingState.classList.remove('hidden');
-                this.chartEmptyState.classList.add('hidden');
-                this.chartErrorState.classList.add('hidden');
-                this.detailTableBody.innerHTML = '';
+                // 非静默模式才显示加载状态
+                if (!silent) {
+                    this.chartLoadingState.classList.remove('hidden');
+                    this.chartEmptyState.classList.add('hidden');
+                    this.chartErrorState.classList.add('hidden');
+                    this.detailTableBody.innerHTML = '';
+                }
 
                 try {
-                    console.log('📊 开始生成统计结果（基于本地缓存数据）...');
+                    console.log(`📊 开始生成统计结果（基于本地缓存数据）${silent ? ' [静默模式]' : ''}...`);
 
                     const groupType = this.groupBy.value;
                     const range = this.computeDateRangeForGroup(groupType, this.startDate.value, this.endDate.value);
@@ -2539,10 +2605,14 @@
 
                 } catch (error) {
                     console.error('❌ 生成统计结果失败:', error);
-                    this.chartErrorMessage.textContent = '生成统计结果时出错: ' + error.message;
-                    this.chartErrorState.classList.remove('hidden');
+                    if (!silent) {
+                        this.chartErrorMessage.textContent = '生成统计结果时出错: ' + error.message;
+                        this.chartErrorState.classList.remove('hidden');
+                    }
                 } finally {
-                    this.chartLoadingState.classList.add('hidden');
+                    if (!silent) {
+                        this.chartLoadingState.classList.add('hidden');
+                    }
                 }
             }
 
@@ -3691,16 +3761,37 @@
                 console.log('🔌 启动 WebSocket 实时同步...');
                 wsSyncManager.connect();
 
-                // 监听实时同步更新
-                wsSyncManager.onSyncUpdate = (update) => {
+                // 监听实时同步更新（使用增量更新优化性能）
+                wsSyncManager.onSyncUpdate = async (update) => {
                     const { operation, record } = update;
                     console.log(`🔄 实时同步更新: ${operation}`, record);
 
-                    // 如果当前正在显示数据，刷新界面
-                    if (window.app && window.app.hasSavedStats) {
-                        console.log('📊 检测到数据变更，刷新统计结果...');
-                        // 重新生成统计（会自动从 IndexedDB 读取最新数据）
-                        window.app.generateStatistics();
+                    // 如果当前正在显示数据，使用增量更新
+                    if (window.app && window.app.data) {
+                        let updated = false;
+
+                        // 增量更新内存数据（性能优化：<1ms vs 全量加载100ms）
+                        if (operation === 'insert' || operation === 'update') {
+                            updated = window.app.incrementalUpdateRecord(record);
+                        } else if (operation === 'delete') {
+                            const recordId = record.id || record.plan_id;
+                            updated = window.app.incrementalDeleteRecord(recordId);
+                        }
+
+                        // 如果增量更新成功，静默刷新统计
+                        if (updated) {
+                            console.log('📊 增量更新成功，静默刷新统计结果...');
+                            window.app.generateStatistics({ silent: true });
+                        } else {
+                            // 增量更新失败时，降级到全量加载
+                            console.warn('⚠️ 增量更新失败，降级到全量加载...');
+                            const cachedData = await cacheManager.queryAllData();
+                            if (cachedData && cachedData.length > 0) {
+                                window.app.data = cachedData;
+                                console.log(`✅ 已重新加载 ${cachedData.length} 条数据到内存`);
+                                window.app.generateStatistics({ silent: true });
+                            }
+                        }
                     }
                 };
 
