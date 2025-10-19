@@ -2728,13 +2728,20 @@
                     const successRates = stats.map(stat => parseFloat(stat.successRate.toFixed(3)));
 
                     console.log(`🔍 [DEBUG] 图表数据准备完成: labels=${labels.length}, planCounts=${planCounts.length}`);
+                    console.log(`🔍 [DEBUG] 数据样例: labels[0]=${labels[0]}, planCounts[0]=${planCounts[0]}, failureCounts[0]=${failureCounts[0]}`);
 
                     // 获取是否显示数据标签的设置
                     const showLabels = this.showDataLabels.checked;
                     console.log(`🔍 [DEBUG] 数据标签显示设置: ${showLabels}`);
 
+                    // 手动清空 canvas，确保没有残留
                     const ctx = this.dataChart.getContext('2d');
                     console.log(`🔍 [DEBUG] Canvas context获取成功: ${ctx ? 'true' : 'false'}`);
+                    console.log(`🔍 [DEBUG] Canvas 尺寸: width=${this.dataChart.width}, height=${this.dataChart.height}`);
+
+                    // 清空 canvas
+                    ctx.clearRect(0, 0, this.dataChart.width, this.dataChart.height);
+                    console.log(`🔍 [DEBUG] Canvas 已手动清空`);
 
                     // 注册数据标签插件
                     if (typeof ChartDataLabels !== 'undefined') {
@@ -2887,7 +2894,26 @@
                     }
                 });
 
-                console.log(`✅ [DEBUG] 新图表创建成功!`);
+                console.log(`✅ [DEBUG] 新图表创建成功! chart 对象:`, this.chart);
+
+                // 强制触发图表更新和重绘
+                if (this.chart) {
+                    // 使用 requestAnimationFrame 确保在下一帧渲染
+                    requestAnimationFrame(() => {
+                        if (this.chart) {
+                            this.chart.update('none'); // 'none' 表示无动画更新
+                            console.log(`🔄 [DEBUG] 图表强制更新（无动画）`);
+
+                            // 再次使用动画更新，确保视觉刷新
+                            setTimeout(() => {
+                                if (this.chart) {
+                                    this.chart.update('active');
+                                    console.log(`🔄 [DEBUG] 图表强制更新（动画模式）`);
+                                }
+                            }, 50);
+                        }
+                    });
+                }
 
                 } catch (error) {
                     console.error(`❌ [ERROR] updateChart 发生错误:`, error);
