@@ -2705,33 +2705,47 @@
             updateChart(stats, groupType) {
                 console.log(`🔍 [DEBUG] updateChart 开始, stats=${stats ? stats.length : 'null'}, 当前chart对象=${this.chart ? '存在' : '不存在'}`);
 
-                if (this.chart) {
-                    console.log(`🔍 [DEBUG] 销毁旧图表`);
-                    this.chart.destroy();
-                }
+                try {
+                    if (this.chart) {
+                        console.log(`🔍 [DEBUG] 销毁旧图表`);
+                        this.chart.destroy();
+                        this.chart = null;
+                        console.log(`🔍 [DEBUG] 旧图表已销毁并清空引用`);
+                    }
 
-                if (!stats || stats.length === 0) {
-                    console.log(`🔍 [DEBUG] stats为空，显示空状态`);
-                    this.chartEmptyState.classList.remove('hidden');
-                    return;
-                }
+                    if (!stats || stats.length === 0) {
+                        console.log(`🔍 [DEBUG] stats为空，显示空状态`);
+                        this.chartEmptyState.classList.remove('hidden');
+                        return;
+                    }
 
-                this.chartEmptyState.classList.add('hidden');
+                    this.chartEmptyState.classList.add('hidden');
+                    console.log(`🔍 [DEBUG] 开始准备图表数据`);
 
-                const labels = stats.map(stat => stat.label);
-                const planCounts = stats.map(stat => stat.count);
-                const failureCounts = stats.map(stat => stat.failureCount);
-                const successRates = stats.map(stat => parseFloat(stat.successRate.toFixed(3)));
-                
-                // 获取是否显示数据标签的设置
-                const showLabels = this.showDataLabels.checked;
+                    const labels = stats.map(stat => stat.label);
+                    const planCounts = stats.map(stat => stat.count);
+                    const failureCounts = stats.map(stat => stat.failureCount);
+                    const successRates = stats.map(stat => parseFloat(stat.successRate.toFixed(3)));
 
-                const ctx = this.dataChart.getContext('2d');
+                    console.log(`🔍 [DEBUG] 图表数据准备完成: labels=${labels.length}, planCounts=${planCounts.length}`);
 
-                // 注册数据标签插件
-                Chart.register(ChartDataLabels);
+                    // 获取是否显示数据标签的设置
+                    const showLabels = this.showDataLabels.checked;
+                    console.log(`🔍 [DEBUG] 数据标签显示设置: ${showLabels}`);
 
-                this.chart = new Chart(ctx, {
+                    const ctx = this.dataChart.getContext('2d');
+                    console.log(`🔍 [DEBUG] Canvas context获取成功: ${ctx ? 'true' : 'false'}`);
+
+                    // 注册数据标签插件
+                    if (typeof ChartDataLabels !== 'undefined') {
+                        Chart.register(ChartDataLabels);
+                        console.log(`🔍 [DEBUG] ChartDataLabels插件已注册`);
+                    } else {
+                        console.warn(`⚠️ ChartDataLabels插件未加载`);
+                    }
+
+                    console.log(`🔍 [DEBUG] 准备创建新图表...`);
+                    this.chart = new Chart(ctx, {
                     type: 'line',
                     data: {
                         labels: labels,
@@ -2872,6 +2886,13 @@
                         }
                     }
                 });
+
+                console.log(`✅ [DEBUG] 新图表创建成功!`);
+
+                } catch (error) {
+                    console.error(`❌ [ERROR] updateChart 发生错误:`, error);
+                    console.error(`错误堆栈:`, error.stack);
+                }
             }
 
             toggleDataLabels() {
