@@ -10,6 +10,10 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
 
+    <!-- 配置文件 -->
+    <script src="./public/js/config.js?v=4"></script>
+    <script src="./public/js/shared-data-manager.js"></script>
+
     <!-- Tailwind 配置 -->
     <script>
         tailwind.config = {
@@ -1716,10 +1720,15 @@
                 // 预检查 sessionStorage，判断是否有保存的状态（加快恢复速度）
                 this.hasSavedState = !!sessionStorage.getItem('trendAnalysisPageState');
                 this.hasSavedFilters = !!sessionStorage.getItem('trendAnalysisFilters');
+                this.hasSavedCharts = !!sessionStorage.getItem('trendAnalysisCharts');
 
                 this.initMultiSelects();
 
                 this.data = null;
+                this.refreshChartsTimer = null; // 跨页面更新防抖定时器
+                this.autoApplyTimer = null; // 自动应用筛选防抖定时器
+                this.timeChangeTimer = null; // 时间改变防抖定时器
+                this.groupByChangeTimer = null; // 分组改变防抖定时器
                 this.filteredData = null;
                 this.rawData = null;
                 this.filterValues = {
@@ -1745,6 +1754,8 @@
                     (values) => {
                         this.updateSatelliteOptions();
                         this.updateChartFilterOptions();
+                        // 【新增】自动应用筛选
+                        this.autoApplyFilters();
                     }
                 );
 
@@ -1754,6 +1765,8 @@
                     (values) => {
                         this.updateSatelliteOptions();
                         this.updateChartFilterOptions();
+                        // 【新增】自动应用筛选
+                        this.autoApplyFilters();
                     }
                 );
 
@@ -1763,6 +1776,8 @@
                     (values) => {
                         this.updateStatusOptions();
                         this.updateChartFilterOptions();
+                        // 【新增】自动应用筛选
+                        this.autoApplyFilters();
                     }
                 );
 
@@ -1772,12 +1787,18 @@
                     (values) => {
                         this.updateTypeOptions();
                         this.updateChartFilterOptions();
+                        // 【新增】自动应用筛选
+                        this.autoApplyFilters();
                     }
                 );
 
                 this.typeSelect = new MultiSelectDropdown(
                     'typeDropdown', 'typeOptions', 'typeDisplay',
-                    'typeValue', 'typeTags', 'typeSearch', 'selectAllTypes'
+                    'typeValue', 'typeTags', 'typeSearch', 'selectAllTypes',
+                    (values) => {
+                        // 【新增】自动应用筛选
+                        this.autoApplyFilters();
+                    }
                 );
 
                 // 上三个图表专用筛选器
@@ -1831,6 +1852,52 @@
                 this.addDebugButtons();
                 this.bindDownloadButtons();
                 this.updateTimeDisplays();
+                this.setupBroadcastListener();
+            }
+
+            // 设置跨页面广播监听器
+            setupBroadcastListener() {
+                if (!window.sharedDataManager) {
+                    console.warn('⚠️ SharedDataManager 未初始化，跨页面同步不可用');
+                    return;
+                }
+
+                // 监听其他页面的数据更新
+                window.sharedDataManager.onDataUpdate = (operation, record) => {
+                    console.log(`📡 收到跨页面更新广播: ${operation}`, record);
+
+                    if (!this.data) {
+                        console.warn('⚠️ 本页面数据未加载，跳过更新');
+                        return;
+                    }
+
+                    // 执行增量更新
+                    let updated = false;
+                    if (operation === 'insert' || operation === 'update') {
+                        updated = this.incrementalUpdateRecord(record);
+                    } else if (operation === 'delete') {
+                        const recordId = record.id || record.plan_id;
+                        updated = this.incrementalDeleteRecord(recordId);
+                    }
+
+                    // 如果更新成功，刷新图表（防抖）
+                    if (updated) {
+                        if (this.refreshChartsTimer) {
+                            clearTimeout(this.refreshChartsTimer);
+                        }
+                        this.refreshChartsTimer = setTimeout(() => {
+                            this.refreshChartsAfterUpdate();
+                        }, 500); // 500ms 防抖
+                    }
+                };
+
+                // 监听数据重载事件
+                window.sharedDataManager.onDataReload = async () => {
+                    console.log('📡 其他页面重载了数据，本页面也需要重载');
+                    await this.reloadData();
+                };
+
+                console.log('✅ 跨页面广播监听器已设置');
             }
 
             setupEventListeners() {
@@ -1856,14 +1923,26 @@
                 // 启动缓存监听
                 this.startCacheMonitoring();
 
-                // 添加页面状态自动保存监听器
+                // 【优化】添加页面状态自动保存监听器 + 自动应用筛选
                 const startDateEl = document.getElementById('startDate');
                 const endDateEl = document.getElementById('endDate');
                 const groupByEl = document.getElementById('groupBy');
 
-                if (startDateEl) startDateEl.addEventListener('change', () => this.savePageState());
-                if (endDateEl) endDateEl.addEventListener('change', () => this.savePageState());
-                if (groupByEl) groupByEl.addEventListener('change', () => this.savePageState());
+                if (startDateEl) startDateEl.addEventListener('change', () => {
+                    this.savePageState();
+                    // 【新增】时间改变时，保留底部筛选条件，只更新相关图表
+                    this.updateChartsOnTimeChange();
+                });
+                if (endDateEl) endDateEl.addEventListener('change', () => {
+                    this.savePageState();
+                    // 【新增】时间改变时，保留底部筛选条件，只更新相关图表
+                    this.updateChartsOnTimeChange();
+                });
+                if (groupByEl) groupByEl.addEventListener('change', () => {
+                    this.savePageState();
+                    // 【新增】分组改变时，保留底部筛选条件，重新生成所有图表
+                    this.updateChartsOnGroupByChange();
+                });
 
                 const dayStartEl = document.getElementById('dayStart');
                 if (dayStartEl) dayStartEl.addEventListener('change', (e) => {
@@ -2015,19 +2094,38 @@
                 if (dbLoading) dbLoading.classList.remove('hidden');
 
                 try {
-                    if (!await this.db.hasData()) {
+                    // 【新增】检查是否有新鲜的共享数据
+                    if (window.sharedDataManager && window.sharedDataManager.isDataFresh()) {
+                        const metadata = window.sharedDataManager.getMetadata();
+                        console.log(`✅ 检测到新鲜的共享数据 (${metadata.recordCount} 条，来源: ${metadata.source})`);
+                        console.log('⚡ 快速加载模式：直接从 IndexedDB 读取，跳过进度显示');
+
+                        // 快速加载（不显示进度条）
+                        const rawData = await this.db.getAllDataWithProgress(() => {});
+                        this.rawData = rawData;
+                        this.data = Array.isArray(rawData) ? rawData : [];
+
                         if (dbLoading) dbLoading.classList.add('hidden');
-                        document.getElementById('noDataAlert').classList.remove('hidden');
-                        return;
+                        console.log(`⚡ 快速加载完成: ${this.data.length.toLocaleString()} 条数据`);
+                    } else {
+                        // 原有的加载逻辑（显示进度）
+                        if (!await this.db.hasData()) {
+                            if (dbLoading) dbLoading.classList.add('hidden');
+                            document.getElementById('noDataAlert').classList.remove('hidden');
+                            return;
+                        }
+
+                        const rawData = await this.db.getAllDataWithProgress((p) => {
+                            document.getElementById('loadingProgress').style.width = `${p}%`;
+                        });
+
+                        this.rawData = rawData;
+                        // 从新的缓存结构中获取数据：rawData直接是数据数组
+                        this.data = Array.isArray(rawData) ? rawData : [];
+
+                        if (dbLoading) dbLoading.classList.add('hidden');
+                        console.log(`📊 数据加载完成: ${this.data.length.toLocaleString()} 条数据`);
                     }
-
-                    const rawData = await this.db.getAllDataWithProgress((p) => {
-                        document.getElementById('loadingProgress').style.width = `${p}%`;
-                    });
-
-                    this.rawData = rawData;
-                    // 从新的缓存结构中获取数据：rawData直接是数据数组
-                    this.data = Array.isArray(rawData) ? rawData : [];
 
                     this.extractFilterValues();
                     this.initializeFilters();
@@ -2051,6 +2149,14 @@
                         const filtersRestored = this.restoreFilters();
                         if (filtersRestored) {
                             console.log('✅ 筛选条件已从sessionStorage恢复');
+                        }
+                    }
+
+                    // 【新增】恢复趋势图表结果（如果有保存的图表状态）
+                    if (this.hasSavedCharts) {
+                        const chartsRestored = this.restoreTrendChartsResult();
+                        if (chartsRestored) {
+                            console.log('✅ 趋势图表已从sessionStorage恢复');
                         }
                     }
 
@@ -2302,6 +2408,118 @@
             }
 
             // 应用筛选（修复时间轴范围问题）
+            // 【新增】自动应用筛选（防抖，避免频繁触发）
+            autoApplyFilters() {
+                if (!this.data) return;
+
+                // 清除之前的定时器
+                if (this.autoApplyTimer) {
+                    clearTimeout(this.autoApplyTimer);
+                }
+
+                // 300ms 防抖
+                this.autoApplyTimer = setTimeout(() => {
+                    console.log('🔄 自动应用筛选');
+                    this.applyFilters();
+                }, 300);
+            }
+
+            // 【新增】时间改变时更新图表（保留底部筛选条件）
+            updateChartsOnTimeChange() {
+                if (!this.data || !this.filteredData) return;
+
+                console.log('📅 时间范围改变，保留底部筛选条件，更新图表');
+
+                // 清除定时器
+                if (this.timeChangeTimer) {
+                    clearTimeout(this.timeChangeTimer);
+                }
+
+                // 300ms 防抖
+                this.timeChangeTimer = setTimeout(() => {
+                    const groupBy = document.getElementById('groupBy')?.value || 'day';
+
+                    // 重新应用顶部筛选（会更新 filteredData）
+                    const stationValues = this.stationSelect.getSelectedValues();
+                    const customerValues = this.customerSelect.getSelectedValues();
+                    const satelliteValues = this.satelliteSelect.getSelectedValues();
+                    const statusValues = this.statusSelect.getSelectedValues();
+                    const typeValues = this.typeSelect.getSelectedValues();
+
+                    const startInput = document.getElementById('startDate').value;
+                    const endInput = document.getElementById('endDate').value;
+                    const range = this.computeDateRangeForGroup(groupBy, startInput, endInput);
+                    const startBound = range.startDate;
+                    const endBound = range.endDate;
+
+                    const normalizedField = FIELD_MAPPING['开始时间'];
+                    const dataForFiltering = this.data.map(item => {
+                        const newItem = Object.assign({}, item);
+                        newItem[normalizedField] = this.parseToLocalDate(item[normalizedField]);
+                        return newItem;
+                    });
+
+                    this.filteredData = dataForFiltering.filter(item => {
+                        const itemDate = item[normalizedField];
+                        if (!itemDate) return false;
+
+                        if (startBound && itemDate < startBound) return false;
+                        if (endBound && itemDate > endBound) return false;
+
+                        if (stationValues.length && !stationValues.includes((getFieldValue(item, '测站名称') || '').toString().trim())) {
+                            return false;
+                        }
+                        if (customerValues.length && !customerValues.includes((getFieldValue(item, '客户名称') || '').toString().trim())) {
+                            return false;
+                        }
+                        if (satelliteValues.length && !satelliteValues.includes((getFieldValue(item, '卫星名称') || '').toString().trim())) {
+                            return false;
+                        }
+                        if (statusValues.length && !statusValues.includes((getFieldValue(item, '任务结果状态') || '').toString().trim())) {
+                            return false;
+                        }
+                        if (typeValues.length && !typeValues.includes((getFieldValue(item, '任务类型') || '').toString().trim())) {
+                            return false;
+                        }
+
+                        return true;
+                    });
+
+                    // 【关键】保留底部筛选条件，只更新相关图表
+                    this.generateStationChartWithFilter();
+                    this.generateCustomerChartWithFilter();
+                    this.generateSatelliteChartWithFilter();
+                    this.generateStatusChartWithFilter();
+                    this.generateTypeChartWithFilter();
+
+                    console.log('✅ 图表已更新（底部筛选条件已保留）');
+                }, 300);
+            }
+
+            // 【新增】分组方式改变时更新图表（保留底部筛选条件）
+            updateChartsOnGroupByChange() {
+                if (!this.data || !this.filteredData) return;
+
+                console.log('📊 分组方式改变，保留底部筛选条件，重新生成图表');
+
+                // 清除定时器
+                if (this.groupByChangeTimer) {
+                    clearTimeout(this.groupByChangeTimer);
+                }
+
+                // 300ms 防抖
+                this.groupByChangeTimer = setTimeout(() => {
+                    // 直接重新生成图表，不改变 filteredData
+                    this.generateStationChartWithFilter();
+                    this.generateCustomerChartWithFilter();
+                    this.generateSatelliteChartWithFilter();
+                    this.generateStatusChartWithFilter();
+                    this.generateTypeChartWithFilter();
+
+                    console.log('✅ 图表已重新生成（底部筛选条件已保留）');
+                }, 300);
+            }
+
             applyFilters() {
                 if (!this.data) return;
 
@@ -2374,16 +2592,31 @@
                     return;
                 }
 
-                this.generateCategoryChart('stationChart', '测站名称趋势分析', '测站名称', groupBy);
-                this.generateCategoryChart('customerChart', '客户名称趋势分析', '客户名称', groupBy);
-                this.generateCategoryChart('satelliteChart', '卫星名称趋势分析', '卫星名称', groupBy);
-                this.generateCategoryChart('statusChart', '任务结果状态趋势分析', '任务结果状态', groupBy);
-                this.generateCategoryChart('typeChart', '任务类型趋势分析', '任务类型', groupBy);
+                // 【新增】收集所有图表数据，用于保存到 sessionStorage
+                const chartDataMap = {};
+
+                const chartsConfig = [
+                    { chartId: 'stationChart', title: '测站名称趋势分析', categoryField: '测站名称' },
+                    { chartId: 'customerChart', title: '客户名称趋势分析', categoryField: '客户名称' },
+                    { chartId: 'satelliteChart', title: '卫星名称趋势分析', categoryField: '卫星名称' },
+                    { chartId: 'statusChart', title: '任务结果状态趋势分析', categoryField: '任务结果状态' },
+                    { chartId: 'typeChart', title: '任务类型趋势分析', categoryField: '任务类型' }
+                ];
+
+                chartsConfig.forEach(({ chartId, title, categoryField }) => {
+                    const chartData = this.generateCategoryChart(chartId, title, categoryField, groupBy);
+                    if (chartData) {
+                        chartDataMap[chartId] = chartData;
+                    }
+                });
+
+                // 【新增】保存所有图表数据到 sessionStorage
+                this.saveTrendChartsResult(chartDataMap, groupBy);
             }
 
             generateCategoryChart(chartId, title, categoryField, groupBy, additionalFilter = null) {
                 let dataToUse = this.filteredData;
-                
+
                 // 应用图表专用筛选
                 if (additionalFilter) {
                     dataToUse = dataToUse.filter(additionalFilter);
@@ -2401,7 +2634,7 @@
                     const emptyEl = document.getElementById(`${chartId}Empty`);
                     if (emptyEl) emptyEl.classList.remove('hidden');
                     this.chartGenerator.destroyChart(chartId);
-                    return;
+                    return null;
                 }
 
                 const categories = [...new Set(
@@ -2421,8 +2654,16 @@
                     )
                 }));
 
-                const chart = this.chartGenerator.generateTrendChart(chartId, title, xLabels, datasets);
-                return chart;
+                // 生成图表
+                this.chartGenerator.generateTrendChart(chartId, title, xLabels, datasets);
+
+                // 【新增】返回图表数据，用于保存到 sessionStorage
+                return {
+                    chartId: chartId,
+                    title: title,
+                    xLabels: xLabels,
+                    datasets: datasets
+                };
             }
 
             // 图表专用筛选和生成方法 - 使用顶部完整筛选条件
@@ -2996,7 +3237,7 @@
                     const emptyEl = document.getElementById(`${chartId}Empty`);
                     if (emptyEl) emptyEl.classList.remove('hidden');
                     this.chartGenerator.destroyChart(chartId);
-                    return;
+                    return null;
                 }
 
                 const groupedResult = this.cycleEngine.groupByStartTime(
@@ -3010,7 +3251,7 @@
                     const emptyEl = document.getElementById(`${chartId}Empty`);
                     if (emptyEl) emptyEl.classList.remove('hidden');
                     this.chartGenerator.destroyChart(chartId);
-                    return;
+                    return null;
                 }
 
                 const categories = [...new Set(
@@ -3030,8 +3271,16 @@
                     )
                 }));
 
-                const chart = this.chartGenerator.generateTrendChart(chartId, title, xLabels, datasets);
-                return chart;
+                // 生成图表
+                this.chartGenerator.generateTrendChart(chartId, title, xLabels, datasets);
+
+                // 【新增】返回图表数据，用于保存到 sessionStorage
+                return {
+                    chartId: chartId,
+                    title: title,
+                    xLabels: xLabels,
+                    datasets: datasets
+                };
             }
 
             resetFilters() {
@@ -3053,6 +3302,84 @@
 
                 this.clearAllCharts();
             }
+
+            // ==================== 增量更新方法（实时同步）====================
+
+            // 增量更新：插入或更新单条记录到内存
+            incrementalUpdateRecord(record) {
+                if (!this.data) {
+                    console.warn('⚠️ 内存数据未初始化，跳过增量更新');
+                    return false;
+                }
+
+                const recordId = record.id || record.plan_id;
+                if (!recordId) {
+                    console.warn('⚠️ 记录缺少ID，跳过增量更新');
+                    return false;
+                }
+
+                // 在 this.data 中查找并更新
+                const index = this.data.findIndex(item => {
+                    const itemId = item.id || item.plan_id;
+                    return itemId === recordId;
+                });
+
+                if (index !== -1) {
+                    // 更新现有记录
+                    this.data[index] = { ...this.data[index], ...record };
+                    console.log(`✅ 增量更新：ID=${recordId}`);
+                } else {
+                    // 插入新记录
+                    this.data.push(record);
+                    console.log(`✅ 增量插入：ID=${recordId}`);
+                }
+
+                return true;
+            }
+
+            // 增量删除：从内存中删除单条记录
+            incrementalDeleteRecord(recordId) {
+                if (!this.data) {
+                    console.warn('⚠️ 内存数据未初始化，跳过增量删除');
+                    return false;
+                }
+
+                const index = this.data.findIndex(item => {
+                    const itemId = item.id || item.plan_id;
+                    return itemId === recordId;
+                });
+
+                if (index !== -1) {
+                    this.data.splice(index, 1);
+                    console.log(`✅ 增量删除：ID=${recordId}`);
+                    return true;
+                } else {
+                    console.warn(`⚠️ 增量删除：未找到记录 ID=${recordId}`);
+                    return false;
+                }
+            }
+
+            // 重新应用筛选并刷新图表（增量更新后调用）
+            refreshChartsAfterUpdate() {
+                if (!this.data || !this.filteredData) {
+                    console.log('⏭️ 数据未初始化，跳过图表刷新');
+                    return;
+                }
+
+                // 重新提取筛选值（可能有新的测站/客户/卫星等）
+                this.extractFilterValues();
+
+                // 重新应用当前筛选条件
+                if (this.filteredData.length > 0) {
+                    const groupBy = document.getElementById('groupBy')?.value || 'day';
+                    this.applyFilters();
+                    console.log('✅ 图表已刷新');
+                } else {
+                    console.log('⏭️ 无筛选数据，跳过图表刷新');
+                }
+            }
+
+            // ==================== 图表管理 ====================
 
             clearAllCharts() {
                 ['stationChart', 'customerChart', 'satelliteChart', 'statusChart', 'typeChart'].forEach(id => {
@@ -3200,11 +3527,14 @@
             // 重新加载数据
             async reloadData() {
                 console.log('🔄 重新加载数据中...');
-                
+
+                // 【新增】清空旧的图表缓存，确保数据一致性
+                this.clearTrendChartsResult();
+
                 // 显示加载状态
                 const loadingEl = document.getElementById('dbLoading');
                 if (loadingEl) loadingEl.classList.remove('hidden');
-                
+
                 try {
                     await this.loadData();
                     console.log('✅ 数据重载完成');
@@ -3430,11 +3760,94 @@
                 }
             }
 
+            // 保存趋势图表结果到 sessionStorage
+            saveTrendChartsResult(chartDataMap, groupBy) {
+                try {
+                    if (!chartDataMap || Object.keys(chartDataMap).length === 0) {
+                        console.log('📊 图表结果为空，不保存');
+                        return;
+                    }
+
+                    const trendChartsData = {
+                        chartDataMap: chartDataMap,
+                        groupBy: groupBy,
+                        generatedAt: Date.now()
+                    };
+
+                    sessionStorage.setItem('trendAnalysisCharts', JSON.stringify(trendChartsData));
+                    console.log('💾 趋势图表结果已保存:', {
+                        chartsCount: Object.keys(chartDataMap).length,
+                        groupBy: groupBy,
+                        generatedAt: new Date(trendChartsData.generatedAt).toLocaleString()
+                    });
+                } catch (error) {
+                    console.warn('保存趋势图表结果失败:', error);
+                }
+            }
+
+            // 恢复趋势图表结果并重新渲染
+            restoreTrendChartsResult() {
+                try {
+                    const savedCharts = sessionStorage.getItem('trendAnalysisCharts');
+                    if (!savedCharts) {
+                        console.log('📊 无保存的趋势图表结果');
+                        return false;
+                    }
+
+                    const trendChartsData = JSON.parse(savedCharts);
+                    console.log('🔄 恢复趋势图表结果:', {
+                        chartsCount: Object.keys(trendChartsData.chartDataMap).length,
+                        groupBy: trendChartsData.groupBy,
+                        generatedAt: new Date(trendChartsData.generatedAt).toLocaleString()
+                    });
+
+                    // 使用 requestAnimationFrame 优化渲染时机
+                    requestAnimationFrame(() => {
+                        // 遍历所有保存的图表数据，重新渲染每个图表
+                        Object.keys(trendChartsData.chartDataMap).forEach(chartId => {
+                            const chartData = trendChartsData.chartDataMap[chartId];
+
+                            // 隐藏空状态提示
+                            const emptyState = document.getElementById(`${chartId}Empty`);
+                            if (emptyState) {
+                                emptyState.classList.add('hidden');
+                            }
+
+                            // 重新生成图表
+                            this.chartGenerator.generateTrendChart(
+                                chartId,
+                                chartData.title,
+                                chartData.xLabels,
+                                chartData.datasets
+                            );
+                        });
+
+                        console.log('✅ 趋势图表结果恢复完成');
+                    });
+
+                    return true;
+                } catch (error) {
+                    console.warn('恢复趋势图表结果失败:', error);
+                    return false;
+                }
+            }
+
+            // 清空趋势图表结果
+            clearTrendChartsResult() {
+                try {
+                    sessionStorage.removeItem('trendAnalysisCharts');
+                    console.log('🗑️ 趋势图表结果已清空');
+                } catch (error) {
+                    console.warn('清空趋势图表结果失败:', error);
+                }
+            }
+
             // 清空页面状态
             clearPageState() {
                 try {
                     sessionStorage.removeItem('trendAnalysisPageState');
                     sessionStorage.removeItem('trendAnalysisFilters');
+                    sessionStorage.removeItem('trendAnalysisCharts');
                     console.log('🗑️ 页面状态已清空');
                 } catch (error) {
                     console.warn('清空页面状态失败:', error);
