@@ -903,9 +903,9 @@
                 if (!this.db) await this.init();
 
                 return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction([this.allDataStoreName, this.metaStoreName], 'readwrite');
+                    // 优化：只操作 allDataStore，不频繁更新 meta（meta 在防抖后统一更新）
+                    const transaction = this.db.transaction([this.allDataStoreName], 'readwrite');
                     const allDataStore = transaction.objectStore(this.allDataStoreName);
-                    const metaStore = transaction.objectStore(this.metaStoreName);
 
                     // 添加必要字段
                     if (!record.timestamp) {
@@ -916,21 +916,6 @@
                     const putRequest = allDataStore.put(record);
 
                     putRequest.onsuccess = () => {
-                        // 更新元数据的最后同步时间
-                        const metaRequest = metaStore.get('allDataMeta');
-                        metaRequest.onsuccess = () => {
-                            const meta = metaRequest.result || {
-                                key: 'allDataMeta',
-                                totalCount: 0,
-                                lastUpdated: Date.now(),
-                                lastSyncTime: Date.now()
-                            };
-
-                            meta.lastUpdated = Date.now();
-                            meta.lastSyncTime = Date.now();
-                            metaStore.put(meta);
-                        };
-
                         console.log(`✅ 增量更新记录 ID: ${record.id}`);
                         resolve(record);
                     };
@@ -939,6 +924,33 @@
                         console.error('❌ 增量更新失败:', putRequest.error);
                         reject(putRequest.error);
                     };
+                });
+            }
+
+            // 批量更新 meta 数据（减少写入频率）
+            async updateMeta() {
+                if (!this.db) await this.init();
+
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction([this.metaStoreName], 'readwrite');
+                    const metaStore = transaction.objectStore(this.metaStoreName);
+
+                    const metaRequest = metaStore.get('allDataMeta');
+                    metaRequest.onsuccess = () => {
+                        const meta = metaRequest.result || {
+                            key: 'allDataMeta',
+                            totalCount: 0,
+                            lastUpdated: Date.now(),
+                            lastSyncTime: Date.now()
+                        };
+
+                        meta.lastUpdated = Date.now();
+                        meta.lastSyncTime = Date.now();
+                        metaStore.put(meta);
+                        resolve();
+                    };
+
+                    metaRequest.onerror = () => reject(metaRequest.error);
                 });
             }
 
@@ -1409,9 +1421,12 @@
 
             // 处理数据变更
             async handleDataChange(changeData) {
-                const { operation, record } = changeData;
+                let { operation, record } = changeData;
 
                 try {
+                    // 规范化操作类型为小写（服务器可能发送大写）
+                    operation = operation.toLowerCase();
+
                     switch (operation) {
                         case 'insert':
                         case 'update':
@@ -1428,7 +1443,7 @@
                             console.warn('⚠️ 未知操作类型:', operation);
                     }
 
-                    // 触发更新回调
+                    // 触发更新回调（使用规范化后的小写操作类型）
                     if (this.onSyncUpdate) {
                         this.onSyncUpdate({ operation, record });
                     }
@@ -1522,6 +1537,12 @@
             // 断线补同步（获取断线期间的变更）
             async performCatchupSync() {
                 try {
+                    // 检查是否配置了补同步API
+                    if (!CONFIG.API_ENDPOINTS.catchup) {
+                        console.log('ℹ️ 未配置补同步API，跳过断线补同步');
+                        return;
+                    }
+
                     const lastSyncTime = await this.cacheManager.getLastSyncTime();
                     console.log(`🔄 开始断线补同步，最后同步时间: ${new Date(lastSyncTime).toLocaleString()}`);
 
@@ -1530,15 +1551,24 @@
                         ? CONFIG.API_ENDPOINTS.catchup || `${CONFIG.API_ENDPOINTS.records}/changes`
                         : `${CONFIG.API_BASE_URL}/satellite/changes`;
 
+                    // 创建超时控制器
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10秒超时
+
                     const response = await fetch(`${catchupUrl}?since=${lastSyncTime}`, {
                         method: 'GET',
                         headers: {
                             'Content-Type': 'application/json'
-                        }
+                        },
+                        signal: controller.signal
                     });
 
+                    clearTimeout(timeoutId);
+
                     if (!response.ok) {
-                        console.warn('⚠️ 补同步请求失败');
+                        console.warn(`⚠️ 补同步请求失败 (HTTP ${response.status}): ${response.statusText}`);
+                        console.warn(`   请求URL: ${catchupUrl}`);
+                        console.warn(`   提示: 如果后端未实现此API，可以在config.js中将catchup设置为null禁用此功能`);
                         return;
                     }
 
@@ -1562,7 +1592,16 @@
                     }
 
                 } catch (error) {
-                    console.error('❌ 断线补同步失败:', error);
+                    // 静默处理补同步错误，不影响主功能
+                    if (error.name === 'AbortError') {
+                        console.warn('⏱️ 补同步请求超时，已跳过');
+                    } else if (error.message?.includes('Failed to fetch')) {
+                        console.warn('🌐 补同步请求失败：无法连接到服务器');
+                        console.warn('   可能原因：网络问题、CORS限制或服务器未响应');
+                    } else {
+                        console.warn('⚠️ 断线补同步失败:', error.message);
+                    }
+                    console.log('💡 WebSocket实时同步功能仍可正常工作，只是跳过了历史数据补同步');
                 }
             }
 
@@ -2397,6 +2436,67 @@
                     return true;
                 } else {
                     console.warn(`⚠️ 增量删除：未找到记录 ID=${recordId}`);
+                    return false;
+                }
+            }
+
+            // 智能增量图表更新：只更新受影响的数据点，避免完全重建图表
+            smartUpdateChart(record, operation) {
+                const perfStart = performance.now();
+
+                // 如果图表不存在或没有显示，直接跳过
+                if (!this.chart || !this.data) {
+                    console.log('⏭️ 图表未初始化，跳过智能更新');
+                    return false;
+                }
+
+                try {
+                    // 获取当前筛选条件
+                    const groupType = this.groupBy.value;
+                    const range = this.computeDateRangeForGroup(groupType, this.startDate.value, this.endDate.value);
+
+                    // 检查记录是否在当前显示的时间范围内
+                    const recordTime = new Date(record.start_time || record['开始时间']);
+                    if (recordTime < range.startDate || recordTime >= range.endDate) {
+                        console.log(`⏭️ 记录不在图表时间范围内 (${recordTime.toISOString()})，跳过更新`);
+                        return true; // 返回 true 表示处理成功（虽然跳过了）
+                    }
+
+                    console.log(`🎯 记录在图表范围内，执行智能更新...`);
+
+                    // 找到记录所属的分组
+                    const groupInfo = this.cycleEngine.getGroup(recordTime, groupType);
+                    const groupKey = groupInfo.key;
+
+                    // 重新计算当前时间范围的统计数据（只计算受影响的组）
+                    const stats = this.groupDataByCycle(groupType, range.startDate, range.endDate);
+
+                    // 查找受影响组的索引
+                    const affectedGroupIndex = stats.findIndex(stat => {
+                        return stat.label === this.cycleEngine.formatGroupKey(groupType, groupKey);
+                    });
+
+                    if (affectedGroupIndex === -1) {
+                        console.warn('⚠️ 未找到受影响的组，降级到全量更新');
+                        return false;
+                    }
+
+                    // 更新图表数据（使用 Chart.js 的 update 方法，不重建）
+                    const affectedStat = stats[affectedGroupIndex];
+                    this.chart.data.datasets[0].data[affectedGroupIndex] = affectedStat.count;
+                    this.chart.data.datasets[1].data[affectedGroupIndex] = affectedStat.failureCount;
+                    this.chart.data.datasets[2].data[affectedGroupIndex] = parseFloat(affectedStat.successRate.toFixed(3));
+
+                    // 使用 'none' 动画模式实现即时更新
+                    this.chart.update('none'); // 'none' 模式：无动画，立即更新
+
+                    const perfTime = performance.now() - perfStart;
+                    console.log(`⚡ 智能增量更新完成 (耗时: ${perfTime.toFixed(2)}ms, 组索引: ${affectedGroupIndex})`);
+
+                    return true;
+
+                } catch (error) {
+                    console.error('❌ 智能更新失败:', error);
                     return false;
                 }
             }
@@ -3831,47 +3931,83 @@
                 console.log('🔌 启动 WebSocket 实时同步...');
                 wsSyncManager.connect();
 
+                // 防抖计时器：避免短时间内多次更新meta
+                let updateMetaDebounceTimer = null;
+
                 // 监听实时同步更新（使用增量更新优化性能）
                 wsSyncManager.onSyncUpdate = async (update) => {
+                    const perfStart = performance.now();
                     const { operation, record } = update;
                     console.log(`🔄 实时同步更新: ${operation}`, record);
 
                     // 如果当前正在显示数据，使用增量更新
                     if (window.app && window.app.data) {
-                        let updated = false;
+                        // === 第1步：增量更新内存数据 ===
+                        let memoryUpdated = false;
+                        const memoryStart = performance.now();
 
-                        // 增量更新内存数据（性能优化：<1ms vs 全量加载100ms）
                         if (operation === 'insert' || operation === 'update') {
-                            updated = window.app.incrementalUpdateRecord(record);
+                            memoryUpdated = window.app.incrementalUpdateRecord(record);
                         } else if (operation === 'delete') {
                             const recordId = record.id || record.plan_id;
-                            updated = window.app.incrementalDeleteRecord(recordId);
+                            memoryUpdated = window.app.incrementalDeleteRecord(recordId);
                         }
 
-                        // 如果增量更新成功，静默刷新统计
-                        if (updated) {
-                            console.log('📊 增量更新成功，静默刷新统计结果...');
+                        const memoryTime = performance.now() - memoryStart;
+                        console.log(`⏱️ [1/3] 内存更新耗时: ${memoryTime.toFixed(2)}ms`);
 
-                            // 清除sessionStorage中的旧统计结果，确保下次刷新页面时重新计算
-                            sessionStorage.removeItem('satelliteStatistics');
-                            console.log('🗑️ 已清除缓存的统计结果，确保数据一致性');
-
-                            window.app.generateStatistics({ silent: true });
-                        } else {
-                            // 增量更新失败时，降级到全量加载
-                            console.warn('⚠️ 增量更新失败，降级到全量加载...');
+                        if (!memoryUpdated) {
+                            // 内存更新失败时，降级到全量加载
+                            console.warn('⚠️ 内存更新失败，降级到全量加载...');
+                            const reloadStart = performance.now();
                             const cachedData = await cacheManager.queryAllData();
                             if (cachedData && cachedData.length > 0) {
                                 window.app.data = cachedData;
-                                console.log(`✅ 已重新加载 ${cachedData.length} 条数据到内存`);
+                                const reloadTime = performance.now() - reloadStart;
+                                console.log(`✅ 已重新加载 ${cachedData.length} 条数据到内存 (耗时: ${reloadTime.toFixed(2)}ms)`);
 
-                                // 清除sessionStorage中的旧统计结果
                                 sessionStorage.removeItem('satelliteStatistics');
-                                console.log('🗑️ 已清除缓存的统计结果，确保数据一致性');
-
-                                window.app.generateStatistics({ silent: true });
+                                requestAnimationFrame(() => {
+                                    window.app.generateStatistics({ silent: true });
+                                });
                             }
+                            return;
                         }
+
+                        // === 第2步：智能增量更新图表（核心优化）===
+                        const chartStart = performance.now();
+
+                        // 尝试智能更新（只更新受影响的数据点）
+                        const smartUpdated = window.app.smartUpdateChart(record, operation);
+
+                        const chartTime = performance.now() - chartStart;
+                        console.log(`⏱️ [2/3] 图表更新耗时: ${chartTime.toFixed(2)}ms (智能更新: ${smartUpdated ? '成功✅' : '降级⬇️'})`);
+
+                        // 如果智能更新失败，降级到完全重建（很少发生）
+                        if (!smartUpdated) {
+                            console.log('📊 降级到完全重建图表...');
+                            sessionStorage.removeItem('satelliteStatistics');
+                            requestAnimationFrame(() => {
+                                window.app.generateStatistics({ silent: true });
+                            });
+                        }
+
+                        // === 第3步：防抖更新 IndexedDB meta（降低写入频率）===
+                        if (updateMetaDebounceTimer) {
+                            clearTimeout(updateMetaDebounceTimer);
+                        }
+                        updateMetaDebounceTimer = setTimeout(async () => {
+                            const metaStart = performance.now();
+                            await cacheManager.updateMeta();
+                            const metaTime = performance.now() - metaStart;
+                            console.log(`⏱️ [3/3] Meta更新耗时: ${metaTime.toFixed(2)}ms`);
+                        }, 1000); // 1秒防抖，减少 meta 写入频率
+
+                        // 清除 sessionStorage，确保下次刷新重新计算
+                        sessionStorage.removeItem('satelliteStatistics');
+
+                        const totalTime = performance.now() - perfStart;
+                        console.log(`✅ 总响应时间: ${totalTime.toFixed(2)}ms`);
                     }
                 };
 
