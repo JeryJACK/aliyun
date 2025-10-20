@@ -844,167 +844,122 @@
                 });
             }
 
-            // 【新】只查询最近N天的数据（快速加载）
-            async queryRecentData(days = 7) {
+            // 【优化】快速获取元数据（< 10ms）
+            async getMetadataFast() {
                 if (!this.db) await this.init();
 
+                const perfStart = performance.now();
+
                 return new Promise((resolve) => {
-                    const transaction = this.db.transaction([this.allDataStoreName], 'readonly');
-                    const store = transaction.objectStore(this.allDataStoreName);
-                    const index = store.index('start_time');
+                    const transaction = this.db.transaction([this.metaStoreName, this.allDataStoreName], 'readonly');
+                    const metaStore = transaction.objectStore(this.metaStoreName);
+                    const allDataStore = transaction.objectStore(this.allDataStoreName);
 
-                    // 计算N天前的时间戳
-                    const cutoffDate = new Date();
-                    cutoffDate.setDate(cutoffDate.getDate() - days);
-                    const cutoffTime = cutoffDate.toISOString();
+                    const metadata = {};
 
-                    // 使用索引范围查询（只查询最近N天）
-                    const range = IDBKeyRange.lowerBound(cutoffTime);
-                    const request = index.getAll(range);
-
-                    request.onsuccess = () => {
-                        const results = request.result || [];
-                        console.log(`⚡ 从本地缓存快速加载最近${days}天数据: ${results.length} 条`);
-                        resolve(results);
+                    // 1. 读取保存的元数据
+                    const metaRequest = metaStore.get('allDataMeta');
+                    metaRequest.onsuccess = () => {
+                        const meta = metaRequest.result;
+                        if (meta) {
+                            metadata.totalCount = meta.totalCount;
+                            metadata.lastUpdated = meta.lastUpdated;
+                            metadata.lastSyncTime = meta.lastSyncTime;
+                        }
                     };
 
-                    request.onerror = () => {
-                        console.error('❌ 查询最近数据失败:', request.error);
-                        resolve([]);
+                    // 2. 快速获取实际记录数（不读取数据）
+                    const countRequest = allDataStore.count();
+                    countRequest.onsuccess = () => {
+                        metadata.actualCount = countRequest.result;
+                    };
+
+                    // 3. 使用游标快速获取时间范围（只读第一条和最后一条）
+                    const index = allDataStore.index('start_time');
+
+                    // 读取最早的记录
+                    const firstRequest = index.openCursor(null, 'next');
+                    firstRequest.onsuccess = (e) => {
+                        const cursor = e.target.result;
+                        if (cursor) {
+                            metadata.minTimestamp = cursor.value.timestamp;
+                            metadata.minDate = new Date(cursor.value.timestamp);
+                        }
+                    };
+
+                    // 读取最新的记录
+                    const lastRequest = index.openCursor(null, 'prev');
+                    lastRequest.onsuccess = (e) => {
+                        const cursor = e.target.result;
+                        if (cursor) {
+                            metadata.maxTimestamp = cursor.value.timestamp;
+                            metadata.maxDate = new Date(cursor.value.timestamp);
+                        }
+                    };
+
+                    transaction.oncomplete = () => {
+                        const perfTime = performance.now() - perfStart;
+                        console.log(`⚡ 元数据快速查询完成 (${perfTime.toFixed(1)}ms):`, {
+                            总数: metadata.actualCount,
+                            时间范围: `${metadata.minDate?.toLocaleDateString()} - ${metadata.maxDate?.toLocaleDateString()}`
+                        });
+                        resolve(metadata);
+                    };
+
+                    transaction.onerror = () => {
+                        console.error('❌ 元数据查询失败');
+                        resolve(null);
                     };
                 });
             }
 
-            // 【新】查询指定时间戳之后的数据（增量同步）
-            async queryDataSince(sinceTimestamp) {
+            // 【优化】渐进式加载数据（使用游标分批，边加载边处理）
+            async queryAllDataProgressive(onBatch, batchSize = 5000) {
                 if (!this.db) await this.init();
 
-                return new Promise((resolve) => {
+                const perfStart = performance.now();
+                let totalLoaded = 0;
+
+                return new Promise((resolve, reject) => {
                     const transaction = this.db.transaction([this.allDataStoreName], 'readonly');
                     const store = transaction.objectStore(this.allDataStoreName);
-                    const index = store.index('start_time');
-
-                    const sinceTime = new Date(sinceTimestamp).toISOString();
-                    const range = IDBKeyRange.lowerBound(sinceTime, false); // false = 包含边界值 (>= sinceTime)
-                    const request = index.getAll(range);
-
-                    request.onsuccess = () => {
-                        const results = request.result || [];
-                        console.log(`⚡ 增量查询: ${new Date(sinceTimestamp).toLocaleString()} 之后新增 ${results.length} 条`);
-                        resolve(results);
-                    };
-
-                    request.onerror = () => {
-                        console.error('❌ 增量查询失败:', request.error);
-                        resolve([]);
-                    };
-                });
-            }
-
-            // 【新】查询指定时间戳之前的数据（历史数据）
-            async queryDataBefore(beforeTimestamp) {
-                if (!this.db) await this.init();
-
-                return new Promise((resolve) => {
-                    const transaction = this.db.transaction([this.allDataStoreName], 'readonly');
-                    const store = transaction.objectStore(this.allDataStoreName);
-                    const index = store.index('start_time');
-
-                    const beforeTime = new Date(beforeTimestamp).toISOString();
-                    const range = IDBKeyRange.upperBound(beforeTime, true); // true = 不包含边界值
-                    const request = index.getAll(range);
-
-                    request.onsuccess = () => {
-                        const results = request.result || [];
-                        console.log(`⚡ 查询历史数据: ${new Date(beforeTimestamp).toLocaleString()} 之前 ${results.length} 条`);
-                        resolve(results);
-                    };
-
-                    request.onerror = () => {
-                        console.error('❌ 历史数据查询失败:', request.error);
-                        resolve([]);
-                    };
-                });
-            }
-
-            // 【新】分批查询历史数据（游标模式，避免一次性读取大量数据）
-            async queryDataBeforeBatch(beforeTimestamp, batchSize = 10000, onBatch = null) {
-                if (!this.db) await this.init();
-
-                return new Promise((resolve) => {
-                    const transaction = this.db.transaction([this.allDataStoreName], 'readonly');
-                    const store = transaction.objectStore(this.allDataStoreName);
-                    const index = store.index('start_time');
-
-                    const beforeTime = new Date(beforeTimestamp).toISOString();
-                    const range = IDBKeyRange.upperBound(beforeTime, true);
-                    const request = index.openCursor(range, 'prev'); // 倒序读取（从旧到新）
+                    const request = store.openCursor();
 
                     let batch = [];
-                    let totalCount = 0;
 
                     request.onsuccess = (event) => {
                         const cursor = event.target.result;
 
                         if (cursor) {
+                            // 将当前记录添加到批次
                             batch.push(cursor.value);
-                            totalCount++;
+                            totalLoaded++;
 
                             // 达到批次大小，触发回调
                             if (batch.length >= batchSize) {
                                 if (onBatch) {
-                                    onBatch(batch, totalCount);
+                                    onBatch(batch, totalLoaded);
                                 }
-                                batch = [];
+                                batch = []; // 清空批次，准备下一批
                             }
 
+                            // 继续读取下一条记录
                             cursor.continue();
                         } else {
-                            // 读取完成，处理剩余数据
+                            // 游标结束，处理剩余数据
                             if (batch.length > 0 && onBatch) {
-                                onBatch(batch, totalCount);
+                                onBatch(batch, totalLoaded);
                             }
-                            console.log(`⚡ 分批查询完成: 共 ${totalCount} 条历史数据`);
-                            resolve(totalCount);
+
+                            const perfTime = performance.now() - perfStart;
+                            console.log(`✅ 渐进式加载完成: ${totalLoaded.toLocaleString()} 条 (${perfTime.toFixed(0)}ms, ${(totalLoaded / (perfTime / 1000)).toFixed(0)} 条/秒)`);
+                            resolve(totalLoaded);
                         }
                     };
 
                     request.onerror = () => {
-                        console.error('❌ 分批查询失败:', request.error);
-                        resolve(0);
-                    };
-                });
-            }
-
-            // 【新】快速获取数据统计信息（不读取完整数据）
-            async getDataStats() {
-                if (!this.db) await this.init();
-
-                return new Promise((resolve) => {
-                    const transaction = this.db.transaction([this.allDataStoreName, this.metaStoreName], 'readonly');
-                    const allDataStore = transaction.objectStore(this.allDataStoreName);
-                    const metaStore = transaction.objectStore(this.metaStoreName);
-
-                    const stats = {};
-
-                    // 读取 meta 信息
-                    const metaRequest = metaStore.get('allDataMeta');
-                    metaRequest.onsuccess = () => {
-                        Object.assign(stats, metaRequest.result || {});
-                    };
-
-                    // 获取总数
-                    const countRequest = allDataStore.count();
-                    countRequest.onsuccess = () => {
-                        stats.actualCount = countRequest.result;
-                    };
-
-                    transaction.oncomplete = () => {
-                        resolve(stats);
-                    };
-
-                    transaction.onerror = () => {
-                        resolve(null);
+                        console.error('❌ 渐进式加载失败:', request.error);
+                        reject(request.error);
                     };
                 });
             }
@@ -1020,13 +975,13 @@
 
                     request.onsuccess = () => {
                         const meta = request.result;
-                        
+
                         if (!meta) {
                             console.log('🔍 本地缓存不存在');
                             resolve(null);
                             return;
                         }
-                        
+
                         console.log(`✅ 本地缓存存在，包含 ${meta.totalCount} 条记录，最后更新：${new Date(meta.lastUpdated).toLocaleString()}`);
                         resolve(meta);
                     };
@@ -1069,9 +1024,9 @@
                 if (!this.db) await this.init();
 
                 return new Promise((resolve, reject) => {
-                    // 优化：只操作 allDataStore，不频繁更新 meta（meta 在防抖后统一更新）
-                    const transaction = this.db.transaction([this.allDataStoreName], 'readwrite');
+                    const transaction = this.db.transaction([this.allDataStoreName, this.metaStoreName], 'readwrite');
                     const allDataStore = transaction.objectStore(this.allDataStoreName);
+                    const metaStore = transaction.objectStore(this.metaStoreName);
 
                     // 添加必要字段
                     if (!record.timestamp) {
@@ -1082,6 +1037,21 @@
                     const putRequest = allDataStore.put(record);
 
                     putRequest.onsuccess = () => {
+                        // 更新元数据的最后同步时间
+                        const metaRequest = metaStore.get('allDataMeta');
+                        metaRequest.onsuccess = () => {
+                            const meta = metaRequest.result || {
+                                key: 'allDataMeta',
+                                totalCount: 0,
+                                lastUpdated: Date.now(),
+                                lastSyncTime: Date.now()
+                            };
+
+                            meta.lastUpdated = Date.now();
+                            meta.lastSyncTime = Date.now();
+                            metaStore.put(meta);
+                        };
+
                         console.log(`✅ 增量更新记录 ID: ${record.id}`);
                         resolve(record);
                     };
@@ -1090,33 +1060,6 @@
                         console.error('❌ 增量更新失败:', putRequest.error);
                         reject(putRequest.error);
                     };
-                });
-            }
-
-            // 批量更新 meta 数据（减少写入频率）
-            async updateMeta() {
-                if (!this.db) await this.init();
-
-                return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction([this.metaStoreName], 'readwrite');
-                    const metaStore = transaction.objectStore(this.metaStoreName);
-
-                    const metaRequest = metaStore.get('allDataMeta');
-                    metaRequest.onsuccess = () => {
-                        const meta = metaRequest.result || {
-                            key: 'allDataMeta',
-                            totalCount: 0,
-                            lastUpdated: Date.now(),
-                            lastSyncTime: Date.now()
-                        };
-
-                        meta.lastUpdated = Date.now();
-                        meta.lastSyncTime = Date.now();
-                        metaStore.put(meta);
-                        resolve();
-                    };
-
-                    metaRequest.onerror = () => reject(metaRequest.error);
                 });
             }
 
@@ -1562,11 +1505,6 @@
                     console.log('📨 收到 WebSocket 消息:', message);
 
                     switch (message.type) {
-                        case 'welcome':
-                            // 欢迎消息
-                            console.log('👋 WebSocket 连接成功:', message.message || '服务器已准备就绪');
-                            break;
-
                         case 'heartbeat':
                             // 心跳响应
                             this.missedHeartbeats = 0;
@@ -1592,12 +1530,9 @@
 
             // 处理数据变更
             async handleDataChange(changeData) {
-                let { operation, record } = changeData;
+                const { operation, record } = changeData;
 
                 try {
-                    // 规范化操作类型为小写（服务器可能发送大写）
-                    operation = operation.toLowerCase();
-
                     switch (operation) {
                         case 'insert':
                         case 'update':
@@ -1614,7 +1549,7 @@
                             console.warn('⚠️ 未知操作类型:', operation);
                     }
 
-                    // 触发更新回调（使用规范化后的小写操作类型）
+                    // 触发更新回调
                     if (this.onSyncUpdate) {
                         this.onSyncUpdate({ operation, record });
                     }
@@ -1708,12 +1643,6 @@
             // 断线补同步（获取断线期间的变更）
             async performCatchupSync() {
                 try {
-                    // 检查是否配置了补同步API
-                    if (!CONFIG.API_ENDPOINTS.catchup) {
-                        console.log('ℹ️ 未配置补同步API，跳过断线补同步');
-                        return;
-                    }
-
                     const lastSyncTime = await this.cacheManager.getLastSyncTime();
                     console.log(`🔄 开始断线补同步，最后同步时间: ${new Date(lastSyncTime).toLocaleString()}`);
 
@@ -1722,31 +1651,15 @@
                         ? CONFIG.API_ENDPOINTS.catchup || `${CONFIG.API_ENDPOINTS.records}/changes`
                         : `${CONFIG.API_BASE_URL}/satellite/changes`;
 
-                    // 创建超时控制器
-                    const controller = new AbortController();
-                    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10秒超时
-
                     const response = await fetch(`${catchupUrl}?since=${lastSyncTime}`, {
                         method: 'GET',
                         headers: {
                             'Content-Type': 'application/json'
-                        },
-                        signal: controller.signal
+                        }
                     });
 
-                    clearTimeout(timeoutId);
-
                     if (!response.ok) {
-                        // 区分不同的错误类型
-                        if (response.status === 404) {
-                            console.log('ℹ️ 补同步API未找到，跳过断线补同步功能');
-                            console.log('💡 提示: 可在 config.js 中将 catchup 设置为 null 禁用此功能');
-                        } else if (response.status >= 500) {
-                            console.log('ℹ️ 补同步服务暂时不可用，跳过断线补同步');
-                            console.log('💡 这不会影响实时数据同步功能');
-                        } else {
-                            console.warn(`⚠️ 补同步请求失败 (HTTP ${response.status}): ${response.statusText}`);
-                        }
+                        console.warn('⚠️ 补同步请求失败');
                         return;
                     }
 
@@ -1770,15 +1683,7 @@
                     }
 
                 } catch (error) {
-                    // 静默处理补同步错误，不影响主功能（使用 info 级别日志）
-                    if (error.name === 'AbortError') {
-                        console.log('ℹ️ 补同步请求超时，已跳过');
-                    } else if (error.message?.includes('Failed to fetch')) {
-                        console.log('ℹ️ 补同步服务暂时无法连接，已跳过');
-                    } else {
-                        console.log('ℹ️ 补同步功能暂不可用:', error.message);
-                    }
-                    console.log('💡 这不会影响 WebSocket 实时数据同步功能');
+                    console.error('❌ 断线补同步失败:', error);
                 }
             }
 
@@ -2308,336 +2213,6 @@
             return '\uFEFF' + csvLines.join('\n');
         }
 
-        // ==================== 高性能数据结构管理器 ====================
-        class HighPerformanceDataStore {
-            constructor() {
-                // 主存储：Map<id, record> - O(1) 查找和更新
-                this.recordMap = new Map();
-
-                // 时间分桶索引：Map<groupKey, Set<id>> - O(1) 获取组内所有记录ID
-                this.timeIndex = {
-                    day: new Map(),      // key: "2025-10-15", value: Set<id>
-                    week: new Map(),     // key: "2025-W42", value: Set<id>
-                    month: new Map(),    // key: "2025-10", value: Set<id>
-                    quarter: new Map()   // key: "2025-Q4", value: Set<id>
-                };
-
-                // 统计：总记录数
-                this.size = 0;
-
-                // 加载状态
-                this.isLoading = false;
-                this.loadProgress = 0;
-            }
-
-            // 【新】渐进式批量加载数据（异步非阻塞）
-            async loadDataProgressively(records, cycleEngine, options = {}) {
-                const {
-                    batchSize = 10000,          // 每批处理数量
-                    onProgress = null,          // 进度回调
-                    onPriorityComplete = null,  // 优先数据加载完成回调
-                    priorityCount = 20000       // 优先加载的数据量（最新数据）
-                } = options;
-
-                this.isLoading = true;
-                const startTime = performance.now();
-                const totalRecords = records.length;
-
-                console.log(`🚀 开始渐进式加载 ${totalRecords.toLocaleString()} 条记录...`);
-
-                // 清空现有数据
-                this.recordMap.clear();
-                Object.values(this.timeIndex).forEach(index => index.clear());
-
-                // === 第1阶段：优先加载最新数据（用户最关心的），立即可用 ===
-                const priorityRecords = records.slice(-priorityCount); // 最新的N条
-                await this._loadBatch(priorityRecords, cycleEngine, 0, totalRecords, onProgress);
-
-                const priorityTime = performance.now() - startTime;
-                console.log(`✅ 优先数据加载完成: ${this.size.toLocaleString()} 条，耗时 ${priorityTime.toFixed(0)}ms`);
-
-                // 通知调用者优先数据已加载完成
-                if (onPriorityComplete) {
-                    onPriorityComplete(this.size, totalRecords);
-                }
-
-                // 如果总数小于优先数，已经加载完成
-                if (totalRecords <= priorityCount) {
-                    this.isLoading = false;
-                    this.loadProgress = 100;
-                    if (onProgress) onProgress(100, this.size, totalRecords);
-                    return;
-                }
-
-                // === 第2阶段：后台分批加载剩余数据（不阻塞UI）===
-                const remainingRecords = records.slice(0, -priorityCount);
-                const batches = Math.ceil(remainingRecords.length / batchSize);
-
-                for (let i = 0; i < batches; i++) {
-                    const batchStart = i * batchSize;
-                    const batchEnd = Math.min((i + 1) * batchSize, remainingRecords.length);
-                    const batch = remainingRecords.slice(batchStart, batchEnd);
-
-                    // 在浏览器空闲时处理（不阻塞用户交互）
-                    await this._loadBatchIdle(batch, cycleEngine, priorityCount + batchStart, totalRecords, onProgress);
-
-                    // 每批之间让出控制权，避免长时间阻塞
-                    await new Promise(resolve => setTimeout(resolve, 0));
-                }
-
-                this.isLoading = false;
-                this.loadProgress = 100;
-                const totalTime = performance.now() - startTime;
-                console.log(`✅ 全部数据加载完成: ${this.size.toLocaleString()} 条记录，总耗时 ${totalTime.toFixed(0)}ms`);
-                console.log(`📊 索引统计: Day=${this.timeIndex.day.size}, Week=${this.timeIndex.week.size}, Month=${this.timeIndex.month.size}, Quarter=${this.timeIndex.quarter.size}`);
-            }
-
-            // 内部：处理一批数据
-            async _loadBatch(batch, cycleEngine, offset, total, onProgress) {
-                for (const record of batch) {
-                    const id = record.id || record.plan_id;
-                    if (!id) continue;
-
-                    this.recordMap.set(id, record);
-                    this._addToTimeIndex(record, cycleEngine);
-                }
-
-                this.size = this.recordMap.size;
-                this.loadProgress = Math.round(((offset + batch.length) / total) * 100);
-
-                if (onProgress) {
-                    onProgress(this.loadProgress, this.size, total);
-                }
-            }
-
-            // 内部：在空闲时处理一批数据（使用 requestIdleCallback）
-            async _loadBatchIdle(batch, cycleEngine, offset, total, onProgress) {
-                return new Promise(resolve => {
-                    const processChunk = (deadline) => {
-                        let processed = 0;
-                        const chunkSize = 1000; // 每个时间片处理1000条
-
-                        while (processed < batch.length && (deadline.timeRemaining() > 0 || deadline.didTimeout)) {
-                            const end = Math.min(processed + chunkSize, batch.length);
-                            const chunk = batch.slice(processed, end);
-
-                            for (const record of chunk) {
-                                const id = record.id || record.plan_id;
-                                if (!id) continue;
-
-                                this.recordMap.set(id, record);
-                                this._addToTimeIndex(record, cycleEngine);
-                            }
-
-                            processed = end;
-                        }
-
-                        this.size = this.recordMap.size;
-                        this.loadProgress = Math.round(((offset + processed) / total) * 100);
-
-                        if (onProgress) {
-                            onProgress(this.loadProgress, this.size, total);
-                        }
-
-                        if (processed < batch.length) {
-                            // 还有数据未处理，继续在下一个空闲时间片处理
-                            requestIdleCallback(processChunk);
-                        } else {
-                            resolve();
-                        }
-                    };
-
-                    requestIdleCallback(processChunk, { timeout: 100 });
-                });
-            }
-
-            // 【保留】同步批量加载数据（用于小数据量或特殊场景）
-            loadData(records, cycleEngine) {
-                console.log(`🚀 开始构建高性能索引，共 ${records.length} 条记录...`);
-                const startTime = performance.now();
-
-                this.recordMap.clear();
-                Object.values(this.timeIndex).forEach(index => index.clear());
-
-                for (const record of records) {
-                    const id = record.id || record.plan_id;
-                    if (!id) continue;
-
-                    // 存入主 Map
-                    this.recordMap.set(id, record);
-
-                    // 建立时间索引
-                    this._addToTimeIndex(record, cycleEngine);
-                }
-
-                this.size = this.recordMap.size;
-                const loadTime = performance.now() - startTime;
-                console.log(`✅ 高性能索引构建完成: ${this.size} 条记录，耗时 ${loadTime.toFixed(2)}ms`);
-                console.log(`📊 索引统计: Day=${this.timeIndex.day.size}, Week=${this.timeIndex.week.size}, Month=${this.timeIndex.month.size}, Quarter=${this.timeIndex.quarter.size}`);
-            }
-
-            // 添加或更新单条记录
-            upsert(record, cycleEngine) {
-                const id = record.id || record.plan_id;
-                if (!id) return false;
-
-                // 如果记录已存在，先从旧的时间索引中移除
-                if (this.recordMap.has(id)) {
-                    const oldRecord = this.recordMap.get(id);
-                    this._removeFromTimeIndex(oldRecord, cycleEngine);
-                }
-
-                // 更新主 Map
-                this.recordMap.set(id, record);
-
-                // 重建时间索引
-                this._addToTimeIndex(record, cycleEngine);
-
-                this.size = this.recordMap.size;
-                return true;
-            }
-
-            // 【新】快速增量合并新数据（O(k)，k为新增数量）
-            mergeIncrementalData(newRecords, cycleEngine) {
-                if (!newRecords || newRecords.length === 0) {
-                    console.log('📊 无增量数据需要合并');
-                    return { merged: 0, updated: 0, inserted: 0 };
-                }
-
-                const startTime = performance.now();
-                let updated = 0;
-                let inserted = 0;
-
-                for (const record of newRecords) {
-                    const id = record.id || record.plan_id;
-                    if (!id) continue;
-
-                    const isUpdate = this.recordMap.has(id);
-
-                    // 如果是更新，先移除旧索引
-                    if (isUpdate) {
-                        const oldRecord = this.recordMap.get(id);
-                        this._removeFromTimeIndex(oldRecord, cycleEngine);
-                        updated++;
-                    } else {
-                        inserted++;
-                    }
-
-                    // 更新主 Map
-                    this.recordMap.set(id, record);
-
-                    // 添加时间索引
-                    this._addToTimeIndex(record, cycleEngine);
-                }
-
-                this.size = this.recordMap.size;
-                const mergeTime = performance.now() - startTime;
-
-                console.log(`⚡ 增量合并完成: ${newRecords.length} 条 (新增${inserted}, 更新${updated}), 耗时 ${mergeTime.toFixed(2)}ms`);
-
-                return { merged: newRecords.length, updated, inserted };
-            }
-
-            // 删除记录
-            delete(id, cycleEngine) {
-                if (!this.recordMap.has(id)) return false;
-
-                const record = this.recordMap.get(id);
-
-                // 从时间索引中移除
-                this._removeFromTimeIndex(record, cycleEngine);
-
-                // 从主 Map 删除
-                this.recordMap.delete(id);
-
-                this.size = this.recordMap.size;
-                return true;
-            }
-
-            // 根据 ID 获取记录 - O(1)
-            get(id) {
-                return this.recordMap.get(id);
-            }
-
-            // 获取指定时间分组的所有记录 - O(1) 获取ID集合 + O(k) 获取记录
-            getRecordsByGroup(groupType, groupLabel, cycleEngine) {
-                const index = this.timeIndex[groupType];
-                if (!index) return [];
-
-                const ids = index.get(groupLabel);
-                if (!ids || ids.size === 0) return [];
-
-                const records = [];
-                for (const id of ids) {
-                    const record = this.recordMap.get(id);
-                    if (record) records.push(record);
-                }
-
-                return records;
-            }
-
-            // 获取所有记录（用于兼容旧代码）
-            getAllRecords() {
-                return Array.from(this.recordMap.values());
-            }
-
-            // 内部方法：添加到时间索引
-            _addToTimeIndex(record, cycleEngine) {
-                try {
-                    const recordTime = new Date(record.start_time || record['开始时间']);
-                    if (isNaN(recordTime.getTime())) return;
-
-                    const id = record.id || record.plan_id;
-
-                    // 为每种分组类型建立索引
-                    ['day', 'week', 'month', 'quarter'].forEach(groupType => {
-                        const groupInfo = cycleEngine.getGroup(recordTime, groupType);
-                        const groupLabel = groupInfo.label;
-
-                        if (!this.timeIndex[groupType].has(groupLabel)) {
-                            this.timeIndex[groupType].set(groupLabel, new Set());
-                        }
-                        this.timeIndex[groupType].get(groupLabel).add(id);
-                    });
-                } catch (error) {
-                    console.warn('添加时间索引失败:', error);
-                }
-            }
-
-            // 内部方法：从时间索引中移除
-            _removeFromTimeIndex(record, cycleEngine) {
-                try {
-                    const recordTime = new Date(record.start_time || record['开始时间']);
-                    if (isNaN(recordTime.getTime())) return;
-
-                    const id = record.id || record.plan_id;
-
-                    ['day', 'week', 'month', 'quarter'].forEach(groupType => {
-                        const groupInfo = cycleEngine.getGroup(recordTime, groupType);
-                        const groupLabel = groupInfo.label;
-
-                        const groupSet = this.timeIndex[groupType].get(groupLabel);
-                        if (groupSet) {
-                            groupSet.delete(id);
-                            // 如果集合为空，删除该键
-                            if (groupSet.size === 0) {
-                                this.timeIndex[groupType].delete(groupLabel);
-                            }
-                        }
-                    });
-                } catch (error) {
-                    console.warn('移除时间索引失败:', error);
-                }
-            }
-
-            // 清空所有数据
-            clear() {
-                this.recordMap.clear();
-                Object.values(this.timeIndex).forEach(index => index.clear());
-                this.size = 0;
-            }
-        }
-
         // 主应用类（使用 API）
         class SatelliteApp {
             constructor() {
@@ -2654,10 +2229,11 @@
 
                 this.bindElements();
                 this.bindEvents();
+                this.data = null;
 
-                // 使用高性能数据存储
-                this.dataStore = new HighPerformanceDataStore();
-                this.data = null; // 保留用于兼容性，实际使用 dataStore
+                // 初始化状态标志和缓冲队列
+                this.isInitializing = true;  // 标记是否正在初始化
+                this.pendingUpdates = [];    // 暂存初始化期间的 WebSocket 推送
 
                 this.fieldMappingValues = {
                     planIdField: 'plan_id',
@@ -2824,17 +2400,63 @@
 
             async init() {
                 try {
-                    console.log('🔧 SatelliteApp 初始化：从本地缓存加载数据...');
+                    const initStart = performance.now();
+                    console.log('🔧 SatelliteApp 初始化：数据结构优化模式...');
 
-                    // 如果有保存的统计结果，立即隐藏空状态提示（减少闪烁）
+                    // 【优化1】立即隐藏加载状态，先显示UI
+                    if (this.chartLoadingState) this.chartLoadingState.classList.add('hidden');
+                    if (this.chartEmptyState) this.chartEmptyState.classList.add('hidden');
+
+                    // 【优化2】如果有保存的统计结果，立即恢复显示（0延迟）
                     if (this.hasSavedStats) {
-                        console.log('🚀 检测到保存的统计结果，预先隐藏加载状态');
-                        if (this.chartLoadingState) this.chartLoadingState.classList.add('hidden');
-                        if (this.chartEmptyState) this.chartEmptyState.classList.add('hidden');
+                        console.log('⚡ 检测到保存的统计结果，立即恢复');
+                        const statsRestored = this.restoreStatisticsResult();
+                        if (statsRestored) {
+                            console.log('✅ 统计结果已从sessionStorage恢复（0延迟）');
+                        }
                     }
 
-                    // 从本地缓存获取所有数据
-                    const cachedData = await cacheManager.queryAllData();
+                    // 【优化3】快速获取元数据（< 10ms）
+                    const metadata = await cacheManager.getMetadataFast();
+
+                    if (!metadata || metadata.actualCount === 0) {
+                        console.warn('⚠️ 本地缓存为空，显示无数据提示');
+                        this.noDataAlert.classList.remove('hidden');
+                        return;
+                    }
+
+                    const metadataTime = performance.now() - initStart;
+                    console.log(`⚡ 元数据加载完成 (${metadataTime.toFixed(0)}ms)，页面立即可用！`);
+
+                    // 设置时间范围（基于元数据）
+                    if (metadata.minDate && metadata.maxDate) {
+                        console.log(`📊 数据时间范围: ${metadata.minDate.toLocaleString()} 至 ${metadata.maxDate.toLocaleString()}`);
+                    }
+
+                    // 【优化4】使用游标分批加载数据（边加载边处理，不阻塞UI）
+                    this.data = [];
+                    let loadedCount = 0;
+
+                    await cacheManager.queryAllDataProgressive((batch, total) => {
+                        // 边加载边合并到 dataStore
+                        this.dataStore.mergeIncrementalData(batch, this.cycleEngine);
+                        this.data.push(...batch);
+                        loadedCount = total;
+
+                        // 每5000条输出一次进度
+                        if (total % 5000 === 0) {
+                            const progress = Math.round((total / metadata.actualCount) * 100);
+                            console.log(`🔄 加载进度: ${total.toLocaleString()}/${metadata.actualCount.toLocaleString()} (${progress}%)`);
+                        }
+                    }, 5000); // 每批5000条
+
+                    const cachedData = this.data; // 兼容后续代码
+
+                    const loadTime = performance.now() - initStart;
+                    console.log(`✅ 数据加载完成: ${loadedCount.toLocaleString()} 条 (总耗时 ${loadTime.toFixed(0)}ms)`);
+
+                    // 【优化5】数据加载完成后折叠系统说明（视觉反馈）
+                    this.collapseInstructionsAfterLoad();
 
                     if (!cachedData || cachedData.length === 0) {
                         console.warn('⚠️ 本地缓存为空，显示无数据提示');
@@ -2842,111 +2464,10 @@
                         return;
                     }
 
-                    // ========== 🚀 智能加载策略 ==========
-
-                    // 快速获取缓存统计信息（不读取全部数据）
-                    const cacheStats = await cacheManager.getDataStats();
-                    const totalCached = cacheStats?.actualCount || cachedData.length;
-                    const lastSyncTime = cacheStats?.lastSyncTime || 0;
-
-                    console.log(`📊 缓存统计: ${totalCached.toLocaleString()} 条数据，最后同步: ${new Date(lastSyncTime).toLocaleString()}`);
-
+                    this.data = cachedData;
                     this.noDataAlert.classList.add('hidden');
 
-                    // 检查是否有新数据（昨天之后的数据）
-                    const yesterday = new Date();
-                    yesterday.setDate(yesterday.getDate() - 1);
-                    yesterday.setHours(0, 0, 0, 0);
-                    const hasRecentData = lastSyncTime > yesterday.getTime();
-
-                    // === 策略1：小缓存 + 有最近数据 → 快速增量同步（0.3-0.5s）===
-                    if (totalCached < 200000 && hasRecentData) {
-                        console.log(`⚡ 策略1：快速增量同步模式`);
-
-                        // 【修复】计算统一的时间边界（只计算一次，避免时间不一致）
-                        const cutoffDate = new Date();
-                        cutoffDate.setDate(cutoffDate.getDate() - 7);
-                        const cutoffTimestamp = cutoffDate.getTime();
-
-                        // 1. 先加载最近7天数据（立即可用）
-                        const recentData = await cacheManager.queryDataSince(cutoffTimestamp);
-                        this.data = recentData; // 保留兼容性
-                        this.dataStore.loadData(recentData, this.cycleEngine);
-
-                        console.log(`✅ 最近7天数据加载完成 (${recentData.length.toLocaleString()} 条)，页面已可用！`);
-
-                        // 【新增】通知共享管理器数据已加载
-                        if (window.sharedDataManager) {
-                            window.sharedDataManager.notifyDataLoaded(recentData, 'index');
-                        }
-
-                        // 2. 后台异步增量加载剩余数据（不阻塞，智能调度）
-                        if (recentData.length < totalCached) {
-                            const remainingCount = totalCached - recentData.length;
-                            console.log(`🔄 后台加载剩余 ${remainingCount.toLocaleString()} 条历史数据...`);
-
-                            // 【修复】使用同一个 cutoffTimestamp，确保边界一致
-                            this._startBackgroundLoading(cutoffTimestamp, remainingCount);
-                        }
-                    }
-                    // === 策略2：小数据量（<5万）- 直接同步加载，速度最快 ===
-                    else if (totalCached < 50000) {
-                        console.log(`⚡ 策略2：小数据集快速加载模式`);
-                        this.data = cachedData;
-                        this.dataStore.loadData(cachedData, this.cycleEngine);
-
-                        // 【新增】通知共享管理器数据已加载
-                        if (window.sharedDataManager) {
-                            window.sharedDataManager.notifyDataLoaded(cachedData, 'index');
-                        }
-                    }
-                    // === 策略3：大数据量（>=5万）- 渐进式加载，UI无阻塞 ===
-                    else {
-                        console.log(`⚡ 策略3：大数据集渐进式加载模式`);
-                        this.data = cachedData;
-                        const priorityCount = Math.min(30000, totalCached); // 优先加载3万条
-
-                        console.log(`📊 大数据集检测(${totalCached.toLocaleString()}条)，启用渐进式加载...`);
-                        console.log(`   ⚡ 优先加载最新 ${priorityCount.toLocaleString()} 条（约 ${Math.round(priorityCount/5000)}天数据）`);
-                        console.log(`   🔄 后台加载剩余 ${(totalCached - priorityCount).toLocaleString()} 条`);
-
-                        // 使用 Promise 来等待优先数据加载完成
-                        let resolvePriorityLoad;
-                        const priorityLoadPromise = new Promise(resolve => {
-                            resolvePriorityLoad = resolve;
-                        });
-
-                        // 启动渐进式加载
-                        this.dataStore.loadDataProgressively(cachedData, this.cycleEngine, {
-                            batchSize: 10000,
-                            priorityCount: priorityCount,
-                            onPriorityComplete: (loaded, total) => {
-                                // 优先数据加载完成，通知继续初始化
-                                console.log(`✅ 优先数据已就绪 (${loaded.toLocaleString()}/${total.toLocaleString()})，页面可用！`);
-
-                                // 【新增】通知共享管理器数据已加载（优先部分）
-                                if (window.sharedDataManager) {
-                                    window.sharedDataManager.notifyDataLoaded(this.data, 'index');
-                                }
-
-                                resolvePriorityLoad();
-                            },
-                            onProgress: (progress, loaded, total) => {
-                                if (progress === 100) {
-                                    console.log(`✅ 全部数据加载完成: ${loaded.toLocaleString()} 条`);
-                                    // 后台加载完成后，如果图表正在显示，静默刷新
-                                    if (this.chart) {
-                                        console.log('🔄 后台数据加载完成，静默刷新图表...');
-                                        this.generateStatistics({ silent: true });
-                                    }
-                                }
-                            }
-                        });
-
-                        // 等待优先数据加载完成（约1-2秒）
-                        await priorityLoadPromise;
-                        console.log(`⏱️ 页面初始化完成，剩余数据将在后台加载（不影响使用）`);
-                    }
+                    console.log(`✅ 从本地缓存加载了 ${cachedData.length} 条数据`);
 
                     // 使用 reduce 方法高效查找最小/最大时间戳，支持任意大小的数据集
                     if (cachedData.length > 0) {
@@ -2986,181 +2507,100 @@
                         }
                     }
 
+                    // 【优化6】初始化完成，处理暂存的 WebSocket 更新
+                    this.isInitializing = false;
+                    if (this.pendingUpdates.length > 0) {
+                        console.log(`🔄 初始化完成，处理暂存的 ${this.pendingUpdates.length} 条更新...`);
+                        const updates = [...this.pendingUpdates];
+                        this.pendingUpdates = [];
+
+                        // 逐条应用暂存的更新
+                        updates.forEach(({ operation, record }) => {
+                            this.handleRealtimeUpdate(operation, record);
+                        });
+
+                        console.log(`✅ 暂存更新已全部应用`);
+                    }
+
                 } catch (error) {
                     console.error('❌ 应用初始化失败:', error);
                     showError('应用初始化失败: ' + (error.message || error));
                     this.noDataAlert.classList.remove('hidden');
+                    this.isInitializing = false; // 确保即使失败也清除初始化标志
                 }
             }
 
-            // ==================== 增量更新方法（性能优化）====================
-
-            // 增量更新：插入或更新单条记录到内存（使用高性能数据结构）
-            incrementalUpdateRecord(record) {
-                const perfStart = performance.now();
-
-                if (!this.data) {
-                    console.warn('⚠️ 内存数据未初始化，跳过增量更新');
-                    return false;
-                }
-
-                // 确保记录有 ID
-                const recordId = record.id || record.plan_id;
-                if (!recordId) {
-                    console.warn('⚠️ 记录缺少ID，无法增量更新:', record);
-                    return false;
-                }
-
-                // 使用高性能数据结构更新 - O(1)
-                const success = this.dataStore.upsert(record, this.cycleEngine);
-
-                if (success) {
-                    // 同步更新 this.data 数组（用于兼容性）
-                    const index = this.data.findIndex(item => {
-                        const itemId = item.id || item.plan_id;
-                        return itemId === recordId;
-                    });
-
-                    if (index !== -1) {
-                        this.data[index] = { ...this.data[index], ...record };
-                    } else {
-                        this.data.push(record);
-                    }
-
-                    const perfTime = performance.now() - perfStart;
-                    console.log(`✅ 增量更新：ID=${recordId} (耗时: ${perfTime.toFixed(2)}ms)`);
-                    return true;
-                } else {
-                    console.warn(`⚠️ 增量更新失败: ID=${recordId}`);
-                    return false;
+            // 数据加载完成后折叠系统说明（视觉反馈）
+            collapseInstructionsAfterLoad() {
+                if (typeof window.collapseInstructions === 'function') {
+                    window.collapseInstructions();
                 }
             }
 
-            // 增量删除：从内存中删除单条记录（使用高性能数据结构）
-            incrementalDeleteRecord(recordId) {
+            // 处理实时数据更新（WebSocket 推送或跨页面广播）
+            handleRealtimeUpdate(operation, record) {
+                // 如果正在初始化，暂存更新到队列
+                if (this.isInitializing) {
+                    this.pendingUpdates.push({ operation, record });
+                    console.log(`📦 初始化中，暂存更新: ${operation} (队列长度: ${this.pendingUpdates.length})`);
+                    return;
+                }
+
+                if (!this.data || !this.dataStore) {
+                    console.warn('⚠️ 应用未初始化，忽略实时更新');
+                    return;
+                }
+
                 const perfStart = performance.now();
-
-                if (!this.data) {
-                    console.warn('⚠️ 内存数据未初始化，跳过增量删除');
-                    return false;
-                }
-
-                // 使用高性能数据结构删除 - O(1)
-                const success = this.dataStore.delete(recordId, this.cycleEngine);
-
-                if (success) {
-                    // 同步更新 this.data 数组（用于兼容性）
-                    const index = this.data.findIndex(item => {
-                        const itemId = item.id || item.plan_id;
-                        return itemId === recordId;
-                    });
-
-                    if (index !== -1) {
-                        this.data.splice(index, 1);
-                    }
-
-                    const perfTime = performance.now() - perfStart;
-                    console.log(`✅ 增量删除：ID=${recordId} (耗时: ${perfTime.toFixed(2)}ms)`);
-                    return true;
-                } else {
-                    console.warn(`⚠️ 增量删除：未找到记录 ID=${recordId}`);
-                    return false;
-                }
-            }
-
-            // 智能增量图表更新：只更新受影响的数据点，避免完全重建图表（使用分桶索引）
-            smartUpdateChart(record, operation) {
-                const perfStart = performance.now();
-
-                // 如果图表不存在或没有显示，直接跳过
-                if (!this.chart || !this.data) {
-                    console.log('⏭️ 图表未初始化，跳过智能更新');
-                    return false;
-                }
 
                 try {
-                    // 获取当前筛选条件
-                    const groupType = this.groupBy.value;
-                    const range = this.computeDateRangeForGroup(groupType, this.startDate.value, this.endDate.value);
-
-                    // 检查记录是否在当前显示的时间范围内
-                    const recordTime = new Date(record.start_time || record['开始时间']);
-                    if (recordTime < range.startDate || recordTime >= range.endDate) {
-                        console.log(`⏭️ 记录不在图表时间范围内 (${recordTime.toISOString()})，跳过更新`);
-                        return true; // 返回 true 表示处理成功（虽然跳过了）
+                    // 1. 更新内存数据 this.data
+                    if (operation === 'insert' || operation === 'update') {
+                        const index = this.data.findIndex(r => r.id === record.id);
+                        if (index >= 0) {
+                            // 更新现有记录
+                            this.data[index] = record;
+                            console.log(`🔄 更新内存记录 ID: ${record.id}`);
+                        } else {
+                            // 新增记录
+                            this.data.push(record);
+                            console.log(`➕ 新增内存记录 ID: ${record.id}`);
+                        }
+                    } else if (operation === 'delete') {
+                        const beforeLength = this.data.length;
+                        this.data = this.data.filter(r => r.id !== record.id);
+                        if (this.data.length < beforeLength) {
+                            console.log(`🗑️ 删除内存记录 ID: ${record.id}`);
+                        }
                     }
 
-                    console.log(`🎯 记录在图表范围内，执行智能更新...`);
-
-                    // 找到记录所属的分组
-                    const groupInfo = this.cycleEngine.getGroup(recordTime, groupType);
-                    const groupLabel = groupInfo.label;
-
-                    // === 核心优化：使用分桶索引快速获取单组数据，避免遍历全部14万条 ===
-                    const groupRecords = this.dataStore.getRecordsByGroup(groupType, groupLabel);
-
-                    if (groupRecords.length === 0) {
-                        console.warn(`⚠️ 未找到组内记录 (label: ${groupLabel})，降级到全量更新`);
-                        return false;
+                    // 2. 更新 DataStore（用于高效查询）
+                    if (operation === 'insert' || operation === 'update') {
+                        this.dataStore.mergeIncrementalData([record], this.cycleEngine);
+                    } else if (operation === 'delete') {
+                        // DataStore 的删除逻辑（如果需要）
+                        // 当前 DataStore 不支持删除，下次重新生成统计时会自动更新
                     }
-
-                    const calcStart = performance.now();
-
-                    // 快速计算该组的统计数据（只处理组内记录，不遍历全部数据）
-                    const planIdField = this.fieldMappingValues.planIdField;
-                    const taskResultField = this.fieldMappingValues.taskResultField;
-
-                    const planIds = new Set();
-                    const results = [];
-
-                    groupRecords.forEach(item => {
-                        const planId = item[planIdField];
-                        if (planId) planIds.add(planId);
-                        results.push(item[taskResultField] || '未知');
-                    });
-
-                    const count = planIds.size;
-                    const failureCount = this.taskAnalyzer.countFailures(results);
-                    const successRate = this.taskAnalyzer.calculateSuccessRate(results, count);
-
-                    const calcTime = performance.now() - calcStart;
-                    console.log(`   📊 组内计算: ${groupRecords.length} 条记录, 耗时: ${calcTime.toFixed(2)}ms`);
-
-                    // 查找图表中该组的索引
-                    const chartLabels = this.chart.data.labels;
-                    const affectedGroupIndex = chartLabels.indexOf(groupLabel);
-
-                    if (affectedGroupIndex === -1) {
-                        console.warn(`⚠️ 图表中未找到该组 (label: ${groupLabel})，降级到全量更新`);
-                        return false;
-                    }
-
-                    // 更新图表数据（使用 Chart.js 的 update 方法，不重建）
-                    this.chart.data.datasets[0].data[affectedGroupIndex] = count;
-                    this.chart.data.datasets[1].data[affectedGroupIndex] = failureCount;
-                    this.chart.data.datasets[2].data[affectedGroupIndex] = parseFloat(successRate.toFixed(3));
-
-                    // 使用 'none' 动画模式实现即时更新
-                    this.chart.update('none'); // 'none' 模式：无动画，立即更新
 
                     const perfTime = performance.now() - perfStart;
-                    console.log(`⚡ 智能增量更新完成 (总耗时: ${perfTime.toFixed(2)}ms, 组: ${groupLabel}, 索引: ${affectedGroupIndex})`);
+                    console.log(`⚡ 实时数据更新完成 (${perfTime.toFixed(2)}ms)`);
 
-                    return true;
+                    // 3. 如果当前有统计结果显示，刷新图表
+                    if (this.hasSavedStats) {
+                        console.log('📊 检测到数据变更，刷新统计图表...');
+                        this.generateStatistics();
+                    }
 
                 } catch (error) {
-                    console.error('❌ 智能更新失败:', error);
-                    return false;
+                    console.error('❌ 处理实时更新失败:', error);
                 }
             }
-
-            // ==================== 原有方法 ====================
 
             // 更新缓存状态显示
             async updateCacheStatus() {
                 try {
                     const cacheInfo = await cacheManager.checkAllDataCache();
-
+                    
                     if (cacheInfo) {
                         this.cacheStatus.textContent = '✅ 已缓存';
                         this.cacheStatus.className = 'text-xs px-2 py-1 rounded-full bg-success/10 text-success';
@@ -3188,15 +2628,10 @@
                     
                     if (result.success) {
                         showSuccess(`缓存刷新成功！更新了 ${result.totalCount} 条数据`);
-
-                        // 清除sessionStorage中的旧统计结果，确保数据一致性
-                        sessionStorage.removeItem('satelliteStatistics');
-                        console.log('🗑️ 已清除缓存的统计结果，确保数据一致性');
-
                         // 重新加载数据到应用
                         await this.init();
                     }
-
+                    
                     this.updateCacheStatus();
                     
                 } catch (error) {
@@ -3220,9 +2655,8 @@
                     
                     console.log('🧹 用户清空缓存...');
                     await cacheManager.clearAllDataCache();
-
+                    
                     // 清空应用数据
-                    this.dataStore.clear();
                     this.data = null;
                     this.noDataAlert.classList.remove('hidden');
                     
@@ -3253,68 +2687,6 @@
                 } finally {
                     this.clearCacheBtn.disabled = false;
                     this.clearCacheBtn.innerHTML = '<i class="fa fa-trash mr-1"></i>清空缓存';
-                }
-            }
-
-            // 后台加载历史数据（安全的增量合并，无遗漏、无重复、无并发冲突）
-            async _startBackgroundLoading(beforeTimestamp, expectedCount) {
-                const startTime = performance.now();
-                let loadedCount = 0;
-                let processedBatches = 0;
-
-                console.log(`🚀 启动后台加载: ${expectedCount.toLocaleString()} 条历史数据`);
-
-                try {
-                    // 【修复】使用同步 onBatch 回调，确保顺序处理，避免并发覆盖
-                    await cacheManager.queryDataBeforeBatch(
-                        beforeTimestamp,
-                        10000, // 每批 10k 条
-                        (batch, totalCount) => {
-                            processedBatches++;
-
-                            // 增量合并到现有数据结构（O(k) 复杂度，Map 自动去重）
-                            const result = this.dataStore.mergeIncrementalData(batch, this.cycleEngine);
-                            loadedCount += result.merged;
-
-                            // 计算进度
-                            const progress = Math.min(100, Math.round((loadedCount / expectedCount) * 100));
-                            const elapsed = performance.now() - startTime;
-                            const speed = Math.round(loadedCount / (elapsed / 1000)); // 条/秒
-
-                            // 每 5 批输出一次进度（避免控制台刷屏）
-                            if (processedBatches % 5 === 0 || progress === 100) {
-                                console.log(`🔄 后台加载进度: ${loadedCount.toLocaleString()}/${expectedCount.toLocaleString()} (${progress}%) | 速度: ${speed.toLocaleString()} 条/秒`);
-                            }
-                        }
-                    );
-
-                    const totalTime = performance.now() - startTime;
-                    const avgSpeed = Math.round(loadedCount / (totalTime / 1000));
-
-                    console.log(`✅ 后台加载完成: ${loadedCount.toLocaleString()} 条`);
-                    console.log(`   ⏱️ 总耗时: ${totalTime.toFixed(0)}ms (${avgSpeed.toLocaleString()} 条/秒)`);
-                    console.log(`   📦 批次: ${processedBatches} 批 (每批 10k 条)`);
-
-                    // 【修复】从 Map 重建 this.data 数组，确保数据一致性（无重复、无遗漏）
-                    console.log('🔄 正在同步 this.data 数组...');
-                    this.data = Array.from(this.dataStore.recordMap.values());
-                    console.log(`✅ this.data 已同步: ${this.data.length.toLocaleString()} 条记录`);
-
-                    // 后台加载完成后，如果图表正在显示，静默刷新
-                    if (this.chart) {
-                        console.log('🔄 后台数据加载完成，静默刷新图表...');
-                        await this.generateStatistics({ silent: true });
-                    }
-
-                } catch (error) {
-                    console.error('❌ 后台加载失败:', error);
-                    console.log(`   已加载: ${loadedCount.toLocaleString()}/${expectedCount.toLocaleString()} 条`);
-
-                    // 失败时也要同步 this.data
-                    if (loadedCount > 0) {
-                        console.log('🔄 同步已加载的数据到 this.data...');
-                        this.data = Array.from(this.dataStore.recordMap.values());
-                    }
                 }
             }
 
@@ -3389,27 +2761,19 @@
                 return { startDate: startBound, endDate: endBound };
             }
 
-            async generateStatistics(options = {}) {
-                const { silent = false } = options; // 静默模式：不显示加载状态，用于实时同步
-
-                console.log(`🔍 [DEBUG] generateStatistics 被调用, silent=${silent}, this.data长度=${this.data ? this.data.length : 'null'}`);
-
+            async generateStatistics() {
                 if (!this.data) {
-                    console.error('❌ [DEBUG] this.data 为空，无法生成统计');
                     showError('当前没有数据，请先导入数据后重试');
                     return;
                 }
 
-                // 非静默模式才显示加载状态
-                if (!silent) {
-                    this.chartLoadingState.classList.remove('hidden');
-                    this.chartEmptyState.classList.add('hidden');
-                    this.chartErrorState.classList.add('hidden');
-                    this.detailTableBody.innerHTML = '';
-                }
+                this.chartLoadingState.classList.remove('hidden');
+                this.chartEmptyState.classList.add('hidden');
+                this.chartErrorState.classList.add('hidden');
+                this.detailTableBody.innerHTML = '';
 
                 try {
-                    console.log(`📊 开始生成统计结果（基于本地缓存数据）${silent ? ' [静默模式]' : ''}...`);
+                    console.log('📊 开始生成统计结果（基于本地缓存数据）...');
 
                     const groupType = this.groupBy.value;
                     const range = this.computeDateRangeForGroup(groupType, this.startDate.value, this.endDate.value);
@@ -3420,9 +2784,7 @@
 
                     console.log(`📈 生成统计组数: ${stats.length}`);
 
-                    console.log(`🔍 [DEBUG] 准备更新图表, stats数量=${stats.length}, groupType=${groupType}`);
                     this.updateChart(stats, groupType);
-                    console.log(`🔍 [DEBUG] updateChart完成`);
                     this.updateStatCards(stats);
                     this.updateDetailTable(stats);
 
@@ -3431,14 +2793,10 @@
 
                 } catch (error) {
                     console.error('❌ 生成统计结果失败:', error);
-                    if (!silent) {
-                        this.chartErrorMessage.textContent = '生成统计结果时出错: ' + error.message;
-                        this.chartErrorState.classList.remove('hidden');
-                    }
+                    this.chartErrorMessage.textContent = '生成统计结果时出错: ' + error.message;
+                    this.chartErrorState.classList.remove('hidden');
                 } finally {
-                    if (!silent) {
-                        this.chartLoadingState.classList.add('hidden');
-                    }
+                    this.chartLoadingState.classList.add('hidden');
                 }
             }
 
@@ -3519,61 +2877,31 @@
             }
 
             updateChart(stats, groupType) {
-                console.log(`🔍 [DEBUG] updateChart 开始, stats=${stats ? stats.length : 'null'}, 当前chart对象=${this.chart ? '存在' : '不存在'}`);
+                if (this.chart) {
+                    this.chart.destroy();
+                }
 
-                try {
-                    if (this.chart) {
-                        console.log(`🔍 [DEBUG] 销毁旧图表`);
-                        this.chart.destroy();
-                        this.chart = null;
-                        console.log(`🔍 [DEBUG] 旧图表已销毁并清空引用`);
-                    }
+                if (!stats || stats.length === 0) {
+                    this.chartEmptyState.classList.remove('hidden');
+                    return;
+                }
 
-                    if (!stats || stats.length === 0) {
-                        console.log(`🔍 [DEBUG] stats为空，显示空状态`);
-                        this.chartEmptyState.classList.remove('hidden');
-                        return;
-                    }
+                this.chartEmptyState.classList.add('hidden');
 
-                    this.chartEmptyState.classList.add('hidden');
-                    console.log(`🔍 [DEBUG] 开始准备图表数据`);
+                const labels = stats.map(stat => stat.label);
+                const planCounts = stats.map(stat => stat.count);
+                const failureCounts = stats.map(stat => stat.failureCount);
+                const successRates = stats.map(stat => parseFloat(stat.successRate.toFixed(3)));
+                
+                // 获取是否显示数据标签的设置
+                const showLabels = this.showDataLabels.checked;
 
-                    const labels = stats.map(stat => stat.label);
-                    const planCounts = stats.map(stat => stat.count);
-                    const failureCounts = stats.map(stat => stat.failureCount);
-                    const successRates = stats.map(stat => parseFloat(stat.successRate.toFixed(3)));
+                const ctx = this.dataChart.getContext('2d');
 
-                    console.log(`🔍 [DEBUG] 图表数据准备完成: labels=${labels.length}, planCounts=${planCounts.length}`);
-                    console.log(`🔍 [DEBUG] 完整数据 - labels:`, labels);
-                    console.log(`🔍 [DEBUG] 完整数据 - planCounts:`, planCounts);
-                    console.log(`🔍 [DEBUG] 完整数据 - failureCounts:`, failureCounts);
-                    console.log(`🔍 [DEBUG] 完整数据 - successRates:`, successRates);
+                // 注册数据标签插件
+                Chart.register(ChartDataLabels);
 
-                    // 获取是否显示数据标签的设置
-                    const showLabels = this.showDataLabels.checked;
-                    console.log(`🔍 [DEBUG] 数据标签显示设置: ${showLabels}`);
-
-                    // 延迟创建图表，确保 Canvas 完全重置
-                    setTimeout(() => {
-                        // 手动清空 canvas，确保没有残留
-                        const ctx = this.dataChart.getContext('2d');
-                        console.log(`🔍 [DEBUG] Canvas context获取成功: ${ctx ? 'true' : 'false'}`);
-                        console.log(`🔍 [DEBUG] Canvas 尺寸: width=${this.dataChart.width}, height=${this.dataChart.height}`);
-
-                        // 清空 canvas
-                        ctx.clearRect(0, 0, this.dataChart.width, this.dataChart.height);
-                        console.log(`🔍 [DEBUG] Canvas 已手动清空`);
-
-                        // 注册数据标签插件
-                        if (typeof ChartDataLabels !== 'undefined') {
-                            Chart.register(ChartDataLabels);
-                            console.log(`🔍 [DEBUG] ChartDataLabels插件已注册`);
-                        } else {
-                            console.warn(`⚠️ ChartDataLabels插件未加载`);
-                        }
-
-                        console.log(`🔍 [DEBUG] 准备创建新图表...`);
-                        this.chart = new Chart(ctx, {
+                this.chart = new Chart(ctx, {
                     type: 'line',
                     data: {
                         labels: labels,
@@ -3713,37 +3041,7 @@
                             }
                         }
                     }
-                        });
-
-                        console.log(`✅ [DEBUG] 新图表创建成功! chart 对象:`, this.chart);
-
-                        // 强制触发图表更新和重绘
-                        if (this.chart) {
-                            // 使用 requestAnimationFrame 确保在下一帧渲染
-                            requestAnimationFrame(() => {
-                                if (this.chart) {
-                                    this.chart.resize();
-                                    console.log(`📐 [DEBUG] 图表强制调整尺寸`);
-
-                                    this.chart.update('none'); // 'none' 表示无动画更新
-                                    console.log(`🔄 [DEBUG] 图表强制更新（无动画）`);
-
-                                    // 再次使用动画更新，确保视觉刷新
-                                    setTimeout(() => {
-                                        if (this.chart) {
-                                            this.chart.update('active');
-                                            console.log(`🔄 [DEBUG] 图表强制更新（动画模式）`);
-                                        }
-                                    }, 50);
-                                }
-                            });
-                        }
-                    }, 100); // 延迟 100ms 创建图表
-
-                } catch (error) {
-                    console.error(`❌ [ERROR] updateChart 发生错误:`, error);
-                    console.error(`错误堆栈:`, error.stack);
-                }
+                });
             }
 
             toggleDataLabels() {
@@ -4647,120 +3945,37 @@
                 console.log('🔌 启动 WebSocket 实时同步...');
                 wsSyncManager.connect();
 
-                // 防抖计时器：避免短时间内多次更新meta
-                let updateMetaDebounceTimer = null;
-
-                // 图表重建防抖计时器和锁
-                let chartRebuildTimer = null;
-                let isChartRebuilding = false;
-                let pendingChartRebuild = false;
-
-                // 监听实时同步更新（使用增量更新优化性能）
-                wsSyncManager.onSyncUpdate = async (update) => {
-                    const perfStart = performance.now();
+                // 监听实时同步更新（WebSocket 推送）
+                wsSyncManager.onSyncUpdate = (update) => {
                     const { operation, record } = update;
-                    console.log(`🔄 实时同步更新: ${operation}`, record);
+                    console.log(`📡 WebSocket 推送: ${operation}`, record?.id || record?.plan_id);
 
-                    // 如果当前正在显示数据，使用增量更新
+                    // 1. 更新内存数据并刷新图表
                     if (window.app && window.app.data) {
-                        // === 第1步：增量更新内存数据 ===
-                        let memoryUpdated = false;
-                        const memoryStart = performance.now();
+                        window.app.handleRealtimeUpdate(operation, record);
+                    }
 
-                        if (operation === 'insert' || operation === 'update') {
-                            memoryUpdated = window.app.incrementalUpdateRecord(record);
-                        } else if (operation === 'delete') {
-                            const recordId = record.id || record.plan_id;
-                            memoryUpdated = window.app.incrementalDeleteRecord(recordId);
-                        }
-
-                        const memoryTime = performance.now() - memoryStart;
-                        console.log(`⏱️ [1/3] 内存更新耗时: ${memoryTime.toFixed(2)}ms`);
-
-                        // 【新增】通知共享管理器数据已更新
-                        if (memoryUpdated && window.sharedDataManager) {
-                            window.sharedDataManager.notifyDataUpdate({ operation, record });
-                        }
-
-                        if (!memoryUpdated) {
-                            // 内存更新失败时，降级到全量加载
-                            console.warn('⚠️ 内存更新失败，降级到全量加载...');
-                            const reloadStart = performance.now();
-                            const cachedData = await cacheManager.queryAllData();
-                            if (cachedData && cachedData.length > 0) {
-                                window.app.data = cachedData;
-                                const reloadTime = performance.now() - reloadStart;
-                                console.log(`✅ 已重新加载 ${cachedData.length} 条数据到内存 (耗时: ${reloadTime.toFixed(2)}ms)`);
-
-                                // 标记需要重建图表
-                                pendingChartRebuild = true;
-                            }
-                            return;
-                        }
-
-                        // === 第2步：智能增量更新图表（核心优化）===
-                        const chartStart = performance.now();
-
-                        // 尝试智能更新（只更新受影响的数据点）
-                        const smartUpdated = window.app.smartUpdateChart(record, operation);
-
-                        const chartTime = performance.now() - chartStart;
-                        console.log(`⏱️ [2/3] 图表更新耗时: ${chartTime.toFixed(2)}ms (智能更新: ${smartUpdated ? '成功✅' : '降级⬇️'})`);
-
-                        // 如果智能更新失败，标记需要重建（使用防抖避免多次重建）
-                        if (!smartUpdated) {
-                            console.log('📊 标记需要重建图表...');
-                            pendingChartRebuild = true;
-                        }
-
-                        // === 第3步：防抖更新 IndexedDB meta（降低写入频率）===
-                        if (updateMetaDebounceTimer) {
-                            clearTimeout(updateMetaDebounceTimer);
-                        }
-                        updateMetaDebounceTimer = setTimeout(async () => {
-                            const metaStart = performance.now();
-                            await cacheManager.updateMeta();
-                            const metaTime = performance.now() - metaStart;
-                            console.log(`⏱️ [3/3] Meta更新耗时: ${metaTime.toFixed(2)}ms`);
-                        }, 1000); // 1秒防抖，减少 meta 写入频率
-
-                        // 清除 sessionStorage，确保下次刷新重新计算
-                        sessionStorage.removeItem('satelliteStatistics');
-
-                        const totalTime = performance.now() - perfStart;
-                        console.log(`✅ 总响应时间: ${totalTime.toFixed(2)}ms`);
-
-                        // === 防抖重建图表（多个更新合并为一次重建）===
-                        if (pendingChartRebuild) {
-                            // 清除之前的计时器
-                            if (chartRebuildTimer) {
-                                clearTimeout(chartRebuildTimer);
-                            }
-
-                            // 设置新的防抖计时器（200ms 延迟）
-                            chartRebuildTimer = setTimeout(async () => {
-                                // 如果已经在重建，跳过
-                                if (isChartRebuilding) {
-                                    console.log('⏭️ 图表正在重建中，跳过此次请求');
-                                    return;
-                                }
-
-                                console.log('🔨 开始批量重建图表...');
-                                isChartRebuilding = true;
-                                pendingChartRebuild = false;
-
-                                try {
-                                    await window.app.generateStatistics({ silent: true });
-                                } catch (error) {
-                                    console.error('❌ 图表重建失败:', error);
-                                } finally {
-                                    isChartRebuilding = false;
-                                    console.log('✅ 图表重建完成');
-                                }
-                            }, 200); // 200ms 防抖：多次更新只触发一次重建
-                        }
+                    // 2. 广播给其他页面（trend-analysis.html 等）
+                    if (typeof window.sharedDataManager !== 'undefined') {
+                        window.sharedDataManager.notifyDataUpdate({
+                            operation: operation,
+                            record: record
+                        });
                     }
                 };
+
+                // 监听跨页面数据广播（来自 trend-analysis.html 等其他页面）
+                if (typeof window.sharedDataManager !== 'undefined') {
+                    window.sharedDataManager.onDataUpdate = (operation, record) => {
+                        console.log(`📡 收到跨页面广播: ${operation}`, record?.id || record?.plan_id);
+
+                        // 更新内存数据并刷新图表
+                        if (window.app && window.app.data) {
+                            window.app.handleRealtimeUpdate(operation, record);
+                        }
+                    };
+                    console.log('✅ SharedDataManager 跨页面同步已配置');
+                }
 
                 // 监听连接状态变化
                 wsSyncManager.onConnectionChange = (connected) => {
@@ -4812,11 +4027,12 @@
                 window.app = new SatelliteApp();
             }
 
-            // 系统说明自动折叠功能
+            // 【优化】系统说明默认折叠，立即可用
             const instructionsToggle = document.getElementById('instructionsToggle');
             const instructionsContent = document.getElementById('instructionsContent');
             const instructionsIcon = document.getElementById('instructionsIcon');
-            let isExpanded = true;
+            let isExpanded = false; // 默认折叠
+            let autoCollapseTimer = null; // 自动折叠定时器
 
             // 折叠/展开函数
             function toggleInstructions() {
@@ -4834,18 +4050,38 @@
                 isExpanded = !isExpanded;
             }
 
-            // 初始设置展开状态
+            // 【优化】初始设置为展开状态，数据加载完成后自动折叠
             instructionsContent.style.maxHeight = instructionsContent.scrollHeight + 'px';
+            instructionsIcon.classList.remove('fa-chevron-down');
+            instructionsIcon.classList.add('fa-chevron-up');
+            isExpanded = true;
 
-            // 点击标题切换折叠状态
-            instructionsToggle.addEventListener('click', toggleInstructions);
+            // 点击标题切换折叠状态 + 1秒后自动折叠
+            instructionsToggle.addEventListener('click', () => {
+                // 切换折叠状态
+                toggleInstructions();
 
-            // 5秒后自动折叠
-            setTimeout(() => {
+                // 清除之前的定时器
+                if (autoCollapseTimer) {
+                    clearTimeout(autoCollapseTimer);
+                }
+
+                // 1秒后自动折叠（无论当前是展开还是折叠）
+                autoCollapseTimer = setTimeout(() => {
+                    if (isExpanded) {
+                        toggleInstructions();
+                        console.log('⏱️ 系统说明自动折叠（点击1秒后）');
+                    }
+                }, 1000);
+            });
+
+            // 提供全局方法供 SatelliteApp 调用（数据加载完成后折叠）
+            window.collapseInstructions = () => {
                 if (isExpanded) {
                     toggleInstructions();
+                    console.log('📋 系统说明已折叠（数据加载完成标志）');
                 }
-            }, 5000);
+            };
         });
     </script>
 </body>
