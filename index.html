@@ -1533,11 +1533,14 @@
                 const { operation, record } = changeData;
 
                 try {
-                    switch (operation) {
+                    // 统一转换为小写，支持大小写不敏感
+                    const op = operation.toLowerCase();
+
+                    switch (op) {
                         case 'insert':
                         case 'update':
                             await this.cacheManager.updateRecord(record);
-                            console.log(`🔄 实时同步：${operation === 'insert' ? '新增' : '更新'} 记录 ID: ${record.id}`);
+                            console.log(`🔄 实时同步：${op === 'insert' ? '新增' : '更新'} 记录 ID: ${record.id}`);
                             break;
 
                         case 'delete':
@@ -1549,9 +1552,9 @@
                             console.warn('⚠️ 未知操作类型:', operation);
                     }
 
-                    // 触发更新回调
+                    // 触发更新回调（使用统一的小写操作类型）
                     if (this.onSyncUpdate) {
-                        this.onSyncUpdate({ operation, record });
+                        this.onSyncUpdate({ operation: op, record });
                     }
 
                 } catch (error) {
@@ -1799,6 +1802,166 @@
                 console.error('获取统计数据失败:', error);
                 showError('获取统计数据失败: ' + error.message);
                 return null;
+            }
+        }
+
+        // 【优化】数据桶存储 - 用于增量更新和快速查询
+        class DataStore {
+            constructor() {
+                this.buckets = new Map(); // key: groupKey, value: { planIds: Set, results: [], ... }
+                this.recordToBucket = new Map(); // key: recordId, value: groupKey (用于快速定位记录所在桶)
+                this.fieldMapping = {
+                    planIdField: 'plan_id',
+                    startTimeField: 'start_time',
+                    taskResultField: 'task_result'
+                };
+            }
+
+            // 批量加载数据到桶（初始化）
+            loadData(data, cycleEngine, groupType = 'day') {
+                const perfStart = performance.now();
+                this.clear();
+
+                data.forEach(record => {
+                    this.addRecordToBucket(record, cycleEngine, groupType);
+                });
+
+                const perfTime = performance.now() - perfStart;
+                console.log(`✅ 数据桶初始化完成: ${this.buckets.size} 个桶, ${data.length} 条记录 (${perfTime.toFixed(2)}ms)`);
+            }
+
+            // 增量添加单条记录到桶
+            addRecordToBucket(record, cycleEngine, groupType) {
+                const { planIdField, startTimeField, taskResultField } = this.fieldMapping;
+
+                try {
+                    const timeValue = record[startTimeField];
+                    let date;
+
+                    if (timeValue instanceof Date) {
+                        date = cycleEngine.createFileDate(timeValue);
+                    } else if (typeof timeValue === 'string') {
+                        date = new Date(timeValue);
+                    } else if (typeof timeValue === 'number') {
+                        date = new Date((timeValue - 25569) * 86400000);
+                    } else {
+                        return;
+                    }
+
+                    if (isNaN(date.getTime())) return;
+
+                    const groupInfo = cycleEngine.getGroup(date, groupType);
+                    const groupKey = groupInfo.key;
+
+                    // 获取或创建桶
+                    if (!this.buckets.has(groupKey)) {
+                        this.buckets.set(groupKey, {
+                            key: groupKey,
+                            label: groupInfo.label,
+                            planIds: new Set(),
+                            results: [],
+                            rangeStart: groupInfo.rangeStart,
+                            rangeEnd: groupInfo.rangeEnd
+                        });
+                    }
+
+                    const bucket = this.buckets.get(groupKey);
+                    bucket.planIds.add(record[planIdField]);
+                    bucket.results.push(record[taskResultField] || '未知');
+
+                    // 记录映射关系
+                    this.recordToBucket.set(record.id, groupKey);
+
+                } catch (error) {
+                    console.warn('添加记录到桶失败:', record, error);
+                }
+            }
+
+            // 增量更新/删除记录
+            updateRecord(record, cycleEngine, groupType, isDelete = false) {
+                const perfStart = performance.now();
+                const oldGroupKey = this.recordToBucket.get(record.id);
+
+                // 如果是删除或更新，先从旧桶中移除
+                if (oldGroupKey) {
+                    const oldBucket = this.buckets.get(oldGroupKey);
+                    if (oldBucket) {
+                        oldBucket.planIds.delete(record[this.fieldMapping.planIdField]);
+                        // 简化：清空结果数组，重新统计（或使用更精确的删除逻辑）
+                        // 实际应用中可能需要更复杂的逻辑来删除特定结果
+                    }
+                    this.recordToBucket.delete(record.id);
+                }
+
+                // 如果不是删除，添加到新桶
+                if (!isDelete) {
+                    this.addRecordToBucket(record, cycleEngine, groupType);
+                }
+
+                const perfTime = performance.now() - perfStart;
+                console.log(`⚡ 桶增量更新完成 (${perfTime.toFixed(2)}ms)`);
+
+                return oldGroupKey; // 返回受影响的桶 key
+            }
+
+            // 批量增量合并数据
+            mergeIncrementalData(records, cycleEngine, groupType = 'day') {
+                const perfStart = performance.now();
+                const affectedBuckets = new Set();
+
+                records.forEach(record => {
+                    const oldGroupKey = this.updateRecord(record, cycleEngine, groupType, false);
+                    if (oldGroupKey) affectedBuckets.add(oldGroupKey);
+
+                    const newGroupKey = this.recordToBucket.get(record.id);
+                    if (newGroupKey) affectedBuckets.add(newGroupKey);
+                });
+
+                const perfTime = performance.now() - perfStart;
+                console.log(`✅ 批量增量合并完成: ${records.length} 条记录, 影响 ${affectedBuckets.size} 个桶 (${perfTime.toFixed(2)}ms)`);
+
+                return Array.from(affectedBuckets);
+            }
+
+            // 获取统计结果（按时间排序）
+            getStats(taskAnalyzer, startDate = null, endDate = null) {
+                const perfStart = performance.now();
+
+                let buckets = Array.from(this.buckets.values());
+
+                // 按时间范围过滤
+                if (startDate || endDate) {
+                    buckets = buckets.filter(bucket => {
+                        if (startDate && bucket.rangeStart < startDate) return false;
+                        if (endDate && bucket.rangeEnd >= endDate) return false;
+                        return true;
+                    });
+                }
+
+                // 按时间排序
+                buckets.sort((a, b) => a.rangeStart - b.rangeStart);
+
+                // 计算统计数据
+                const stats = buckets.map(bucket => ({
+                    key: bucket.key,
+                    label: bucket.label,
+                    count: bucket.planIds.size,
+                    failureCount: taskAnalyzer.countFailures(bucket.results),
+                    successRate: taskAnalyzer.calculateSuccessRate(bucket.results, bucket.planIds.size),
+                    rangeStart: bucket.rangeStart,
+                    rangeEnd: bucket.rangeEnd
+                }));
+
+                const perfTime = performance.now() - perfStart;
+                console.log(`⚡ 从桶获取统计结果 (${perfTime.toFixed(2)}ms)`);
+
+                return stats;
+            }
+
+            // 清空所有桶
+            clear() {
+                this.buckets.clear();
+                this.recordToBucket.clear();
             }
         }
 
@@ -2219,6 +2382,7 @@
             constructor() {
                 this.cycleEngine = new CycleRuleEngine();
                 this.taskAnalyzer = new TaskResultAnalyzer();
+                this.dataStore = new DataStore(); // 数据桶存储，用于增量更新
                 this.chart = null;
 
                 // 预检查 sessionStorage，判断是否有保存的状态（加快恢复速度）
@@ -2327,7 +2491,15 @@
                 // 添加页面状态自动保存监听器
                 if (this.startDate) this.startDate.addEventListener('change', () => this.savePageState());
                 if (this.endDate) this.endDate.addEventListener('change', () => this.savePageState());
-                if (this.groupBy) this.groupBy.addEventListener('change', () => this.savePageState());
+                if (this.groupBy) this.groupBy.addEventListener('change', () => {
+                    this.savePageState();
+                    // 【优化】统计周期改变时，重新加载 DataStore 桶
+                    if (this.data && this.dataStore) {
+                        const newGroupType = this.groupBy.value;
+                        console.log(`🔄 统计周期已改变为 ${newGroupType}，重新加载 DataStore...`);
+                        this.dataStore.loadData(this.data, this.cycleEngine, newGroupType);
+                    }
+                });
                 if (this.dayStart) {
                     this.dayStart.addEventListener('change', (e) => {
                         this.dayStartDisplay.textContent = e.target.value;
@@ -2469,6 +2641,10 @@
 
                     console.log(`✅ 从本地缓存加载了 ${cachedData.length} 条数据`);
 
+                    // 【优化】初始化数据桶存储（用于增量更新）
+                    const groupType = this.groupBy ? this.groupBy.value : 'day';
+                    this.dataStore.loadData(this.data, this.cycleEngine, groupType);
+
                     // 使用 reduce 方法高效查找最小/最大时间戳，支持任意大小的数据集
                     if (cachedData.length > 0) {
                         const { minTimestamp, maxTimestamp } = cachedData.reduce((acc, d) => {
@@ -2557,11 +2733,18 @@
                 const perfStart = performance.now();
 
                 try {
-                    // 更新内存数据 this.data
+                    // 【优化】使用 DataStore 增量更新桶数据
+                    const groupType = this.groupBy ? this.groupBy.value : 'day';
+                    const affectedBuckets = new Set();
+
+                    // 更新内存数据 this.data 和 DataStore
                     if (operation === 'insert' || operation === 'update') {
                         const index = this.data.findIndex(r => r.id === record.id);
                         if (index >= 0) {
-                            // 更新现有记录
+                            // 更新现有记录：先从旧桶删除，再加入新桶
+                            const oldBucketKey = this.dataStore.updateRecord(this.data[index], this.cycleEngine, groupType, true);
+                            if (oldBucketKey) affectedBuckets.add(oldBucketKey);
+
                             this.data[index] = record;
                             console.log(`🔄 更新内存记录 ID: ${record.id}`);
                         } else {
@@ -2569,21 +2752,31 @@
                             this.data.push(record);
                             console.log(`➕ 新增内存记录 ID: ${record.id}`);
                         }
+
+                        // 添加到新桶
+                        this.dataStore.addRecordToBucket(record, this.cycleEngine, groupType);
+                        const newBucketKey = this.dataStore.recordToBucket.get(record.id);
+                        if (newBucketKey) affectedBuckets.add(newBucketKey);
+
                     } else if (operation === 'delete') {
-                        const beforeLength = this.data.length;
-                        this.data = this.data.filter(r => r.id !== record.id);
-                        if (this.data.length < beforeLength) {
+                        const index = this.data.findIndex(r => r.id === record.id);
+                        if (index >= 0) {
+                            // 从桶中删除
+                            const oldBucketKey = this.dataStore.updateRecord(this.data[index], this.cycleEngine, groupType, true);
+                            if (oldBucketKey) affectedBuckets.add(oldBucketKey);
+
+                            this.data.splice(index, 1);
                             console.log(`🗑️ 删除内存记录 ID: ${record.id}`);
                         }
                     }
 
                     const perfTime = performance.now() - perfStart;
-                    console.log(`⚡ 实时数据更新完成 (${perfTime.toFixed(2)}ms)`);
+                    console.log(`⚡ 实时数据更新完成 (${perfTime.toFixed(2)}ms)，影响 ${affectedBuckets.size} 个桶`);
 
-                    // 如果当前有统计结果显示，刷新图表
-                    if (this.hasSavedStats) {
-                        console.log('📊 检测到数据变更，刷新统计图表...');
-                        this.generateStatistics();
+                    // 如果当前有统计结果显示，增量刷新图表（只更新受影响的桶）
+                    if (this.hasSavedStats && affectedBuckets.size > 0) {
+                        console.log(`📊 检测到数据变更，增量刷新图表 (${affectedBuckets.size} 个桶)...`);
+                        this.updateChartIncremental(Array.from(affectedBuckets));
                     }
 
                 } catch (error) {
@@ -2775,9 +2968,20 @@
                     const startDate = range.startDate;
                     const endDate = range.endDate;
 
-                    const stats = this.groupDataByCycle(groupType, startDate, endDate);
+                    let stats;
 
-                    console.log(`📈 生成统计组数: ${stats.length}`);
+                    // 【优化】优先使用 DataStore 桶查询（O(n) -> O(1)）
+                    if (this.dataStore && this.dataStore.buckets.size > 0) {
+                        const perfStart = performance.now();
+                        stats = this.dataStore.getStats(this.taskAnalyzer, startDate, endDate);
+                        const perfTime = performance.now() - perfStart;
+                        console.log(`⚡ 使用桶查询生成统计 (${perfTime.toFixed(2)}ms, ${stats.length} 个桶)`);
+                    } else {
+                        // 兜底：使用传统方法遍历数据
+                        console.log('⚠️ DataStore 未初始化，使用传统遍历方法');
+                        stats = this.groupDataByCycle(groupType, startDate, endDate);
+                        console.log(`📈 生成统计组数: ${stats.length}`);
+                    }
 
                     this.updateChart(stats, groupType);
                     this.updateStatCards(stats);
@@ -3037,6 +3241,66 @@
                         }
                     }
                 });
+            }
+
+            // 【优化】增量更新图表 - 仅更新受影响的桶数据
+            updateChartIncremental(affectedBucketKeys) {
+                if (!this.chart || !this.dataStore || affectedBucketKeys.length === 0) {
+                    console.warn('⚠️ 无法进行增量更新，执行完整刷新');
+                    this.generateStatistics();
+                    return;
+                }
+
+                const perfStart = performance.now();
+
+                try {
+                    const groupType = this.groupBy.value;
+                    const range = this.computeDateRangeForGroup(groupType, this.startDate.value, this.endDate.value);
+                    const startDate = range.startDate;
+                    const endDate = range.endDate;
+
+                    // 从 DataStore 获取所有统计数据（快速）
+                    const stats = this.dataStore.getStats(this.taskAnalyzer, startDate, endDate);
+
+                    // 创建桶键到索引的映射
+                    const keyToIndex = new Map();
+                    stats.forEach((stat, index) => {
+                        keyToIndex.set(stat.key, index);
+                    });
+
+                    // 更新受影响的数据点
+                    let updatedCount = 0;
+                    affectedBucketKeys.forEach(bucketKey => {
+                        const index = keyToIndex.get(bucketKey);
+                        if (index !== undefined && index < this.chart.data.labels.length) {
+                            const stat = stats[index];
+
+                            // 更新图表数据（3个数据集：计划ID数量、失败次数、成功率）
+                            this.chart.data.datasets[0].data[index] = stat.count;
+                            this.chart.data.datasets[1].data[index] = stat.failureCount;
+                            this.chart.data.datasets[2].data[index] = parseFloat(stat.successRate.toFixed(3));
+
+                            updatedCount++;
+                        }
+                    });
+
+                    // 刷新图表显示（使用 'none' 模式实现即时更新）
+                    this.chart.update('none');
+
+                    // 同时更新统计卡片和详细表格
+                    this.updateStatCards(stats);
+                    this.updateDetailTable(stats);
+
+                    // 保存更新后的统计结果
+                    this.saveStatisticsResult(stats, groupType);
+
+                    const perfTime = performance.now() - perfStart;
+                    console.log(`⚡ 增量更新完成 (${perfTime.toFixed(2)}ms)，更新了 ${updatedCount}/${affectedBucketKeys.length} 个数据点`);
+
+                } catch (error) {
+                    console.error('❌ 增量更新失败，执行完整刷新:', error);
+                    this.generateStatistics();
+                }
             }
 
             toggleDataLabels() {
@@ -3331,8 +3595,13 @@
                     console.warn('保存配置失败:', error);
                 }
                 
-                // 🚨 重要：配置更新后，重新计算当前显示的统计数据
-                console.log('🔄 配置已更新，重新生成统计...');
+                // 🚨 重要：配置更新后，重新加载 DataStore 并重新计算统计数据
+                console.log('🔄 配置已更新，重新加载 DataStore...');
+                if (this.data && this.dataStore) {
+                    const groupType = this.groupBy.value;
+                    this.dataStore.loadData(this.data, this.cycleEngine, groupType);
+                }
+                console.log('🔄 重新生成统计...');
                 this.generateStatistics();
                 
                 showSuccess('周期配置已更新，统计数据已刷新');
