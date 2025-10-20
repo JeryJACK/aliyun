@@ -2131,6 +2131,170 @@
             return '\uFEFF' + csvLines.join('\n');
         }
 
+        // ==================== 高性能数据结构管理器 ====================
+        class HighPerformanceDataStore {
+            constructor() {
+                // 主存储：Map<id, record> - O(1) 查找和更新
+                this.recordMap = new Map();
+
+                // 时间分桶索引：Map<groupKey, Set<id>> - O(1) 获取组内所有记录ID
+                this.timeIndex = {
+                    day: new Map(),      // key: "2025-10-15", value: Set<id>
+                    week: new Map(),     // key: "2025-W42", value: Set<id>
+                    month: new Map(),    // key: "2025-10", value: Set<id>
+                    quarter: new Map()   // key: "2025-Q4", value: Set<id>
+                };
+
+                // 统计：总记录数
+                this.size = 0;
+            }
+
+            // 批量加载数据（初始化时使用）
+            loadData(records, cycleEngine) {
+                console.log(`🚀 开始构建高性能索引，共 ${records.length} 条记录...`);
+                const startTime = performance.now();
+
+                this.recordMap.clear();
+                Object.values(this.timeIndex).forEach(index => index.clear());
+
+                for (const record of records) {
+                    const id = record.id || record.plan_id;
+                    if (!id) continue;
+
+                    // 存入主 Map
+                    this.recordMap.set(id, record);
+
+                    // 建立时间索引
+                    this._addToTimeIndex(record, cycleEngine);
+                }
+
+                this.size = this.recordMap.size;
+                const loadTime = performance.now() - startTime;
+                console.log(`✅ 高性能索引构建完成: ${this.size} 条记录，耗时 ${loadTime.toFixed(2)}ms`);
+                console.log(`📊 索引统计: Day=${this.timeIndex.day.size}, Week=${this.timeIndex.week.size}, Month=${this.timeIndex.month.size}, Quarter=${this.timeIndex.quarter.size}`);
+            }
+
+            // 添加或更新单条记录
+            upsert(record, cycleEngine) {
+                const id = record.id || record.plan_id;
+                if (!id) return false;
+
+                // 如果记录已存在，先从旧的时间索引中移除
+                if (this.recordMap.has(id)) {
+                    const oldRecord = this.recordMap.get(id);
+                    this._removeFromTimeIndex(oldRecord, cycleEngine);
+                }
+
+                // 更新主 Map
+                this.recordMap.set(id, record);
+
+                // 重建时间索引
+                this._addToTimeIndex(record, cycleEngine);
+
+                this.size = this.recordMap.size;
+                return true;
+            }
+
+            // 删除记录
+            delete(id, cycleEngine) {
+                if (!this.recordMap.has(id)) return false;
+
+                const record = this.recordMap.get(id);
+
+                // 从时间索引中移除
+                this._removeFromTimeIndex(record, cycleEngine);
+
+                // 从主 Map 删除
+                this.recordMap.delete(id);
+
+                this.size = this.recordMap.size;
+                return true;
+            }
+
+            // 根据 ID 获取记录 - O(1)
+            get(id) {
+                return this.recordMap.get(id);
+            }
+
+            // 获取指定时间分组的所有记录 - O(1) 获取ID集合 + O(k) 获取记录
+            getRecordsByGroup(groupType, groupLabel, cycleEngine) {
+                const index = this.timeIndex[groupType];
+                if (!index) return [];
+
+                const ids = index.get(groupLabel);
+                if (!ids || ids.size === 0) return [];
+
+                const records = [];
+                for (const id of ids) {
+                    const record = this.recordMap.get(id);
+                    if (record) records.push(record);
+                }
+
+                return records;
+            }
+
+            // 获取所有记录（用于兼容旧代码）
+            getAllRecords() {
+                return Array.from(this.recordMap.values());
+            }
+
+            // 内部方法：添加到时间索引
+            _addToTimeIndex(record, cycleEngine) {
+                try {
+                    const recordTime = new Date(record.start_time || record['开始时间']);
+                    if (isNaN(recordTime.getTime())) return;
+
+                    const id = record.id || record.plan_id;
+
+                    // 为每种分组类型建立索引
+                    ['day', 'week', 'month', 'quarter'].forEach(groupType => {
+                        const groupInfo = cycleEngine.getGroup(recordTime, groupType);
+                        const groupLabel = groupInfo.label;
+
+                        if (!this.timeIndex[groupType].has(groupLabel)) {
+                            this.timeIndex[groupType].set(groupLabel, new Set());
+                        }
+                        this.timeIndex[groupType].get(groupLabel).add(id);
+                    });
+                } catch (error) {
+                    console.warn('添加时间索引失败:', error);
+                }
+            }
+
+            // 内部方法：从时间索引中移除
+            _removeFromTimeIndex(record, cycleEngine) {
+                try {
+                    const recordTime = new Date(record.start_time || record['开始时间']);
+                    if (isNaN(recordTime.getTime())) return;
+
+                    const id = record.id || record.plan_id;
+
+                    ['day', 'week', 'month', 'quarter'].forEach(groupType => {
+                        const groupInfo = cycleEngine.getGroup(recordTime, groupType);
+                        const groupLabel = groupInfo.label;
+
+                        const groupSet = this.timeIndex[groupType].get(groupLabel);
+                        if (groupSet) {
+                            groupSet.delete(id);
+                            // 如果集合为空，删除该键
+                            if (groupSet.size === 0) {
+                                this.timeIndex[groupType].delete(groupLabel);
+                            }
+                        }
+                    });
+                } catch (error) {
+                    console.warn('移除时间索引失败:', error);
+                }
+            }
+
+            // 清空所有数据
+            clear() {
+                this.recordMap.clear();
+                Object.values(this.timeIndex).forEach(index => index.clear());
+                this.size = 0;
+            }
+        }
+
         // 主应用类（使用 API）
         class SatelliteApp {
             constructor() {
@@ -2147,7 +2311,11 @@
 
                 this.bindElements();
                 this.bindEvents();
-                this.data = null;
+
+                // 使用高性能数据存储
+                this.dataStore = new HighPerformanceDataStore();
+                this.data = null; // 保留用于兼容性，实际使用 dataStore
+
                 this.fieldMappingValues = {
                     planIdField: 'plan_id',
                     startTimeField: 'start_time',
@@ -2331,7 +2499,9 @@
                         return;
                     }
 
-                    this.data = cachedData;
+                    // 加载数据到高性能存储
+                    this.dataStore.loadData(cachedData, this.cycleEngine);
+                    this.data = cachedData; // 保留用于兼容性
                     this.noDataAlert.classList.add('hidden');
 
                     console.log(`✅ 从本地缓存加载了 ${cachedData.length} 条数据`);
@@ -2383,8 +2553,10 @@
 
             // ==================== 增量更新方法（性能优化）====================
 
-            // 增量更新：插入或更新单条记录到内存
+            // 增量更新：插入或更新单条记录到内存（使用高性能数据结构）
             incrementalUpdateRecord(record) {
+                const perfStart = performance.now();
+
                 if (!this.data) {
                     console.warn('⚠️ 内存数据未初始化，跳过增量更新');
                     return false;
@@ -2397,42 +2569,56 @@
                     return false;
                 }
 
-                // 查找记录在数组中的索引
-                const index = this.data.findIndex(item => {
-                    const itemId = item.id || item.plan_id;
-                    return itemId === recordId;
-                });
+                // 使用高性能数据结构更新 - O(1)
+                const success = this.dataStore.upsert(record, this.cycleEngine);
 
-                if (index !== -1) {
-                    // 更新现有记录
-                    this.data[index] = { ...this.data[index], ...record };
-                    console.log(`✅ 增量更新：已更新记录 ID=${recordId} (索引=${index})`);
+                if (success) {
+                    // 同步更新 this.data 数组（用于兼容性）
+                    const index = this.data.findIndex(item => {
+                        const itemId = item.id || item.plan_id;
+                        return itemId === recordId;
+                    });
+
+                    if (index !== -1) {
+                        this.data[index] = { ...this.data[index], ...record };
+                    } else {
+                        this.data.push(record);
+                    }
+
+                    const perfTime = performance.now() - perfStart;
+                    console.log(`✅ 增量更新：ID=${recordId} (耗时: ${perfTime.toFixed(2)}ms)`);
                     return true;
                 } else {
-                    // 插入新记录
-                    this.data.push(record);
-                    console.log(`✅ 增量更新：已插入新记录 ID=${recordId} (当前共${this.data.length}条)`);
-                    return true;
+                    console.warn(`⚠️ 增量更新失败: ID=${recordId}`);
+                    return false;
                 }
             }
 
-            // 增量删除：从内存中删除单条记录
+            // 增量删除：从内存中删除单条记录（使用高性能数据结构）
             incrementalDeleteRecord(recordId) {
+                const perfStart = performance.now();
+
                 if (!this.data) {
                     console.warn('⚠️ 内存数据未初始化，跳过增量删除');
                     return false;
                 }
 
-                // 查找记录在数组中的索引
-                const index = this.data.findIndex(item => {
-                    const itemId = item.id || item.plan_id;
-                    return itemId === recordId;
-                });
+                // 使用高性能数据结构删除 - O(1)
+                const success = this.dataStore.delete(recordId, this.cycleEngine);
 
-                if (index !== -1) {
-                    // 删除记录
-                    this.data.splice(index, 1);
-                    console.log(`✅ 增量删除：已删除记录 ID=${recordId} (当前共${this.data.length}条)`);
+                if (success) {
+                    // 同步更新 this.data 数组（用于兼容性）
+                    const index = this.data.findIndex(item => {
+                        const itemId = item.id || item.plan_id;
+                        return itemId === recordId;
+                    });
+
+                    if (index !== -1) {
+                        this.data.splice(index, 1);
+                    }
+
+                    const perfTime = performance.now() - perfStart;
+                    console.log(`✅ 增量删除：ID=${recordId} (耗时: ${perfTime.toFixed(2)}ms)`);
                     return true;
                 } else {
                     console.warn(`⚠️ 增量删除：未找到记录 ID=${recordId}`);
@@ -2440,7 +2626,7 @@
                 }
             }
 
-            // 智能增量图表更新：只更新受影响的数据点，避免完全重建图表
+            // 智能增量图表更新：只更新受影响的数据点，避免完全重建图表（使用分桶索引）
             smartUpdateChart(record, operation) {
                 const perfStart = performance.now();
 
@@ -2466,32 +2652,57 @@
 
                     // 找到记录所属的分组
                     const groupInfo = this.cycleEngine.getGroup(recordTime, groupType);
-                    const groupKey = groupInfo.key;
+                    const groupLabel = groupInfo.label;
 
-                    // 重新计算当前时间范围的统计数据（只计算受影响的组）
-                    const stats = this.groupDataByCycle(groupType, range.startDate, range.endDate);
+                    // === 核心优化：使用分桶索引快速获取单组数据，避免遍历全部14万条 ===
+                    const groupRecords = this.dataStore.getRecordsByGroup(groupType, groupLabel);
 
-                    // 查找受影响组的索引
-                    const affectedGroupIndex = stats.findIndex(stat => {
-                        return stat.label === this.cycleEngine.formatGroupKey(groupType, groupKey);
+                    if (groupRecords.length === 0) {
+                        console.warn(`⚠️ 未找到组内记录 (label: ${groupLabel})，降级到全量更新`);
+                        return false;
+                    }
+
+                    const calcStart = performance.now();
+
+                    // 快速计算该组的统计数据（只处理组内记录，不遍历全部数据）
+                    const planIdField = this.fieldMappingValues.planIdField;
+                    const taskResultField = this.fieldMappingValues.taskResultField;
+
+                    const planIds = new Set();
+                    const results = [];
+
+                    groupRecords.forEach(item => {
+                        const planId = item[planIdField];
+                        if (planId) planIds.add(planId);
+                        results.push(item[taskResultField] || '未知');
                     });
 
+                    const count = planIds.size;
+                    const failureCount = this.taskAnalyzer.countFailures(results);
+                    const successRate = this.taskAnalyzer.calculateSuccessRate(results, count);
+
+                    const calcTime = performance.now() - calcStart;
+                    console.log(`   📊 组内计算: ${groupRecords.length} 条记录, 耗时: ${calcTime.toFixed(2)}ms`);
+
+                    // 查找图表中该组的索引
+                    const chartLabels = this.chart.data.labels;
+                    const affectedGroupIndex = chartLabels.indexOf(groupLabel);
+
                     if (affectedGroupIndex === -1) {
-                        console.warn('⚠️ 未找到受影响的组，降级到全量更新');
+                        console.warn(`⚠️ 图表中未找到该组 (label: ${groupLabel})，降级到全量更新`);
                         return false;
                     }
 
                     // 更新图表数据（使用 Chart.js 的 update 方法，不重建）
-                    const affectedStat = stats[affectedGroupIndex];
-                    this.chart.data.datasets[0].data[affectedGroupIndex] = affectedStat.count;
-                    this.chart.data.datasets[1].data[affectedGroupIndex] = affectedStat.failureCount;
-                    this.chart.data.datasets[2].data[affectedGroupIndex] = parseFloat(affectedStat.successRate.toFixed(3));
+                    this.chart.data.datasets[0].data[affectedGroupIndex] = count;
+                    this.chart.data.datasets[1].data[affectedGroupIndex] = failureCount;
+                    this.chart.data.datasets[2].data[affectedGroupIndex] = parseFloat(successRate.toFixed(3));
 
                     // 使用 'none' 动画模式实现即时更新
                     this.chart.update('none'); // 'none' 模式：无动画，立即更新
 
                     const perfTime = performance.now() - perfStart;
-                    console.log(`⚡ 智能增量更新完成 (耗时: ${perfTime.toFixed(2)}ms, 组索引: ${affectedGroupIndex})`);
+                    console.log(`⚡ 智能增量更新完成 (总耗时: ${perfTime.toFixed(2)}ms, 组: ${groupLabel}, 索引: ${affectedGroupIndex})`);
 
                     return true;
 
@@ -2567,8 +2778,9 @@
                     
                     console.log('🧹 用户清空缓存...');
                     await cacheManager.clearAllDataCache();
-                    
+
                     // 清空应用数据
+                    this.dataStore.clear();
                     this.data = null;
                     this.noDataAlert.classList.remove('hidden');
                     
@@ -3934,6 +4146,11 @@
                 // 防抖计时器：避免短时间内多次更新meta
                 let updateMetaDebounceTimer = null;
 
+                // 图表重建防抖计时器和锁
+                let chartRebuildTimer = null;
+                let isChartRebuilding = false;
+                let pendingChartRebuild = false;
+
                 // 监听实时同步更新（使用增量更新优化性能）
                 wsSyncManager.onSyncUpdate = async (update) => {
                     const perfStart = performance.now();
@@ -3966,10 +4183,8 @@
                                 const reloadTime = performance.now() - reloadStart;
                                 console.log(`✅ 已重新加载 ${cachedData.length} 条数据到内存 (耗时: ${reloadTime.toFixed(2)}ms)`);
 
-                                sessionStorage.removeItem('satelliteStatistics');
-                                requestAnimationFrame(() => {
-                                    window.app.generateStatistics({ silent: true });
-                                });
+                                // 标记需要重建图表
+                                pendingChartRebuild = true;
                             }
                             return;
                         }
@@ -3983,13 +4198,10 @@
                         const chartTime = performance.now() - chartStart;
                         console.log(`⏱️ [2/3] 图表更新耗时: ${chartTime.toFixed(2)}ms (智能更新: ${smartUpdated ? '成功✅' : '降级⬇️'})`);
 
-                        // 如果智能更新失败，降级到完全重建（很少发生）
+                        // 如果智能更新失败，标记需要重建（使用防抖避免多次重建）
                         if (!smartUpdated) {
-                            console.log('📊 降级到完全重建图表...');
-                            sessionStorage.removeItem('satelliteStatistics');
-                            requestAnimationFrame(() => {
-                                window.app.generateStatistics({ silent: true });
-                            });
+                            console.log('📊 标记需要重建图表...');
+                            pendingChartRebuild = true;
                         }
 
                         // === 第3步：防抖更新 IndexedDB meta（降低写入频率）===
@@ -4008,6 +4220,36 @@
 
                         const totalTime = performance.now() - perfStart;
                         console.log(`✅ 总响应时间: ${totalTime.toFixed(2)}ms`);
+
+                        // === 防抖重建图表（多个更新合并为一次重建）===
+                        if (pendingChartRebuild) {
+                            // 清除之前的计时器
+                            if (chartRebuildTimer) {
+                                clearTimeout(chartRebuildTimer);
+                            }
+
+                            // 设置新的防抖计时器（200ms 延迟）
+                            chartRebuildTimer = setTimeout(async () => {
+                                // 如果已经在重建，跳过
+                                if (isChartRebuilding) {
+                                    console.log('⏭️ 图表正在重建中，跳过此次请求');
+                                    return;
+                                }
+
+                                console.log('🔨 开始批量重建图表...');
+                                isChartRebuilding = true;
+                                pendingChartRebuild = false;
+
+                                try {
+                                    await window.app.generateStatistics({ silent: true });
+                                } catch (error) {
+                                    console.error('❌ 图表重建失败:', error);
+                                } finally {
+                                    isChartRebuilding = false;
+                                    console.log('✅ 图表重建完成');
+                                }
+                            }, 200); // 200ms 防抖：多次更新只触发一次重建
+                        }
                     }
                 };
 
