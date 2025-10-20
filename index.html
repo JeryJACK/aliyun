@@ -2824,10 +2824,12 @@
                     const perfTime = performance.now() - perfStart;
                     console.log(`⚡ 实时数据更新完成 (${perfTime.toFixed(2)}ms)，影响 ${affectedBuckets.size} 个桶`);
 
-                    // 如果当前有统计结果显示，增量刷新图表（只更新受影响的桶）
-                    if (this.hasSavedStats && affectedBuckets.size > 0) {
+                    // 如果当前有图表显示，增量刷新图表（只更新受影响的桶）
+                    if (this.chart && affectedBuckets.size > 0) {
                         console.log(`📊 检测到数据变更，增量刷新图表 (${affectedBuckets.size} 个桶)...`);
                         this.updateChartIncremental(Array.from(affectedBuckets));
+                    } else if (affectedBuckets.size > 0) {
+                        console.log(`💡 数据已更新，但当前无图表显示，跳过刷新`);
                     }
 
                 } catch (error) {
@@ -3296,9 +3298,15 @@
 
             // 【优化】增量更新图表 - 仅更新受影响的桶数据
             updateChartIncremental(affectedBucketKeys) {
-                if (!this.chart || !this.dataStore || affectedBucketKeys.length === 0) {
-                    console.warn('⚠️ 无法进行增量更新，执行完整刷新');
-                    this.generateStatistics();
+                console.log(`🔍 开始增量更新，受影响的桶:`, affectedBucketKeys);
+
+                if (!this.chart) {
+                    console.warn('⚠️ 图表不存在，跳过增量更新');
+                    return;
+                }
+
+                if (!this.dataStore || affectedBucketKeys.length === 0) {
+                    console.warn('⚠️ DataStore 不存在或无受影响的桶，跳过更新');
                     return;
                 }
 
@@ -3310,8 +3318,12 @@
                     const startDate = range.startDate;
                     const endDate = range.endDate;
 
+                    console.log(`📊 从 DataStore 获取统计数据 (${groupType}): ${startDate?.toLocaleDateString()} - ${endDate?.toLocaleDateString()}`);
+
                     // 从 DataStore 获取所有统计数据（快速）
                     const stats = this.dataStore.getStats(this.taskAnalyzer, startDate, endDate);
+
+                    console.log(`📈 获取到 ${stats.length} 个统计分组`);
 
                     // 创建桶键到索引的映射
                     const keyToIndex = new Map();
@@ -3323,8 +3335,12 @@
                     let updatedCount = 0;
                     affectedBucketKeys.forEach(bucketKey => {
                         const index = keyToIndex.get(bucketKey);
+                        console.log(`🔍 查找桶 ${bucketKey} 的索引: ${index}`);
+
                         if (index !== undefined && index < this.chart.data.labels.length) {
                             const stat = stats[index];
+
+                            console.log(`📊 更新索引 ${index} 的数据: count=${stat.count}, failure=${stat.failureCount}, rate=${stat.successRate.toFixed(3)}%`);
 
                             // 更新图表数据（3个数据集：计划ID数量、失败次数、成功率）
                             this.chart.data.datasets[0].data[index] = stat.count;
@@ -3332,10 +3348,13 @@
                             this.chart.data.datasets[2].data[index] = parseFloat(stat.successRate.toFixed(3));
 
                             updatedCount++;
+                        } else {
+                            console.warn(`⚠️ 桶 ${bucketKey} 不在当前显示范围内 (index: ${index}, chart labels: ${this.chart.data.labels.length})`);
                         }
                     });
 
                     // 刷新图表显示（使用 'none' 模式实现即时更新）
+                    console.log(`🔄 刷新图表显示...`);
                     this.chart.update('none');
 
                     // 同时更新统计卡片和详细表格
@@ -3346,11 +3365,11 @@
                     this.saveStatisticsResult(stats, groupType);
 
                     const perfTime = performance.now() - perfStart;
-                    console.log(`⚡ 增量更新完成 (${perfTime.toFixed(2)}ms)，更新了 ${updatedCount}/${affectedBucketKeys.length} 个数据点`);
+                    console.log(`✅ 增量更新完成 (${perfTime.toFixed(2)}ms)，更新了 ${updatedCount}/${affectedBucketKeys.length} 个数据点`);
 
                 } catch (error) {
-                    console.error('❌ 增量更新失败，执行完整刷新:', error);
-                    this.generateStatistics();
+                    console.error('❌ 增量更新失败:', error);
+                    console.error('错误堆栈:', error.stack);
                 }
             }
 
