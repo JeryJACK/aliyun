@@ -1830,11 +1830,13 @@
                 );
 
                 // 上三个图表专用筛选器
+                // 【级联筛选】底部图表筛选器：测站 → 客户 → 卫星 → 状态 → 类型
                 this.stationChartSelect = new MultiSelectDropdown(
                     'stationChartDropdown', 'stationChartOptions', 'stationChartDisplay',
                     'stationChartValue', 'stationChartTags', 'stationChartSearch', 'selectAllStationChart',
                     (values) => {
-                        this.updateSatelliteChartOptions();
+                        // 测站改变 → 更新客户选项
+                        this.updateCustomerChartOptions();
                         this.generateStationChartWithFilter();
                     }
                 );
@@ -1843,10 +1845,9 @@
                     'customerChartDropdown', 'customerChartOptions', 'customerChartDisplay',
                     'customerChartValue', 'customerChartTags', 'customerChartSearch', 'selectAllCustomerChart',
                     (values) => {
+                        // 客户改变 → 更新卫星选项
                         this.updateSatelliteChartOptions();
                         this.generateCustomerChartWithFilter();
-                        // 模块间级联：客户选择影响后续图表
-                        this.updateInterModuleCascading('customer');
                     }
                 );
 
@@ -1854,23 +1855,29 @@
                     'satelliteChartDropdown', 'satelliteChartOptions', 'satelliteChartDisplay',
                     'satelliteChartValue', 'satelliteChartTags', 'satelliteChartSearch', 'selectAllSatelliteChart',
                     (values) => {
+                        // 卫星改变 → 更新状态选项
+                        this.updateStatusChartOptions();
                         this.generateSatelliteChartWithFilter();
-                        // 模块间级联：卫星选择影响后续图表
-                        this.updateInterModuleCascading('satellite');
                     }
                 );
 
-                // 底部图表筛选器：状态和类型
                 this.statusChartSelect = new MultiSelectDropdown(
                     'statusChartDropdown', 'statusChartOptions', 'statusChartDisplay',
                     'statusChartValue', 'statusChartTags', 'statusChartSearch', 'selectAllStatusChart',
-                    (values) => this.generateStatusChartWithFilter()
+                    (values) => {
+                        // 状态改变 → 更新类型选项
+                        this.updateTypeChartOptions();
+                        this.generateStatusChartWithFilter();
+                    }
                 );
 
                 this.typeChartSelect = new MultiSelectDropdown(
                     'typeChartDropdown', 'typeChartOptions', 'typeChartDisplay',
                     'typeChartValue', 'typeChartTags', 'typeChartSearch', 'selectAllTypeChart',
-                    (values) => this.generateTypeChartWithFilter()
+                    (values) => {
+                        // 类型改变 → 仅重新生成类型图表
+                        this.generateTypeChartWithFilter();
+                    }
                 );
             }
 
@@ -3031,40 +3038,84 @@
                 this.typeChartSelect.setOptions(typeOptions);
             }
 
-            // 图表专用筛选的级联更新方法
-            updateSatelliteChartOptions() {
-                this.resetChartSubsequentFilters('satellite');
+            // ========【级联筛选】底部图表筛选的链式级联更新方法 ========
 
-                // 获取顶部筛选条件
+            // 1. 测站改变 → 更新客户选项
+            updateCustomerChartOptions() {
+                if (!this.data || !this.data.length) return;
+
+                const chartStationValues = this.stationChartSelect.getSelectedValues();
                 const topStationValues = this.stationSelect.getSelectedValues();
-                const topCustomerValues = this.customerSelect.getSelectedValues();
-                const topSatelliteValues = this.satelliteSelect.getSelectedValues();
-                const topStatusValues = this.statusSelect.getSelectedValues();
-                const topTypeValues = this.typeSelect.getSelectedValues();
 
-                // 获取当前图表的筛选条件
+                // 保存当前选择
+                const currentSelectedCustomers = this.customerChartSelect.getSelectedValues();
+
+                // 过滤数据：根据底部测站筛选（或顶部测站）
+                const filteredForCustomer = this.data.filter(item => {
+                    const itemStation = (getFieldValue(item, '测站名称') || '').toString().trim();
+
+                    // 如果底部测站有选择，使用底部测站筛选；否则使用顶部测站筛选
+                    if (chartStationValues.length > 0) {
+                        return chartStationValues.includes(itemStation);
+                    } else if (topStationValues.length > 0) {
+                        return topStationValues.includes(itemStation);
+                    }
+
+                    // 如果都没选择，显示所有客户选项
+                    return true;
+                });
+
+                const availableCustomers = [...new Set(
+                    filteredForCustomer.map(item => (getFieldValue(item, '客户名称') || '').toString().trim()).filter(Boolean)
+                )].sort((a, b) => a.localeCompare(b, 'zh-CN'));
+
+                const customerOptions = availableCustomers.map(customer => ({ value: customer, label: customer }));
+                this.customerChartSelect.setOptions(customerOptions);
+
+                // 保持之前的选择（如果仍然有效）
+                if (currentSelectedCustomers.length > 0) {
+                    const validCustomers = currentSelectedCustomers.filter(customer => availableCustomers.includes(customer));
+                    if (validCustomers.length > 0) {
+                        this.customerChartSelect.setSelectedValues(validCustomers);
+                    }
+                }
+
+                console.log(`✅ 客户选项已更新: ${availableCustomers.length} 个可选项`);
+            }
+
+            // 2. 客户改变 → 更新卫星选项
+            updateSatelliteChartOptions() {
+                if (!this.data || !this.data.length) return;
+
                 const chartStationValues = this.stationChartSelect.getSelectedValues();
                 const chartCustomerValues = this.customerChartSelect.getSelectedValues();
+                const topStationValues = this.stationSelect.getSelectedValues();
+                const topCustomerValues = this.customerSelect.getSelectedValues();
 
-                // 合并筛选条件：图表专用筛选优先，如果为空则使用顶部筛选
-                const effectiveStationValues = chartStationValues.length > 0 ? chartStationValues : topStationValues;
-                const effectiveCustomerValues = chartCustomerValues.length > 0 ? chartCustomerValues : topCustomerValues;
+                // 保存当前选择
+                const currentSelectedSatellites = this.satelliteChartSelect.getSelectedValues();
 
+                // 过滤数据：根据底部测站+客户筛选（或顶部筛选）
                 const filteredForSatellite = this.data.filter(item => {
                     const itemStation = (getFieldValue(item, '测站名称') || '').toString().trim();
                     const itemCustomer = (getFieldValue(item, '客户名称') || '').toString().trim();
-                    
-                    // 应用顶部筛选条件
-                    if (topStationValues.length && !topStationValues.includes(itemStation)) return false;
-                    if (topCustomerValues.length && !topCustomerValues.includes(itemCustomer)) return false;
-                    if (topSatelliteValues.length && !topSatelliteValues.includes((getFieldValue(item, '卫星名称') || '').toString().trim())) return false;
-                    if (topStatusValues.length && !topStatusValues.includes((getFieldValue(item, '任务结果状态') || '').toString().trim())) return false;
-                    if (topTypeValues.length && !topTypeValues.includes((getFieldValue(item, '任务类型') || '').toString().trim())) return false;
-                    
-                    // 应用图表专用筛选条件
-                    if (effectiveStationValues.length && !effectiveStationValues.includes(itemStation)) return false;
-                    if (effectiveCustomerValues.length && !effectiveCustomerValues.includes(itemCustomer)) return false;
-                    
+
+                    // 如果底部测站有选择，使用底部测站筛选
+                    if (chartStationValues.length > 0 && !chartStationValues.includes(itemStation)) {
+                        return false;
+                    } else if (chartStationValues.length === 0 && topStationValues.length > 0 && !topStationValues.includes(itemStation)) {
+                        // 底部没选，使用顶部测站筛选
+                        return false;
+                    }
+
+                    // 如果底部客户有选择，使用底部客户筛选
+                    if (chartCustomerValues.length > 0 && !chartCustomerValues.includes(itemCustomer)) {
+                        return false;
+                    } else if (chartCustomerValues.length === 0 && topCustomerValues.length > 0 && !topCustomerValues.includes(itemCustomer)) {
+                        // 底部没选，使用顶部客户筛选
+                        return false;
+                    }
+
                     return true;
                 });
 
@@ -3074,99 +3125,150 @@
 
                 const satelliteOptions = availableSatellites.map(satellite => ({ value: satellite, label: satellite }));
                 this.satelliteChartSelect.setOptions(satelliteOptions);
+
+                // 保持之前的选择（如果仍然有效）
+                if (currentSelectedSatellites.length > 0) {
+                    const validSatellites = currentSelectedSatellites.filter(satellite => availableSatellites.includes(satellite));
+                    if (validSatellites.length > 0) {
+                        this.satelliteChartSelect.setSelectedValues(validSatellites);
+                    }
+                }
+
+                console.log(`✅ 卫星选项已更新: ${availableSatellites.length} 个可选项`);
             }
 
+            // 3. 卫星改变 → 更新状态选项
             updateStatusChartOptions() {
                 if (!this.data || !this.data.length) return;
-                
-                // 获取顶部筛选条件
+
+                const chartStationValues = this.stationChartSelect.getSelectedValues();
+                const chartCustomerValues = this.customerChartSelect.getSelectedValues();
+                const chartSatelliteValues = this.satelliteChartSelect.getSelectedValues();
                 const topStationValues = this.stationSelect.getSelectedValues();
                 const topCustomerValues = this.customerSelect.getSelectedValues();
                 const topSatelliteValues = this.satelliteSelect.getSelectedValues();
-                
-                // 获取底部状态图表当前已选择的状态（用于重新筛选时保持一致性）
-                const currentSelectedStatuses = this.statusChartSelect ? this.statusChartSelect.getSelectedValues() : [];
 
-                // 根据顶部筛选条件（测站、客户、卫星）过滤数据，为状态图表提供可选的状态选项
+                // 保存当前选择
+                const currentSelectedStatuses = this.statusChartSelect.getSelectedValues();
+
+                // 过滤数据：根据底部测站+客户+卫星筛选（或顶部筛选）
                 const filteredForStatus = this.data.filter(item => {
                     const itemStation = (getFieldValue(item, '测站名称') || '').toString().trim();
                     const itemCustomer = (getFieldValue(item, '客户名称') || '').toString().trim();
                     const itemSatellite = (getFieldValue(item, '卫星名称') || '').toString().trim();
 
-                    // 应用顶部筛选条件：测站、客户、卫星的级联筛选
-                    return (!topStationValues.length || topStationValues.includes(itemStation)) &&
-                           (!topCustomerValues.length || topCustomerValues.includes(itemCustomer)) &&
-                           (!topSatelliteValues.length || topSatelliteValues.includes(itemSatellite));
+                    // 测站筛选
+                    if (chartStationValues.length > 0 && !chartStationValues.includes(itemStation)) {
+                        return false;
+                    } else if (chartStationValues.length === 0 && topStationValues.length > 0 && !topStationValues.includes(itemStation)) {
+                        return false;
+                    }
+
+                    // 客户筛选
+                    if (chartCustomerValues.length > 0 && !chartCustomerValues.includes(itemCustomer)) {
+                        return false;
+                    } else if (chartCustomerValues.length === 0 && topCustomerValues.length > 0 && !topCustomerValues.includes(itemCustomer)) {
+                        return false;
+                    }
+
+                    // 卫星筛选
+                    if (chartSatelliteValues.length > 0 && !chartSatelliteValues.includes(itemSatellite)) {
+                        return false;
+                    } else if (chartSatelliteValues.length === 0 && topSatelliteValues.length > 0 && !topSatelliteValues.includes(itemSatellite)) {
+                        return false;
+                    }
+
+                    return true;
                 });
 
-                // 获取过滤后的可选状态
                 const availableStatuses = [...new Set(
                     filteredForStatus.map(item => (getFieldValue(item, '任务结果状态') || '').toString().trim()).filter(Boolean)
                 )].sort((a, b) => a.localeCompare(b, 'zh-CN'));
 
                 const statusOptions = availableStatuses.map(status => ({ value: status, label: status }));
                 this.statusChartSelect.setOptions(statusOptions);
-                
-                // 如果之前有选择的状态在新选项中仍然存在，保持选中状态
+
+                // 保持之前的选择（如果仍然有效）
                 if (currentSelectedStatuses.length > 0) {
                     const validStatuses = currentSelectedStatuses.filter(status => availableStatuses.includes(status));
                     if (validStatuses.length > 0) {
                         this.statusChartSelect.setSelectedValues(validStatuses);
                     }
                 }
+
+                console.log(`✅ 状态选项已更新: ${availableStatuses.length} 个可选项`);
             }
 
+            // 4. 状态改变 → 更新类型选项
             updateTypeChartOptions() {
                 if (!this.data || !this.data.length) return;
-                
-                // 获取顶部筛选条件
+
+                const chartStationValues = this.stationChartSelect.getSelectedValues();
+                const chartCustomerValues = this.customerChartSelect.getSelectedValues();
+                const chartSatelliteValues = this.satelliteChartSelect.getSelectedValues();
+                const chartStatusValues = this.statusChartSelect.getSelectedValues();
                 const topStationValues = this.stationSelect.getSelectedValues();
                 const topCustomerValues = this.customerSelect.getSelectedValues();
                 const topSatelliteValues = this.satelliteSelect.getSelectedValues();
                 const topStatusValues = this.statusSelect.getSelectedValues();
-                
-                // 获取底部状态图表的选择（用于级联筛选类型选项）
-                const statusChartValues = this.statusChartSelect ? this.statusChartSelect.getSelectedValues() : [];
-                
-                // 获取底部类型图表当前已选择的类型（用于重新筛选时保持一致性）
-                const currentSelectedTypes = this.typeChartSelect ? this.typeChartSelect.getSelectedValues() : [];
 
-                // 根据顶部筛选条件和底部状态选择过滤数据，为类型图表提供可选的类型选项
+                // 保存当前选择
+                const currentSelectedTypes = this.typeChartSelect.getSelectedValues();
+
+                // 过滤数据：根据底部测站+客户+卫星+状态筛选（或顶部筛选）
                 const filteredForType = this.data.filter(item => {
                     const itemStation = (getFieldValue(item, '测站名称') || '').toString().trim();
                     const itemCustomer = (getFieldValue(item, '客户名称') || '').toString().trim();
                     const itemSatellite = (getFieldValue(item, '卫星名称') || '').toString().trim();
                     const itemStatus = (getFieldValue(item, '任务结果状态') || '').toString().trim();
 
-                    // 应用顶部筛选条件：测站、客户、卫星、状态的级联筛选
-                    let passTopFilter = (!topStationValues.length || topStationValues.includes(itemStation)) &&
-                                       (!topCustomerValues.length || topCustomerValues.includes(itemCustomer)) &&
-                                       (!topSatelliteValues.length || topSatelliteValues.includes(itemSatellite)) &&
-                                       (!topStatusValues.length || topStatusValues.includes(itemStatus));
-                    
-                    // 如果底部状态图表有选择，则进一步过滤
-                    if (statusChartValues.length > 0) {
-                        passTopFilter = passTopFilter && statusChartValues.includes(itemStatus);
+                    // 测站筛选
+                    if (chartStationValues.length > 0 && !chartStationValues.includes(itemStation)) {
+                        return false;
+                    } else if (chartStationValues.length === 0 && topStationValues.length > 0 && !topStationValues.includes(itemStation)) {
+                        return false;
                     }
-                    
-                    return passTopFilter;
+
+                    // 客户筛选
+                    if (chartCustomerValues.length > 0 && !chartCustomerValues.includes(itemCustomer)) {
+                        return false;
+                    } else if (chartCustomerValues.length === 0 && topCustomerValues.length > 0 && !topCustomerValues.includes(itemCustomer)) {
+                        return false;
+                    }
+
+                    // 卫星筛选
+                    if (chartSatelliteValues.length > 0 && !chartSatelliteValues.includes(itemSatellite)) {
+                        return false;
+                    } else if (chartSatelliteValues.length === 0 && topSatelliteValues.length > 0 && !topSatelliteValues.includes(itemSatellite)) {
+                        return false;
+                    }
+
+                    // 状态筛选
+                    if (chartStatusValues.length > 0 && !chartStatusValues.includes(itemStatus)) {
+                        return false;
+                    } else if (chartStatusValues.length === 0 && topStatusValues.length > 0 && !topStatusValues.includes(itemStatus)) {
+                        return false;
+                    }
+
+                    return true;
                 });
 
-                // 获取过滤后的可选类型
                 const availableTypes = [...new Set(
                     filteredForType.map(item => (getFieldValue(item, '任务类型') || '').toString().trim()).filter(Boolean)
                 )].sort((a, b) => a.localeCompare(b, 'zh-CN'));
 
                 const typeOptions = availableTypes.map(type => ({ value: type, label: type }));
                 this.typeChartSelect.setOptions(typeOptions);
-                
-                // 如果之前有选择的类型在新选项中仍然存在，保持选中状态
+
+                // 保持之前的选择（如果仍然有效）
                 if (currentSelectedTypes.length > 0) {
                     const validTypes = currentSelectedTypes.filter(type => availableTypes.includes(type));
                     if (validTypes.length > 0) {
                         this.typeChartSelect.setSelectedValues(validTypes);
                     }
                 }
+
+                console.log(`✅ 类型选项已更新: ${availableTypes.length} 个可选项`);
             }
 
             // ======== 模块间级联筛选方法 ========
@@ -4032,9 +4134,33 @@
             }
         }
 
-        // 初始化应用
+        // 初始化应用（确保 Chart.js 已加载）
         document.addEventListener('DOMContentLoaded', () => {
-            window.trendApp = new TrendAnalysisApp();
+            // 检查 Chart.js 是否已加载
+            if (typeof Chart === 'undefined') {
+                console.warn('⚠️ Chart.js 未加载，等待加载完成...');
+
+                // 轮询检查 Chart.js 是否加载完成
+                const checkChartJs = setInterval(() => {
+                    if (typeof Chart !== 'undefined') {
+                        clearInterval(checkChartJs);
+                        console.log('✅ Chart.js 加载完成，初始化应用');
+                        window.trendApp = new TrendAnalysisApp();
+                    }
+                }, 100);
+
+                // 10秒后超时
+                setTimeout(() => {
+                    if (typeof Chart === 'undefined') {
+                        clearInterval(checkChartJs);
+                        console.error('❌ Chart.js 加载超时，请检查网络连接或刷新页面');
+                        alert('图表库加载失败，请刷新页面重试');
+                    }
+                }, 10000);
+            } else {
+                console.log('✅ Chart.js 已就绪，初始化应用');
+                window.trendApp = new TrendAnalysisApp();
+            }
         });
     </script>
 </body>
