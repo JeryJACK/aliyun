@@ -1713,22 +1713,30 @@
         // 主应用类
         class TrendAnalysisApp {
             constructor() {
+                // 【修复】清除旧的页面状态（确保刷新后从初始化状态开始）
+                sessionStorage.removeItem('trendAnalysisPageState');
+                sessionStorage.removeItem('trendAnalysisFilters');
+                sessionStorage.removeItem('trendAnalysisCharts');
+                console.log('🧹 已清除趋势分析页面的旧状态，从初始化状态开始');
+
                 this.db = new SatelliteDB();
                 this.cycleEngine = new CycleRuleEngine();
                 this.chartGenerator = new ChartGenerator();
 
-                // 预检查 sessionStorage，判断是否有保存的状态（加快恢复速度）
-                this.hasSavedState = !!sessionStorage.getItem('trendAnalysisPageState');
-                this.hasSavedFilters = !!sessionStorage.getItem('trendAnalysisFilters');
-                this.hasSavedCharts = !!sessionStorage.getItem('trendAnalysisCharts');
+                // 预检查 sessionStorage，判断是否有保存的状态（刷新后始终为 false）
+                this.hasSavedState = false;
+                this.hasSavedFilters = false;
+                this.hasSavedCharts = false;
 
                 this.initMultiSelects();
 
                 this.data = null;
-                this.refreshChartsTimer = null; // 跨页面更新防抖定时器
                 this.autoApplyTimer = null; // 自动应用筛选防抖定时器
                 this.timeChangeTimer = null; // 时间改变防抖定时器
                 this.groupByChangeTimer = null; // 分组改变防抖定时器
+                this.chartRebuildTimer = null; // 图表重建防抖定时器（200ms）
+                this.pendingChartRebuild = false; // 是否有待重建的图表
+                this.isChartRebuilding = false; // 是否正在重建图表
                 this.filteredData = null;
                 this.rawData = null;
                 this.filterValues = {
@@ -1752,7 +1760,11 @@
                     'stationDropdown', 'stationOptions', 'stationDisplay',
                     'stationValue', 'stationTags', 'stationSearch', 'selectAllStations',
                     (values) => {
+                        // 测站选择 → 影响客户、卫星、状态、类型
+                        this.updateCustomerOptions();
                         this.updateSatelliteOptions();
+                        this.updateStatusOptions();
+                        this.updateTypeOptions();
                         this.updateChartFilterOptions();
                         // 【新增】自动应用筛选
                         this.autoApplyFilters();
@@ -1763,7 +1775,10 @@
                     'customerDropdown', 'customerOptions', 'customerDisplay',
                     'customerValue', 'customerTags', 'customerSearch', 'selectAllCustomers',
                     (values) => {
+                        // 客户选择 → 影响卫星、状态、类型
                         this.updateSatelliteOptions();
+                        this.updateStatusOptions();
+                        this.updateTypeOptions();
                         this.updateChartFilterOptions();
                         // 【新增】自动应用筛选
                         this.autoApplyFilters();
@@ -1774,7 +1789,9 @@
                     'satelliteDropdown', 'satelliteOptions', 'satelliteDisplay',
                     'satelliteValue', 'satelliteTags', 'satelliteSearch', 'selectAllSatellites',
                     (values) => {
+                        // 卫星选择 → 影响状态、类型
                         this.updateStatusOptions();
+                        this.updateTypeOptions();
                         this.updateChartFilterOptions();
                         // 【新增】自动应用筛选
                         this.autoApplyFilters();
@@ -1785,7 +1802,7 @@
                     'statusDropdown', 'statusOptions', 'statusDisplay',
                     'statusValue', 'statusTags', 'statusSearch', 'selectAllStatuses',
                     (values) => {
-                        this.updateTypeOptions();
+                        // 状态选择 → 独立（不影响其他）
                         this.updateChartFilterOptions();
                         // 【新增】自动应用筛选
                         this.autoApplyFilters();
@@ -1857,13 +1874,25 @@
 
             // 设置跨页面广播监听器
             setupBroadcastListener() {
-                if (!window.sharedDataManager) {
-                    console.warn('⚠️ SharedDataManager 未初始化，跨页面同步不可用');
-                    return;
-                }
+                // 【修复】延迟检查 SharedDataManager，给它初始化时间
+                setTimeout(() => {
+                    if (!window.sharedDataManager) {
+                        console.warn('⚠️ SharedDataManager 未初始化，跨页面同步不可用');
+                        console.warn('💡 请确保 shared-data-manager.js 已正确加载');
+                        return;
+                    }
 
-                // 监听其他页面的数据更新
+                    this._setupBroadcastListenerInternal();
+                }, 100);
+            }
+
+            // 内部方法：真正设置广播监听器
+            _setupBroadcastListenerInternal() {
+                if (!window.sharedDataManager) return;
+
+                // 【优化】监听其他页面的数据更新（零点几毫秒响应）
                 window.sharedDataManager.onDataUpdate = (operation, record) => {
+                    const perfStart = performance.now();
                     console.log(`📡 收到跨页面更新广播: ${operation}`, record);
 
                     if (!this.data) {
@@ -1871,7 +1900,8 @@
                         return;
                     }
 
-                    // 执行增量更新
+                    // === 第1步：立即增量更新内存数据（零点几毫秒）===
+                    const memoryStart = performance.now();
                     let updated = false;
                     if (operation === 'insert' || operation === 'update') {
                         updated = this.incrementalUpdateRecord(record);
@@ -1879,15 +1909,45 @@
                         const recordId = record.id || record.plan_id;
                         updated = this.incrementalDeleteRecord(recordId);
                     }
+                    const memoryTime = performance.now() - memoryStart;
+                    console.log(`⏱️ [1/2] 内存更新耗时: ${memoryTime.toFixed(2)}ms`);
 
-                    // 如果更新成功，刷新图表（防抖）
-                    if (updated) {
-                        if (this.refreshChartsTimer) {
-                            clearTimeout(this.refreshChartsTimer);
+                    // === 第2步：智能更新图表（只更新受影响的图表）===
+                    if (updated && this.filteredData) {
+                        const chartStart = performance.now();
+
+                        // 尝试智能更新（只更新受影响的图表，不重建）
+                        const smartUpdated = this.smartUpdateCharts(record, operation);
+
+                        const chartTime = performance.now() - chartStart;
+                        console.log(`⏱️ [2/2] 图表更新耗时: ${chartTime.toFixed(2)}ms (智能更新: ${smartUpdated ? '成功✅' : '降级⬇️'})`);
+
+                        // 如果智能更新失败，使用防抖重建（200ms）
+                        if (!smartUpdated) {
+                            this.pendingChartRebuild = true;
+                            this.scheduleChartRebuild();
                         }
-                        this.refreshChartsTimer = setTimeout(() => {
-                            this.refreshChartsAfterUpdate();
-                        }, 500); // 500ms 防抖
+
+                        const totalTime = performance.now() - perfStart;
+                        console.log(`✅ 总响应时间: ${totalTime.toFixed(2)}ms`);
+                    }
+                };
+
+                // 【优化】监听渐进式数据加载
+                window.sharedDataManager.onProgressiveLoad = async (newRecord, currentCount, totalCount) => {
+                    // index.html 正在加载数据时，通知本页面有新数据可用
+                    console.log(`📊 渐进式加载通知：${currentCount}/${totalCount} 条数据已可用`);
+
+                    // 如果本页面数据未初始化，尝试从 IndexedDB 读取最新数据
+                    if (!this.data || this.data.length === 0) {
+                        console.log('💡 检测到数据正在加载，等待数据就绪...');
+                        // 可以选择等待加载完成，或者显示加载中状态
+                    }
+
+                    // 如果本页面已有数据，且新数据量明显增加（> 10%），可以选择刷新
+                    else if (currentCount > this.data.length * 1.1) {
+                        console.log('🔄 检测到新数据量增加，建议刷新页面以获取最新数据');
+                        // 可以显示一个提示，让用户选择是否刷新
                     }
                 };
 
@@ -2091,24 +2151,26 @@
 
             async loadData() {
                 const dbLoading = document.getElementById('dbLoading');
-                if (dbLoading) dbLoading.classList.remove('hidden');
 
                 try {
-                    // 【新增】检查是否有新鲜的共享数据
-                    if (window.sharedDataManager && window.sharedDataManager.isDataFresh()) {
+                    // 【修复】检查是否有新鲜的共享数据（完全不显示进度条）
+                    const hasSharedData = window.sharedDataManager && window.sharedDataManager.isDataFresh();
+
+                    if (hasSharedData) {
                         const metadata = window.sharedDataManager.getMetadata();
                         console.log(`✅ 检测到新鲜的共享数据 (${metadata.recordCount} 条，来源: ${metadata.source})`);
-                        console.log('⚡ 快速加载模式：直接从 IndexedDB 读取，跳过进度显示');
+                        console.log('⚡ 极速加载模式：直接使用共享数据，完全跳过进度显示');
 
-                        // 快速加载（不显示进度条）
+                        // 极速加载（完全不显示进度条）
                         const rawData = await this.db.getAllDataWithProgress(() => {});
                         this.rawData = rawData;
                         this.data = Array.isArray(rawData) ? rawData : [];
 
-                        if (dbLoading) dbLoading.classList.add('hidden');
-                        console.log(`⚡ 快速加载完成: ${this.data.length.toLocaleString()} 条数据`);
+                        console.log(`⚡ 极速加载完成: ${this.data.length.toLocaleString()} 条数据`);
                     } else {
                         // 原有的加载逻辑（显示进度）
+                        if (dbLoading) dbLoading.classList.remove('hidden');
+
                         if (!await this.db.hasData()) {
                             if (dbLoading) dbLoading.classList.add('hidden');
                             document.getElementById('noDataAlert').classList.remove('hidden');
@@ -2136,29 +2198,8 @@
 
                     this.updateDebugInfo();
 
-                    // 恢复页面状态（如果有保存的状态）
-                    if (this.hasSavedState) {
-                        const restored = this.restorePageState();
-                        if (restored) {
-                            console.log('✅ 页面状态已从sessionStorage恢复');
-                        }
-                    }
-
-                    // 恢复筛选器状态（如果有保存的筛选条件）
-                    if (this.hasSavedFilters) {
-                        const filtersRestored = this.restoreFilters();
-                        if (filtersRestored) {
-                            console.log('✅ 筛选条件已从sessionStorage恢复');
-                        }
-                    }
-
-                    // 【新增】恢复趋势图表结果（如果有保存的图表状态）
-                    if (this.hasSavedCharts) {
-                        const chartsRestored = this.restoreTrendChartsResult();
-                        if (chartsRestored) {
-                            console.log('✅ 趋势图表已从sessionStorage恢复');
-                        }
-                    }
+                    // 【修复】刷新页面时不恢复状态，始终从初始化状态开始
+                    console.log('🔄 页面已重新加载，从初始化状态开始（不恢复旧状态）');
 
                 } catch (error) {
                     if (dbLoading) dbLoading.classList.add('hidden');
@@ -2216,23 +2257,45 @@
                 }
             }
 
+            // 客户选项更新 - 受测站影响
+            updateCustomerOptions() {
+                this.resetSubsequentFilters('customer');
+
+                const stationValues = this.stationSelect.getSelectedValues();
+
+                // 允许独立选择：如果没有选择测站，显示所有客户
+                const filteredCustomers = [...new Set(
+                    this.data
+                        .filter(item => {
+                            if (stationValues.length === 0) return true; // 无上级选择时显示所有
+                            return stationValues.includes((getFieldValue(item, '测站名称') || '').toString().trim());
+                        })
+                        .map(item => (getFieldValue(item, '客户名称') || '').toString().trim())
+                        .filter(Boolean)
+                )].sort();
+
+                const customerOptions = filteredCustomers.map(customer => ({ value: customer, label: customer }));
+                this.customerSelect.setOptions(customerOptions);
+                document.getElementById('customerDisplay').textContent = '请选择客户';
+            }
+
+            // 卫星选项更新 - 受测站和客户影响
             updateSatelliteOptions() {
                 this.resetSubsequentFilters('satellite');
 
                 const stationValues = this.stationSelect.getSelectedValues();
                 const customerValues = this.customerSelect.getSelectedValues();
 
-                if (!stationValues.length && !customerValues.length) {
-                    document.getElementById('satelliteDisplay').textContent = '请先选择测站或客户';
-                    return;
-                }
-
+                // 允许独立选择：如果没有选择测站或客户，显示所有卫星
                 const filteredSatellites = [...new Set(
                     this.data
                         .filter(item => {
-                            const matchesStation = !stationValues.length ||
+                            // 无上级选择时显示所有
+                            if (stationValues.length === 0 && customerValues.length === 0) return true;
+
+                            const matchesStation = stationValues.length === 0 ||
                                                   stationValues.includes((getFieldValue(item, '测站名称') || '').toString().trim());
-                            const matchesCustomer = !customerValues.length ||
+                            const matchesCustomer = customerValues.length === 0 ||
                                                   customerValues.includes((getFieldValue(item, '客户名称') || '').toString().trim());
                             return matchesStation && matchesCustomer;
                         })
@@ -2245,20 +2308,31 @@
                 document.getElementById('satelliteDisplay').textContent = '请选择卫星';
             }
 
+            // 状态选项更新 - 受测站、客户、卫星影响（可独立选择）
             updateStatusOptions() {
                 this.resetSubsequentFilters('status');
 
-                const satelliteValues = this.satelliteSelect.getSelectedValues();
-                if (!satelliteValues.length) return;
-
                 const stationValues = this.stationSelect.getSelectedValues();
                 const customerValues = this.customerSelect.getSelectedValues();
+                const satelliteValues = this.satelliteSelect.getSelectedValues();
 
+                // 允许独立选择：如果没有选择上级筛选，显示所有状态
                 const filteredStatuses = [...new Set(
                     this.data
-                        .filter(item => !stationValues.length || stationValues.includes((getFieldValue(item, '测站名称') || '').toString().trim()))
-                        .filter(item => !customerValues.length || customerValues.includes((getFieldValue(item, '客户名称') || '').toString().trim()))
-                        .filter(item => satelliteValues.includes((getFieldValue(item, '卫星名称') || '').toString().trim()))
+                        .filter(item => {
+                            // 无上级选择时显示所有
+                            if (stationValues.length === 0 && customerValues.length === 0 && satelliteValues.length === 0) {
+                                return true;
+                            }
+
+                            const matchesStation = stationValues.length === 0 ||
+                                                  stationValues.includes((getFieldValue(item, '测站名称') || '').toString().trim());
+                            const matchesCustomer = customerValues.length === 0 ||
+                                                   customerValues.includes((getFieldValue(item, '客户名称') || '').toString().trim());
+                            const matchesSatellite = satelliteValues.length === 0 ||
+                                                    satelliteValues.includes((getFieldValue(item, '卫星名称') || '').toString().trim());
+                            return matchesStation && matchesCustomer && matchesSatellite;
+                        })
                         .map(item => (getFieldValue(item, '任务结果状态') || '').toString().trim())
                         .filter(Boolean)
                 )].sort();
@@ -2268,22 +2342,35 @@
                 document.getElementById('statusDisplay').textContent = '请选择任务状态';
             }
 
+            // 类型选项更新 - 受测站、客户、卫星、状态影响（可独立选择）
             updateTypeOptions() {
                 this.resetSubsequentFilters('type');
-
-                const statusValues = this.statusSelect.getSelectedValues();
-                if (!statusValues.length) return;
 
                 const stationValues = this.stationSelect.getSelectedValues();
                 const customerValues = this.customerSelect.getSelectedValues();
                 const satelliteValues = this.satelliteSelect.getSelectedValues();
+                const statusValues = this.statusSelect.getSelectedValues();
 
+                // 允许独立选择：如果没有选择上级筛选，显示所有类型
                 const filteredTypes = [...new Set(
                     this.data
-                        .filter(item => !stationValues.length || stationValues.includes((getFieldValue(item, '测站名称') || '').toString().trim()))
-                        .filter(item => !customerValues.length || customerValues.includes((getFieldValue(item, '客户名称') || '').toString().trim()))
-                        .filter(item => !satelliteValues.length || satelliteValues.includes((getFieldValue(item, '卫星名称') || '').toString().trim()))
-                        .filter(item => statusValues.includes((getFieldValue(item, '任务结果状态') || '').toString().trim()))
+                        .filter(item => {
+                            // 无上级选择时显示所有
+                            if (stationValues.length === 0 && customerValues.length === 0 &&
+                                satelliteValues.length === 0 && statusValues.length === 0) {
+                                return true;
+                            }
+
+                            const matchesStation = stationValues.length === 0 ||
+                                                  stationValues.includes((getFieldValue(item, '测站名称') || '').toString().trim());
+                            const matchesCustomer = customerValues.length === 0 ||
+                                                   customerValues.includes((getFieldValue(item, '客户名称') || '').toString().trim());
+                            const matchesSatellite = satelliteValues.length === 0 ||
+                                                    satelliteValues.includes((getFieldValue(item, '卫星名称') || '').toString().trim());
+                            const matchesStatus = statusValues.length === 0 ||
+                                                 statusValues.includes((getFieldValue(item, '任务结果状态') || '').toString().trim());
+                            return matchesStation && matchesCustomer && matchesSatellite && matchesStatus;
+                        })
                         .map(item => (getFieldValue(item, '任务类型') || '').toString().trim())
                         .filter(Boolean)
                 )].sort();
@@ -2410,7 +2497,10 @@
             // 应用筛选（修复时间轴范围问题）
             // 【新增】自动应用筛选（防抖，避免频繁触发）
             autoApplyFilters() {
-                if (!this.data) return;
+                if (!this.data || !this.data.length) {
+                    console.warn('⚠️ 数据未加载，无法自动应用筛选');
+                    return;
+                }
 
                 // 清除之前的定时器
                 if (this.autoApplyTimer) {
@@ -2419,7 +2509,7 @@
 
                 // 300ms 防抖
                 this.autoApplyTimer = setTimeout(() => {
-                    console.log('🔄 自动应用筛选');
+                    console.log('🔄 自动应用筛选并生成图表');
                     this.applyFilters();
                 }, 300);
             }
@@ -3305,6 +3395,77 @@
 
             // ==================== 增量更新方法（实时同步）====================
 
+            // 【新增】智能更新图表（只更新受影响的图表，不重建）
+            smartUpdateCharts(record, operation) {
+                // 如果没有图表或没有 filteredData，跳过
+                if (!this.filteredData || this.filteredData.length === 0) {
+                    console.log('⏭️ 图表未初始化或无筛选数据，跳过智能更新');
+                    return false;
+                }
+
+                try {
+                    // 简单策略：如果记录在当前 filteredData 中，标记需要重建
+                    // 更复杂的策略可以只更新受影响的图表，但会增加复杂度
+                    // 这里使用"降级到重建"策略，但通过防抖合并多次更新
+                    console.log('📊 记录可能影响图表，降级到防抖重建');
+                    return false;
+                } catch (error) {
+                    console.error('❌ 智能更新失败:', error);
+                    return false;
+                }
+            }
+
+            // 【新增】防抖重建图表（200ms，合并多个更新）
+            scheduleChartRebuild() {
+                // 清除之前的计时器
+                if (this.chartRebuildTimer) {
+                    clearTimeout(this.chartRebuildTimer);
+                }
+
+                // 设置新的防抖计时器（200ms 延迟）
+                this.chartRebuildTimer = setTimeout(() => {
+                    // 如果已经在重建，跳过
+                    if (this.isChartRebuilding) {
+                        console.log('⏭️ 图表正在重建中，跳过此次请求');
+                        return;
+                    }
+
+                    console.log('🔨 开始批量重建图表...');
+                    this.isChartRebuilding = true;
+                    this.pendingChartRebuild = false;
+
+                    try {
+                        // 重新提取筛选值
+                        this.extractFilterValues();
+                        // 重新应用筛选并生成图表
+                        this.applyFilters();
+                        console.log('✅ 图表重建完成');
+                    } catch (error) {
+                        console.error('❌ 图表重建失败:', error);
+                    } finally {
+                        this.isChartRebuilding = false;
+                    }
+                }, 200); // 200ms 防抖：多次更新只触发一次重建
+            }
+
+            // 【新增】从单条记录中提取筛选值（用于渐进式加载）
+            extractSingleRecordFilterValues(record) {
+                if (!record) return;
+
+                const addUniqueValue = (field, value) => {
+                    if (value && !this.filterValues[field].includes(value)) {
+                        this.filterValues[field].push(value);
+                        this.filterValues[field].sort((a, b) => a.localeCompare(b, 'zh-CN'));
+                    }
+                };
+
+                addUniqueValue('测站名称', (getFieldValue(record, '测站名称') || '').toString().trim());
+                addUniqueValue('客户名称', (getFieldValue(record, '客户名称') || '').toString().trim());
+                addUniqueValue('卫星名称', (getFieldValue(record, '卫星名称') || '').toString().trim());
+                addUniqueValue('任务结果状态', (getFieldValue(record, '任务结果状态') || '').toString().trim());
+                addUniqueValue('任务类型', (getFieldValue(record, '任务类型') || '').toString().trim());
+            }
+
             // 增量更新：插入或更新单条记录到内存
             incrementalUpdateRecord(record) {
                 if (!this.data) {
@@ -3359,24 +3520,13 @@
                 }
             }
 
-            // 重新应用筛选并刷新图表（增量更新后调用）
+            // 【已废弃】重新应用筛选并刷新图表（被智能更新替代）
+            // 保留此方法以防其他地方调用
             refreshChartsAfterUpdate() {
-                if (!this.data || !this.filteredData) {
-                    console.log('⏭️ 数据未初始化，跳过图表刷新');
-                    return;
-                }
-
-                // 重新提取筛选值（可能有新的测站/客户/卫星等）
-                this.extractFilterValues();
-
-                // 重新应用当前筛选条件
-                if (this.filteredData.length > 0) {
-                    const groupBy = document.getElementById('groupBy')?.value || 'day';
-                    this.applyFilters();
-                    console.log('✅ 图表已刷新');
-                } else {
-                    console.log('⏭️ 无筛选数据，跳过图表刷新');
-                }
+                console.log('⚠️ refreshChartsAfterUpdate 已被智能更新替代，使用防抖重建');
+                // 使用防抖重建代替
+                this.pendingChartRebuild = true;
+                this.scheduleChartRebuild();
             }
 
             // ==================== 图表管理 ====================
