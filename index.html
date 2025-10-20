@@ -1659,7 +1659,8 @@
                     });
 
                     if (!response.ok) {
-                        console.warn('⚠️ 补同步请求失败');
+                        console.warn(`⚠️ 补同步请求失败 (${response.status}): ${response.statusText}`);
+                        console.warn('💡 提示：补同步功能可选，不影响页面正常使用');
                         return;
                     }
 
@@ -2438,8 +2439,7 @@
                     let loadedCount = 0;
 
                     await cacheManager.queryAllDataProgressive((batch, total) => {
-                        // 边加载边合并到 dataStore
-                        this.dataStore.mergeIncrementalData(batch, this.cycleEngine);
+                        // 边加载边追加到内存数组
                         this.data.push(...batch);
                         loadedCount = total;
 
@@ -2487,7 +2487,10 @@
                         this.setDefaultDates();
                     }
 
-                    this.updateCacheStatus();
+                    // 延迟更新缓存状态（避免IndexedDB事务冲突）
+                    setTimeout(() => {
+                        this.updateCacheStatus();
+                    }, 100);
 
                     // 恢复页面状态（如果有保存的状态）
                     if (this.hasSavedState) {
@@ -2546,7 +2549,7 @@
                     return;
                 }
 
-                if (!this.data || !this.dataStore) {
+                if (!this.data) {
                     console.warn('⚠️ 应用未初始化，忽略实时更新');
                     return;
                 }
@@ -2554,7 +2557,7 @@
                 const perfStart = performance.now();
 
                 try {
-                    // 1. 更新内存数据 this.data
+                    // 更新内存数据 this.data
                     if (operation === 'insert' || operation === 'update') {
                         const index = this.data.findIndex(r => r.id === record.id);
                         if (index >= 0) {
@@ -2574,18 +2577,10 @@
                         }
                     }
 
-                    // 2. 更新 DataStore（用于高效查询）
-                    if (operation === 'insert' || operation === 'update') {
-                        this.dataStore.mergeIncrementalData([record], this.cycleEngine);
-                    } else if (operation === 'delete') {
-                        // DataStore 的删除逻辑（如果需要）
-                        // 当前 DataStore 不支持删除，下次重新生成统计时会自动更新
-                    }
-
                     const perfTime = performance.now() - perfStart;
                     console.log(`⚡ 实时数据更新完成 (${perfTime.toFixed(2)}ms)`);
 
-                    // 3. 如果当前有统计结果显示，刷新图表
+                    // 如果当前有统计结果显示，刷新图表
                     if (this.hasSavedStats) {
                         console.log('📊 检测到数据变更，刷新统计图表...');
                         this.generateStatistics();
