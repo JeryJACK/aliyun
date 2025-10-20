@@ -1217,6 +1217,17 @@
             }
 
             generateTrendChart(chartId, title, xLabels, datasets) {
+                // 检查 Chart.js 是否已加载
+                if (typeof Chart === 'undefined') {
+                    console.error('❌ Chart.js 未加载，无法生成图表:', chartId);
+                    const emptyState = document.getElementById(`${chartId}Empty`);
+                    if (emptyState) {
+                        emptyState.classList.remove('hidden');
+                        emptyState.innerHTML = '<p class="text-red-500">图表库加载失败，请刷新页面重试</p>';
+                    }
+                    return;
+                }
+
                 this.destroyChart(chartId);
                 const ctx = document.getElementById(chartId).getContext('2d');
                 const emptyState = document.getElementById(`${chartId}Empty`);
@@ -2144,7 +2155,9 @@
                 this.cycleEngine.updateConfig(newConfig);
                 this.closeCycleConfigModal();
 
-                if (this.filteredData) {
+                // 【修复】配置更新后，如果有数据就重新生成图表
+                if (this.data) {
+                    console.log('🔄 统计周期规则已更新，重新生成图表');
                     this.applyFilters();
                 }
             }
@@ -2516,9 +2529,16 @@
 
             // 【新增】时间改变时更新图表（保留底部筛选条件）
             updateChartsOnTimeChange() {
-                if (!this.data || !this.filteredData) return;
+                if (!this.data) return;
 
                 console.log('📅 时间范围改变，保留底部筛选条件，更新图表');
+
+                // 如果还没有筛选过数据，直接应用筛选
+                if (!this.filteredData) {
+                    console.log('⚠️ 首次设置时间，应用筛选并生成图表');
+                    this.applyFilters();
+                    return;
+                }
 
                 // 清除定时器
                 if (this.timeChangeTimer) {
@@ -2588,9 +2608,16 @@
 
             // 【新增】分组方式改变时更新图表（保留底部筛选条件）
             updateChartsOnGroupByChange() {
-                if (!this.data || !this.filteredData) return;
+                if (!this.data) return;
 
                 console.log('📊 分组方式改变，保留底部筛选条件，重新生成图表');
+
+                // 如果还没有筛选过数据，直接应用筛选
+                if (!this.filteredData) {
+                    console.log('⚠️ 首次设置分组，应用筛选并生成图表');
+                    this.applyFilters();
+                    return;
+                }
 
                 // 清除定时器
                 if (this.groupByChangeTimer) {
