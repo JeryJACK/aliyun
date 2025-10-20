@@ -1807,14 +1807,27 @@
 
         // 【优化】数据桶存储 - 用于增量更新和快速查询
         class DataStore {
-            constructor() {
-                this.buckets = new Map(); // key: groupKey, value: { planIds: Set, results: [], ... }
-                this.recordToBucket = new Map(); // key: recordId, value: groupKey (用于快速定位记录所在桶)
+            constructor(fieldMapping = {}) {
+                this.buckets = new Map(); // key: groupKey, value: { records: [], rangeStart, rangeEnd, label, key }
+                this.recordToBucket = new Map(); // key: recordUniqueKey, value: groupKey (用于快速定位记录所在桶)
                 this.fieldMapping = {
-                    planIdField: 'plan_id',
-                    startTimeField: 'start_time',
-                    taskResultField: 'task_result'
+                    idField: fieldMapping.idField || 'id', // 记录唯一标识字段
+                    planIdField: fieldMapping.planIdField || 'plan_id',
+                    startTimeField: fieldMapping.startTimeField || 'start_time',
+                    taskResultField: fieldMapping.taskResultField || 'task_result'
                 };
+            }
+
+            // 获取记录的唯一键
+            getRecordKey(record) {
+                const idValue = record[this.fieldMapping.idField];
+                // 如果没有ID字段，使用 plan_id + start_time 作为唯一键
+                if (idValue === undefined || idValue === null) {
+                    const planId = record[this.fieldMapping.planIdField];
+                    const startTime = record[this.fieldMapping.startTimeField];
+                    return `${planId}_${startTime}`;
+                }
+                return String(idValue);
             }
 
             // 批量加载数据到桶（初始化）
@@ -1832,7 +1845,7 @@
 
             // 增量添加单条记录到桶
             addRecordToBucket(record, cycleEngine, groupType) {
-                const { planIdField, startTimeField, taskResultField } = this.fieldMapping;
+                const { startTimeField } = this.fieldMapping;
 
                 try {
                     const timeValue = record[startTimeField];
@@ -1845,10 +1858,14 @@
                     } else if (typeof timeValue === 'number') {
                         date = new Date((timeValue - 25569) * 86400000);
                     } else {
-                        return;
+                        console.warn('⚠️ 记录缺少有效的时间字段:', record);
+                        return null;
                     }
 
-                    if (isNaN(date.getTime())) return;
+                    if (isNaN(date.getTime())) {
+                        console.warn('⚠️ 记录时间字段无效:', record);
+                        return null;
+                    }
 
                     const groupInfo = cycleEngine.getGroup(date, groupType);
                     const groupKey = groupInfo.key;
@@ -1858,50 +1875,69 @@
                         this.buckets.set(groupKey, {
                             key: groupKey,
                             label: groupInfo.label,
-                            planIds: new Set(),
-                            results: [],
+                            records: [], // 存储完整记录
                             rangeStart: groupInfo.rangeStart,
                             rangeEnd: groupInfo.rangeEnd
                         });
                     }
 
                     const bucket = this.buckets.get(groupKey);
-                    bucket.planIds.add(record[planIdField]);
-                    bucket.results.push(record[taskResultField] || '未知');
+                    const recordKey = this.getRecordKey(record);
+
+                    // 检查是否已存在（避免重复添加）
+                    const existingIndex = bucket.records.findIndex(r => this.getRecordKey(r) === recordKey);
+                    if (existingIndex >= 0) {
+                        // 更新现有记录
+                        bucket.records[existingIndex] = record;
+                    } else {
+                        // 添加新记录
+                        bucket.records.push(record);
+                    }
 
                     // 记录映射关系
-                    this.recordToBucket.set(record.id, groupKey);
+                    this.recordToBucket.set(recordKey, groupKey);
+
+                    return groupKey;
 
                 } catch (error) {
                     console.warn('添加记录到桶失败:', record, error);
+                    return null;
                 }
             }
 
             // 增量更新/删除记录
             updateRecord(record, cycleEngine, groupType, isDelete = false) {
-                const perfStart = performance.now();
-                const oldGroupKey = this.recordToBucket.get(record.id);
+                const recordKey = this.getRecordKey(record);
+                const oldGroupKey = this.recordToBucket.get(recordKey);
+                const affectedBuckets = [];
 
-                // 如果是删除或更新，先从旧桶中移除
-                if (oldGroupKey) {
-                    const oldBucket = this.buckets.get(oldGroupKey);
-                    if (oldBucket) {
-                        oldBucket.planIds.delete(record[this.fieldMapping.planIdField]);
-                        // 简化：清空结果数组，重新统计（或使用更精确的删除逻辑）
-                        // 实际应用中可能需要更复杂的逻辑来删除特定结果
+                try {
+                    // 从旧桶中删除记录
+                    if (oldGroupKey) {
+                        const oldBucket = this.buckets.get(oldGroupKey);
+                        if (oldBucket) {
+                            const oldIndex = oldBucket.records.findIndex(r => this.getRecordKey(r) === recordKey);
+                            if (oldIndex >= 0) {
+                                oldBucket.records.splice(oldIndex, 1);
+                                affectedBuckets.push(oldGroupKey);
+                            }
+                        }
+                        this.recordToBucket.delete(recordKey);
                     }
-                    this.recordToBucket.delete(record.id);
+
+                    // 如果不是删除，添加到新桶
+                    if (!isDelete) {
+                        const newGroupKey = this.addRecordToBucket(record, cycleEngine, groupType);
+                        if (newGroupKey && newGroupKey !== oldGroupKey) {
+                            affectedBuckets.push(newGroupKey);
+                        }
+                    }
+
+                } catch (error) {
+                    console.warn('桶增量更新失败:', record, error);
                 }
 
-                // 如果不是删除，添加到新桶
-                if (!isDelete) {
-                    this.addRecordToBucket(record, cycleEngine, groupType);
-                }
-
-                const perfTime = performance.now() - perfStart;
-                console.log(`⚡ 桶增量更新完成 (${perfTime.toFixed(2)}ms)`);
-
-                return oldGroupKey; // 返回受影响的桶 key
+                return affectedBuckets; // 返回所有受影响的桶 keys
             }
 
             // 批量增量合并数据
@@ -1910,11 +1946,8 @@
                 const affectedBuckets = new Set();
 
                 records.forEach(record => {
-                    const oldGroupKey = this.updateRecord(record, cycleEngine, groupType, false);
-                    if (oldGroupKey) affectedBuckets.add(oldGroupKey);
-
-                    const newGroupKey = this.recordToBucket.get(record.id);
-                    if (newGroupKey) affectedBuckets.add(newGroupKey);
+                    const bucketKeys = this.updateRecord(record, cycleEngine, groupType, false);
+                    bucketKeys.forEach(key => affectedBuckets.add(key));
                 });
 
                 const perfTime = performance.now() - perfStart;
@@ -1926,6 +1959,7 @@
             // 获取统计结果（按时间排序）
             getStats(taskAnalyzer, startDate = null, endDate = null) {
                 const perfStart = performance.now();
+                const { planIdField, taskResultField } = this.fieldMapping;
 
                 let buckets = Array.from(this.buckets.values());
 
@@ -1941,19 +1975,33 @@
                 // 按时间排序
                 buckets.sort((a, b) => a.rangeStart - b.rangeStart);
 
-                // 计算统计数据
-                const stats = buckets.map(bucket => ({
-                    key: bucket.key,
-                    label: bucket.label,
-                    count: bucket.planIds.size,
-                    failureCount: taskAnalyzer.countFailures(bucket.results),
-                    successRate: taskAnalyzer.calculateSuccessRate(bucket.results, bucket.planIds.size),
-                    rangeStart: bucket.rangeStart,
-                    rangeEnd: bucket.rangeEnd
-                }));
+                // 计算统计数据（从记录中提取）
+                const stats = buckets.map(bucket => {
+                    // 从记录中提取 planIds 和 results
+                    const planIds = new Set();
+                    const results = [];
+
+                    bucket.records.forEach(record => {
+                        const planId = record[planIdField];
+                        if (planId) planIds.add(planId);
+
+                        const result = record[taskResultField] || '未知';
+                        results.push(result);
+                    });
+
+                    return {
+                        key: bucket.key,
+                        label: bucket.label,
+                        count: planIds.size, // 唯一计划ID数量
+                        failureCount: taskAnalyzer.countFailures(results),
+                        successRate: taskAnalyzer.calculateSuccessRate(results, planIds.size),
+                        rangeStart: bucket.rangeStart,
+                        rangeEnd: bucket.rangeEnd
+                    };
+                });
 
                 const perfTime = performance.now() - perfStart;
-                console.log(`⚡ 从桶获取统计结果 (${perfTime.toFixed(2)}ms)`);
+                console.log(`⚡ 从桶获取统计结果 (${perfTime.toFixed(2)}ms), ${stats.length} 个时间段`);
 
                 return stats;
             }
@@ -2382,7 +2430,17 @@
             constructor() {
                 this.cycleEngine = new CycleRuleEngine();
                 this.taskAnalyzer = new TaskResultAnalyzer();
-                this.dataStore = new DataStore(); // 数据桶存储，用于增量更新
+
+                // 字段映射配置（统一定义）
+                this.fieldMappingValues = {
+                    idField: 'id',
+                    planIdField: 'plan_id',
+                    startTimeField: 'start_time',
+                    taskResultField: 'task_result'
+                };
+
+                // 使用字段映射创建 DataStore
+                this.dataStore = new DataStore(this.fieldMappingValues);
                 this.chart = null;
 
                 // 预检查 sessionStorage，判断是否有保存的状态（加快恢复速度）
@@ -2400,11 +2458,6 @@
                 this.isInitializing = true;  // 标记是否正在初始化
                 this.pendingUpdates = [];    // 暂存初始化期间的 WebSocket 推送
 
-                this.fieldMappingValues = {
-                    planIdField: 'plan_id',
-                    startTimeField: 'start_time',
-                    taskResultField: 'task_result'
-                };
                 this.init();
             }
 
@@ -2736,37 +2789,35 @@
                     // 【优化】使用 DataStore 增量更新桶数据
                     const groupType = this.groupBy ? this.groupBy.value : 'day';
                     const affectedBuckets = new Set();
+                    const recordKey = this.dataStore.getRecordKey(record);
 
                     // 更新内存数据 this.data 和 DataStore
                     if (operation === 'insert' || operation === 'update') {
-                        const index = this.data.findIndex(r => r.id === record.id);
+                        const index = this.data.findIndex(r => this.dataStore.getRecordKey(r) === recordKey);
                         if (index >= 0) {
-                            // 更新现有记录：先从旧桶删除，再加入新桶
-                            const oldBucketKey = this.dataStore.updateRecord(this.data[index], this.cycleEngine, groupType, true);
-                            if (oldBucketKey) affectedBuckets.add(oldBucketKey);
+                            // 更新现有记录：updateRecord 会处理旧桶删除和新桶添加
+                            const bucketKeys = this.dataStore.updateRecord(record, this.cycleEngine, groupType, false);
+                            bucketKeys.forEach(key => affectedBuckets.add(key));
 
                             this.data[index] = record;
-                            console.log(`🔄 更新内存记录 ID: ${record.id}`);
+                            console.log(`🔄 更新内存记录: ${recordKey}`);
                         } else {
                             // 新增记录
                             this.data.push(record);
-                            console.log(`➕ 新增内存记录 ID: ${record.id}`);
+                            const newBucketKey = this.dataStore.addRecordToBucket(record, this.cycleEngine, groupType);
+                            if (newBucketKey) affectedBuckets.add(newBucketKey);
+                            console.log(`➕ 新增内存记录: ${recordKey}`);
                         }
 
-                        // 添加到新桶
-                        this.dataStore.addRecordToBucket(record, this.cycleEngine, groupType);
-                        const newBucketKey = this.dataStore.recordToBucket.get(record.id);
-                        if (newBucketKey) affectedBuckets.add(newBucketKey);
-
                     } else if (operation === 'delete') {
-                        const index = this.data.findIndex(r => r.id === record.id);
+                        const index = this.data.findIndex(r => this.dataStore.getRecordKey(r) === recordKey);
                         if (index >= 0) {
                             // 从桶中删除
-                            const oldBucketKey = this.dataStore.updateRecord(this.data[index], this.cycleEngine, groupType, true);
-                            if (oldBucketKey) affectedBuckets.add(oldBucketKey);
+                            const bucketKeys = this.dataStore.updateRecord(this.data[index], this.cycleEngine, groupType, true);
+                            bucketKeys.forEach(key => affectedBuckets.add(key));
 
                             this.data.splice(index, 1);
-                            console.log(`🗑️ 删除内存记录 ID: ${record.id}`);
+                            console.log(`🗑️ 删除内存记录: ${recordKey}`);
                         }
                     }
 
