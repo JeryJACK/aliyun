@@ -843,10 +843,175 @@
                 });
             }
 
+            // 【新】只查询最近N天的数据（快速加载）
+            async queryRecentData(days = 7) {
+                if (!this.db) await this.init();
+
+                return new Promise((resolve) => {
+                    const transaction = this.db.transaction([this.allDataStoreName], 'readonly');
+                    const store = transaction.objectStore(this.allDataStoreName);
+                    const index = store.index('start_time');
+
+                    // 计算N天前的时间戳
+                    const cutoffDate = new Date();
+                    cutoffDate.setDate(cutoffDate.getDate() - days);
+                    const cutoffTime = cutoffDate.toISOString();
+
+                    // 使用索引范围查询（只查询最近N天）
+                    const range = IDBKeyRange.lowerBound(cutoffTime);
+                    const request = index.getAll(range);
+
+                    request.onsuccess = () => {
+                        const results = request.result || [];
+                        console.log(`⚡ 从本地缓存快速加载最近${days}天数据: ${results.length} 条`);
+                        resolve(results);
+                    };
+
+                    request.onerror = () => {
+                        console.error('❌ 查询最近数据失败:', request.error);
+                        resolve([]);
+                    };
+                });
+            }
+
+            // 【新】查询指定时间戳之后的数据（增量同步）
+            async queryDataSince(sinceTimestamp) {
+                if (!this.db) await this.init();
+
+                return new Promise((resolve) => {
+                    const transaction = this.db.transaction([this.allDataStoreName], 'readonly');
+                    const store = transaction.objectStore(this.allDataStoreName);
+                    const index = store.index('start_time');
+
+                    const sinceTime = new Date(sinceTimestamp).toISOString();
+                    const range = IDBKeyRange.lowerBound(sinceTime, false); // false = 包含边界值 (>= sinceTime)
+                    const request = index.getAll(range);
+
+                    request.onsuccess = () => {
+                        const results = request.result || [];
+                        console.log(`⚡ 增量查询: ${new Date(sinceTimestamp).toLocaleString()} 之后新增 ${results.length} 条`);
+                        resolve(results);
+                    };
+
+                    request.onerror = () => {
+                        console.error('❌ 增量查询失败:', request.error);
+                        resolve([]);
+                    };
+                });
+            }
+
+            // 【新】查询指定时间戳之前的数据（历史数据）
+            async queryDataBefore(beforeTimestamp) {
+                if (!this.db) await this.init();
+
+                return new Promise((resolve) => {
+                    const transaction = this.db.transaction([this.allDataStoreName], 'readonly');
+                    const store = transaction.objectStore(this.allDataStoreName);
+                    const index = store.index('start_time');
+
+                    const beforeTime = new Date(beforeTimestamp).toISOString();
+                    const range = IDBKeyRange.upperBound(beforeTime, true); // true = 不包含边界值
+                    const request = index.getAll(range);
+
+                    request.onsuccess = () => {
+                        const results = request.result || [];
+                        console.log(`⚡ 查询历史数据: ${new Date(beforeTimestamp).toLocaleString()} 之前 ${results.length} 条`);
+                        resolve(results);
+                    };
+
+                    request.onerror = () => {
+                        console.error('❌ 历史数据查询失败:', request.error);
+                        resolve([]);
+                    };
+                });
+            }
+
+            // 【新】分批查询历史数据（游标模式，避免一次性读取大量数据）
+            async queryDataBeforeBatch(beforeTimestamp, batchSize = 10000, onBatch = null) {
+                if (!this.db) await this.init();
+
+                return new Promise((resolve) => {
+                    const transaction = this.db.transaction([this.allDataStoreName], 'readonly');
+                    const store = transaction.objectStore(this.allDataStoreName);
+                    const index = store.index('start_time');
+
+                    const beforeTime = new Date(beforeTimestamp).toISOString();
+                    const range = IDBKeyRange.upperBound(beforeTime, true);
+                    const request = index.openCursor(range, 'prev'); // 倒序读取（从旧到新）
+
+                    let batch = [];
+                    let totalCount = 0;
+
+                    request.onsuccess = (event) => {
+                        const cursor = event.target.result;
+
+                        if (cursor) {
+                            batch.push(cursor.value);
+                            totalCount++;
+
+                            // 达到批次大小，触发回调
+                            if (batch.length >= batchSize) {
+                                if (onBatch) {
+                                    onBatch(batch, totalCount);
+                                }
+                                batch = [];
+                            }
+
+                            cursor.continue();
+                        } else {
+                            // 读取完成，处理剩余数据
+                            if (batch.length > 0 && onBatch) {
+                                onBatch(batch, totalCount);
+                            }
+                            console.log(`⚡ 分批查询完成: 共 ${totalCount} 条历史数据`);
+                            resolve(totalCount);
+                        }
+                    };
+
+                    request.onerror = () => {
+                        console.error('❌ 分批查询失败:', request.error);
+                        resolve(0);
+                    };
+                });
+            }
+
+            // 【新】快速获取数据统计信息（不读取完整数据）
+            async getDataStats() {
+                if (!this.db) await this.init();
+
+                return new Promise((resolve) => {
+                    const transaction = this.db.transaction([this.allDataStoreName, this.metaStoreName], 'readonly');
+                    const allDataStore = transaction.objectStore(this.allDataStoreName);
+                    const metaStore = transaction.objectStore(this.metaStoreName);
+
+                    const stats = {};
+
+                    // 读取 meta 信息
+                    const metaRequest = metaStore.get('allDataMeta');
+                    metaRequest.onsuccess = () => {
+                        Object.assign(stats, metaRequest.result || {});
+                    };
+
+                    // 获取总数
+                    const countRequest = allDataStore.count();
+                    countRequest.onsuccess = () => {
+                        stats.actualCount = countRequest.result;
+                    };
+
+                    transaction.oncomplete = () => {
+                        resolve(stats);
+                    };
+
+                    transaction.onerror = () => {
+                        resolve(null);
+                    };
+                });
+            }
+
             // 检查全数据缓存是否存在
             async checkAllDataCache() {
                 if (!this.db) await this.init();
-                
+
                 return new Promise((resolve) => {
                     const transaction = this.db.transaction([this.metaStoreName], 'readonly');
                     const store = transaction.objectStore(this.metaStoreName);
@@ -1396,6 +1561,11 @@
                     console.log('📨 收到 WebSocket 消息:', message);
 
                     switch (message.type) {
+                        case 'welcome':
+                            // 欢迎消息
+                            console.log('👋 WebSocket 连接成功:', message.message || '服务器已准备就绪');
+                            break;
+
                         case 'heartbeat':
                             // 心跳响应
                             this.missedHeartbeats = 0;
@@ -1566,9 +1736,16 @@
                     clearTimeout(timeoutId);
 
                     if (!response.ok) {
-                        console.warn(`⚠️ 补同步请求失败 (HTTP ${response.status}): ${response.statusText}`);
-                        console.warn(`   请求URL: ${catchupUrl}`);
-                        console.warn(`   提示: 如果后端未实现此API，可以在config.js中将catchup设置为null禁用此功能`);
+                        // 区分不同的错误类型
+                        if (response.status === 404) {
+                            console.log('ℹ️ 补同步API未找到，跳过断线补同步功能');
+                            console.log('💡 提示: 可在 config.js 中将 catchup 设置为 null 禁用此功能');
+                        } else if (response.status >= 500) {
+                            console.log('ℹ️ 补同步服务暂时不可用，跳过断线补同步');
+                            console.log('💡 这不会影响实时数据同步功能');
+                        } else {
+                            console.warn(`⚠️ 补同步请求失败 (HTTP ${response.status}): ${response.statusText}`);
+                        }
                         return;
                     }
 
@@ -1592,16 +1769,15 @@
                     }
 
                 } catch (error) {
-                    // 静默处理补同步错误，不影响主功能
+                    // 静默处理补同步错误，不影响主功能（使用 info 级别日志）
                     if (error.name === 'AbortError') {
-                        console.warn('⏱️ 补同步请求超时，已跳过');
+                        console.log('ℹ️ 补同步请求超时，已跳过');
                     } else if (error.message?.includes('Failed to fetch')) {
-                        console.warn('🌐 补同步请求失败：无法连接到服务器');
-                        console.warn('   可能原因：网络问题、CORS限制或服务器未响应');
+                        console.log('ℹ️ 补同步服务暂时无法连接，已跳过');
                     } else {
-                        console.warn('⚠️ 断线补同步失败:', error.message);
+                        console.log('ℹ️ 补同步功能暂不可用:', error.message);
                     }
-                    console.log('💡 WebSocket实时同步功能仍可正常工作，只是跳过了历史数据补同步');
+                    console.log('💡 这不会影响 WebSocket 实时数据同步功能');
                 }
             }
 
@@ -2147,9 +2323,134 @@
 
                 // 统计：总记录数
                 this.size = 0;
+
+                // 加载状态
+                this.isLoading = false;
+                this.loadProgress = 0;
             }
 
-            // 批量加载数据（初始化时使用）
+            // 【新】渐进式批量加载数据（异步非阻塞）
+            async loadDataProgressively(records, cycleEngine, options = {}) {
+                const {
+                    batchSize = 10000,          // 每批处理数量
+                    onProgress = null,          // 进度回调
+                    onPriorityComplete = null,  // 优先数据加载完成回调
+                    priorityCount = 20000       // 优先加载的数据量（最新数据）
+                } = options;
+
+                this.isLoading = true;
+                const startTime = performance.now();
+                const totalRecords = records.length;
+
+                console.log(`🚀 开始渐进式加载 ${totalRecords.toLocaleString()} 条记录...`);
+
+                // 清空现有数据
+                this.recordMap.clear();
+                Object.values(this.timeIndex).forEach(index => index.clear());
+
+                // === 第1阶段：优先加载最新数据（用户最关心的），立即可用 ===
+                const priorityRecords = records.slice(-priorityCount); // 最新的N条
+                await this._loadBatch(priorityRecords, cycleEngine, 0, totalRecords, onProgress);
+
+                const priorityTime = performance.now() - startTime;
+                console.log(`✅ 优先数据加载完成: ${this.size.toLocaleString()} 条，耗时 ${priorityTime.toFixed(0)}ms`);
+
+                // 通知调用者优先数据已加载完成
+                if (onPriorityComplete) {
+                    onPriorityComplete(this.size, totalRecords);
+                }
+
+                // 如果总数小于优先数，已经加载完成
+                if (totalRecords <= priorityCount) {
+                    this.isLoading = false;
+                    this.loadProgress = 100;
+                    if (onProgress) onProgress(100, this.size, totalRecords);
+                    return;
+                }
+
+                // === 第2阶段：后台分批加载剩余数据（不阻塞UI）===
+                const remainingRecords = records.slice(0, -priorityCount);
+                const batches = Math.ceil(remainingRecords.length / batchSize);
+
+                for (let i = 0; i < batches; i++) {
+                    const batchStart = i * batchSize;
+                    const batchEnd = Math.min((i + 1) * batchSize, remainingRecords.length);
+                    const batch = remainingRecords.slice(batchStart, batchEnd);
+
+                    // 在浏览器空闲时处理（不阻塞用户交互）
+                    await this._loadBatchIdle(batch, cycleEngine, priorityCount + batchStart, totalRecords, onProgress);
+
+                    // 每批之间让出控制权，避免长时间阻塞
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }
+
+                this.isLoading = false;
+                this.loadProgress = 100;
+                const totalTime = performance.now() - startTime;
+                console.log(`✅ 全部数据加载完成: ${this.size.toLocaleString()} 条记录，总耗时 ${totalTime.toFixed(0)}ms`);
+                console.log(`📊 索引统计: Day=${this.timeIndex.day.size}, Week=${this.timeIndex.week.size}, Month=${this.timeIndex.month.size}, Quarter=${this.timeIndex.quarter.size}`);
+            }
+
+            // 内部：处理一批数据
+            async _loadBatch(batch, cycleEngine, offset, total, onProgress) {
+                for (const record of batch) {
+                    const id = record.id || record.plan_id;
+                    if (!id) continue;
+
+                    this.recordMap.set(id, record);
+                    this._addToTimeIndex(record, cycleEngine);
+                }
+
+                this.size = this.recordMap.size;
+                this.loadProgress = Math.round(((offset + batch.length) / total) * 100);
+
+                if (onProgress) {
+                    onProgress(this.loadProgress, this.size, total);
+                }
+            }
+
+            // 内部：在空闲时处理一批数据（使用 requestIdleCallback）
+            async _loadBatchIdle(batch, cycleEngine, offset, total, onProgress) {
+                return new Promise(resolve => {
+                    const processChunk = (deadline) => {
+                        let processed = 0;
+                        const chunkSize = 1000; // 每个时间片处理1000条
+
+                        while (processed < batch.length && (deadline.timeRemaining() > 0 || deadline.didTimeout)) {
+                            const end = Math.min(processed + chunkSize, batch.length);
+                            const chunk = batch.slice(processed, end);
+
+                            for (const record of chunk) {
+                                const id = record.id || record.plan_id;
+                                if (!id) continue;
+
+                                this.recordMap.set(id, record);
+                                this._addToTimeIndex(record, cycleEngine);
+                            }
+
+                            processed = end;
+                        }
+
+                        this.size = this.recordMap.size;
+                        this.loadProgress = Math.round(((offset + processed) / total) * 100);
+
+                        if (onProgress) {
+                            onProgress(this.loadProgress, this.size, total);
+                        }
+
+                        if (processed < batch.length) {
+                            // 还有数据未处理，继续在下一个空闲时间片处理
+                            requestIdleCallback(processChunk);
+                        } else {
+                            resolve();
+                        }
+                    };
+
+                    requestIdleCallback(processChunk, { timeout: 100 });
+                });
+            }
+
+            // 【保留】同步批量加载数据（用于小数据量或特殊场景）
             loadData(records, cycleEngine) {
                 console.log(`🚀 开始构建高性能索引，共 ${records.length} 条记录...`);
                 const startTime = performance.now();
@@ -2193,6 +2494,47 @@
 
                 this.size = this.recordMap.size;
                 return true;
+            }
+
+            // 【新】快速增量合并新数据（O(k)，k为新增数量）
+            mergeIncrementalData(newRecords, cycleEngine) {
+                if (!newRecords || newRecords.length === 0) {
+                    console.log('📊 无增量数据需要合并');
+                    return { merged: 0, updated: 0, inserted: 0 };
+                }
+
+                const startTime = performance.now();
+                let updated = 0;
+                let inserted = 0;
+
+                for (const record of newRecords) {
+                    const id = record.id || record.plan_id;
+                    if (!id) continue;
+
+                    const isUpdate = this.recordMap.has(id);
+
+                    // 如果是更新，先移除旧索引
+                    if (isUpdate) {
+                        const oldRecord = this.recordMap.get(id);
+                        this._removeFromTimeIndex(oldRecord, cycleEngine);
+                        updated++;
+                    } else {
+                        inserted++;
+                    }
+
+                    // 更新主 Map
+                    this.recordMap.set(id, record);
+
+                    // 添加时间索引
+                    this._addToTimeIndex(record, cycleEngine);
+                }
+
+                this.size = this.recordMap.size;
+                const mergeTime = performance.now() - startTime;
+
+                console.log(`⚡ 增量合并完成: ${newRecords.length} 条 (新增${inserted}, 更新${updated}), 耗时 ${mergeTime.toFixed(2)}ms`);
+
+                return { merged: newRecords.length, updated, inserted };
             }
 
             // 删除记录
@@ -2499,12 +2841,95 @@
                         return;
                     }
 
-                    // 加载数据到高性能存储
-                    this.dataStore.loadData(cachedData, this.cycleEngine);
-                    this.data = cachedData; // 保留用于兼容性
+                    // ========== 🚀 智能加载策略 ==========
+
+                    // 快速获取缓存统计信息（不读取全部数据）
+                    const cacheStats = await cacheManager.getDataStats();
+                    const totalCached = cacheStats?.actualCount || cachedData.length;
+                    const lastSyncTime = cacheStats?.lastSyncTime || 0;
+
+                    console.log(`📊 缓存统计: ${totalCached.toLocaleString()} 条数据，最后同步: ${new Date(lastSyncTime).toLocaleString()}`);
+
                     this.noDataAlert.classList.add('hidden');
 
-                    console.log(`✅ 从本地缓存加载了 ${cachedData.length} 条数据`);
+                    // 检查是否有新数据（昨天之后的数据）
+                    const yesterday = new Date();
+                    yesterday.setDate(yesterday.getDate() - 1);
+                    yesterday.setHours(0, 0, 0, 0);
+                    const hasRecentData = lastSyncTime > yesterday.getTime();
+
+                    // === 策略1：小缓存 + 有最近数据 → 快速增量同步（0.3-0.5s）===
+                    if (totalCached < 200000 && hasRecentData) {
+                        console.log(`⚡ 策略1：快速增量同步模式`);
+
+                        // 【修复】计算统一的时间边界（只计算一次，避免时间不一致）
+                        const cutoffDate = new Date();
+                        cutoffDate.setDate(cutoffDate.getDate() - 7);
+                        const cutoffTimestamp = cutoffDate.getTime();
+
+                        // 1. 先加载最近7天数据（立即可用）
+                        const recentData = await cacheManager.queryDataSince(cutoffTimestamp);
+                        this.data = recentData; // 保留兼容性
+                        this.dataStore.loadData(recentData, this.cycleEngine);
+
+                        console.log(`✅ 最近7天数据加载完成 (${recentData.length.toLocaleString()} 条)，页面已可用！`);
+
+                        // 2. 后台异步增量加载剩余数据（不阻塞，智能调度）
+                        if (recentData.length < totalCached) {
+                            const remainingCount = totalCached - recentData.length;
+                            console.log(`🔄 后台加载剩余 ${remainingCount.toLocaleString()} 条历史数据...`);
+
+                            // 【修复】使用同一个 cutoffTimestamp，确保边界一致
+                            this._startBackgroundLoading(cutoffTimestamp, remainingCount);
+                        }
+                    }
+                    // === 策略2：小数据量（<5万）- 直接同步加载，速度最快 ===
+                    else if (totalCached < 50000) {
+                        console.log(`⚡ 策略2：小数据集快速加载模式`);
+                        this.data = cachedData;
+                        this.dataStore.loadData(cachedData, this.cycleEngine);
+                    }
+                    // === 策略3：大数据量（>=5万）- 渐进式加载，UI无阻塞 ===
+                    else {
+                        console.log(`⚡ 策略3：大数据集渐进式加载模式`);
+                        this.data = cachedData;
+                        const priorityCount = Math.min(30000, totalCached); // 优先加载3万条
+
+                        console.log(`📊 大数据集检测(${totalCached.toLocaleString()}条)，启用渐进式加载...`);
+                        console.log(`   ⚡ 优先加载最新 ${priorityCount.toLocaleString()} 条（约 ${Math.round(priorityCount/5000)}天数据）`);
+                        console.log(`   🔄 后台加载剩余 ${(totalCached - priorityCount).toLocaleString()} 条`);
+
+                        // 使用 Promise 来等待优先数据加载完成
+                        let resolvePriorityLoad;
+                        const priorityLoadPromise = new Promise(resolve => {
+                            resolvePriorityLoad = resolve;
+                        });
+
+                        // 启动渐进式加载
+                        this.dataStore.loadDataProgressively(cachedData, this.cycleEngine, {
+                            batchSize: 10000,
+                            priorityCount: priorityCount,
+                            onPriorityComplete: (loaded, total) => {
+                                // 优先数据加载完成，通知继续初始化
+                                console.log(`✅ 优先数据已就绪 (${loaded.toLocaleString()}/${total.toLocaleString()})，页面可用！`);
+                                resolvePriorityLoad();
+                            },
+                            onProgress: (progress, loaded, total) => {
+                                if (progress === 100) {
+                                    console.log(`✅ 全部数据加载完成: ${loaded.toLocaleString()} 条`);
+                                    // 后台加载完成后，如果图表正在显示，静默刷新
+                                    if (this.chart) {
+                                        console.log('🔄 后台数据加载完成，静默刷新图表...');
+                                        this.generateStatistics({ silent: true });
+                                    }
+                                }
+                            }
+                        });
+
+                        // 等待优先数据加载完成（约1-2秒）
+                        await priorityLoadPromise;
+                        console.log(`⏱️ 页面初始化完成，剩余数据将在后台加载（不影响使用）`);
+                    }
 
                     // 使用 reduce 方法高效查找最小/最大时间戳，支持任意大小的数据集
                     if (cachedData.length > 0) {
@@ -2811,6 +3236,68 @@
                 } finally {
                     this.clearCacheBtn.disabled = false;
                     this.clearCacheBtn.innerHTML = '<i class="fa fa-trash mr-1"></i>清空缓存';
+                }
+            }
+
+            // 后台加载历史数据（安全的增量合并，无遗漏、无重复、无并发冲突）
+            async _startBackgroundLoading(beforeTimestamp, expectedCount) {
+                const startTime = performance.now();
+                let loadedCount = 0;
+                let processedBatches = 0;
+
+                console.log(`🚀 启动后台加载: ${expectedCount.toLocaleString()} 条历史数据`);
+
+                try {
+                    // 【修复】使用同步 onBatch 回调，确保顺序处理，避免并发覆盖
+                    await cacheManager.queryDataBeforeBatch(
+                        beforeTimestamp,
+                        10000, // 每批 10k 条
+                        (batch, totalCount) => {
+                            processedBatches++;
+
+                            // 增量合并到现有数据结构（O(k) 复杂度，Map 自动去重）
+                            const result = this.dataStore.mergeIncrementalData(batch, this.cycleEngine);
+                            loadedCount += result.merged;
+
+                            // 计算进度
+                            const progress = Math.min(100, Math.round((loadedCount / expectedCount) * 100));
+                            const elapsed = performance.now() - startTime;
+                            const speed = Math.round(loadedCount / (elapsed / 1000)); // 条/秒
+
+                            // 每 5 批输出一次进度（避免控制台刷屏）
+                            if (processedBatches % 5 === 0 || progress === 100) {
+                                console.log(`🔄 后台加载进度: ${loadedCount.toLocaleString()}/${expectedCount.toLocaleString()} (${progress}%) | 速度: ${speed.toLocaleString()} 条/秒`);
+                            }
+                        }
+                    );
+
+                    const totalTime = performance.now() - startTime;
+                    const avgSpeed = Math.round(loadedCount / (totalTime / 1000));
+
+                    console.log(`✅ 后台加载完成: ${loadedCount.toLocaleString()} 条`);
+                    console.log(`   ⏱️ 总耗时: ${totalTime.toFixed(0)}ms (${avgSpeed.toLocaleString()} 条/秒)`);
+                    console.log(`   📦 批次: ${processedBatches} 批 (每批 10k 条)`);
+
+                    // 【修复】从 Map 重建 this.data 数组，确保数据一致性（无重复、无遗漏）
+                    console.log('🔄 正在同步 this.data 数组...');
+                    this.data = Array.from(this.dataStore.recordMap.values());
+                    console.log(`✅ this.data 已同步: ${this.data.length.toLocaleString()} 条记录`);
+
+                    // 后台加载完成后，如果图表正在显示，静默刷新
+                    if (this.chart) {
+                        console.log('🔄 后台数据加载完成，静默刷新图表...');
+                        await this.generateStatistics({ silent: true });
+                    }
+
+                } catch (error) {
+                    console.error('❌ 后台加载失败:', error);
+                    console.log(`   已加载: ${loadedCount.toLocaleString()}/${expectedCount.toLocaleString()} 条`);
+
+                    // 失败时也要同步 this.data
+                    if (loadedCount > 0) {
+                        console.log('🔄 同步已加载的数据到 this.data...');
+                        this.data = Array.from(this.dataStore.recordMap.values());
+                    }
                 }
             }
 
