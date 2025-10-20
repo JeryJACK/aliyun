@@ -12,6 +12,7 @@
     
     <!-- 配置文件 -->
     <script src="./public/js/config.js?v=4"></script>
+    <script src="./public/js/shared-data-manager.js"></script>
 
     <!-- Tailwind 配置 -->
     <script>
@@ -2874,6 +2875,11 @@
 
                         console.log(`✅ 最近7天数据加载完成 (${recentData.length.toLocaleString()} 条)，页面已可用！`);
 
+                        // 【新增】通知共享管理器数据已加载
+                        if (window.sharedDataManager) {
+                            window.sharedDataManager.notifyDataLoaded(recentData, 'index');
+                        }
+
                         // 2. 后台异步增量加载剩余数据（不阻塞，智能调度）
                         if (recentData.length < totalCached) {
                             const remainingCount = totalCached - recentData.length;
@@ -2888,6 +2894,11 @@
                         console.log(`⚡ 策略2：小数据集快速加载模式`);
                         this.data = cachedData;
                         this.dataStore.loadData(cachedData, this.cycleEngine);
+
+                        // 【新增】通知共享管理器数据已加载
+                        if (window.sharedDataManager) {
+                            window.sharedDataManager.notifyDataLoaded(cachedData, 'index');
+                        }
                     }
                     // === 策略3：大数据量（>=5万）- 渐进式加载，UI无阻塞 ===
                     else {
@@ -2912,6 +2923,12 @@
                             onPriorityComplete: (loaded, total) => {
                                 // 优先数据加载完成，通知继续初始化
                                 console.log(`✅ 优先数据已就绪 (${loaded.toLocaleString()}/${total.toLocaleString()})，页面可用！`);
+
+                                // 【新增】通知共享管理器数据已加载（优先部分）
+                                if (window.sharedDataManager) {
+                                    window.sharedDataManager.notifyDataLoaded(this.data, 'index');
+                                }
+
                                 resolvePriorityLoad();
                             },
                             onProgress: (progress, loaded, total) => {
@@ -4659,6 +4676,11 @@
 
                         const memoryTime = performance.now() - memoryStart;
                         console.log(`⏱️ [1/3] 内存更新耗时: ${memoryTime.toFixed(2)}ms`);
+
+                        // 【新增】通知共享管理器数据已更新
+                        if (memoryUpdated && window.sharedDataManager) {
+                            window.sharedDataManager.notifyDataUpdate({ operation, record });
+                        }
 
                         if (!memoryUpdated) {
                             // 内存更新失败时，降级到全量加载
