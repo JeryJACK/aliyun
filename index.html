@@ -695,30 +695,85 @@
                     });
 
                     // 2. 分批写入（数据已在 Worker 中排序好）
+                    const failedRecords = []; // 记录写入失败的记录
+
                     for (let i = 0; i < allData.length; i += batchSize) {
                         const batch = allData.slice(i, i + batchSize);
                         const batchNum = Math.floor(i / batchSize) + 1;
                         const totalBatches = Math.ceil(allData.length / batchSize);
 
-                        await new Promise((resolve, reject) => {
-                            const transaction = this.db.transaction([this.allDataStoreName], 'readwrite');
-                            const store = transaction.objectStore(this.allDataStoreName);
+                        try {
+                            // 尝试批量写入
+                            await new Promise((resolve, reject) => {
+                                const transaction = this.db.transaction([this.allDataStoreName], 'readwrite');
+                                const store = transaction.objectStore(this.allDataStoreName);
 
-                            for (const record of batch) {
-                                store.put(record);
-                                totalStored++;
+                                for (const record of batch) {
+                                    // 🔧 确保记录有 id 字段（IndexedDB keyPath 要求）
+                                    const standardRecord = {
+                                        ...record,
+                                        id: record.id || record.plan_id || `record_${totalStored + batch.indexOf(record)}`
+                                    };
+
+                                    store.put(standardRecord);
+                                }
+
+                                transaction.oncomplete = () => {
+                                    totalStored += batch.length;
+                                    if (onProgress) {
+                                        const progress = Math.floor((totalStored / allData.length) * 100);
+                                        onProgress(totalStored, allData.length, progress);
+                                    }
+                                    console.log(`📦 批次 ${batchNum}/${totalBatches} 完成 (${totalStored}/${allData.length})`);
+                                    resolve();
+                                };
+                                transaction.onerror = () => reject(transaction.error);
+                            });
+
+                        } catch (batchError) {
+                            // 批量写入失败，回退到逐条写入
+                            console.warn(`⚠️ 批次 ${batchNum} 批量写入失败，尝试逐条写入...`, batchError);
+
+                            let batchSuccessCount = 0;
+                            for (let j = 0; j < batch.length; j++) {
+                                const record = batch[j];
+                                try {
+                                    await new Promise((resolve, reject) => {
+                                        const transaction = this.db.transaction([this.allDataStoreName], 'readwrite');
+                                        const store = transaction.objectStore(this.allDataStoreName);
+
+                                        const standardRecord = {
+                                            ...record,
+                                            id: record.id || record.plan_id || `record_${totalStored + j}`
+                                        };
+
+                                        const request = store.put(standardRecord);
+                                        request.onsuccess = () => {
+                                            batchSuccessCount++;
+                                            resolve();
+                                        };
+                                        request.onerror = () => reject(request.error);
+                                    });
+                                } catch (recordError) {
+                                    // 单条记录写入也失败，记录到失败列表
+                                    failedRecords.push({
+                                        record: record,
+                                        error: recordError.message,
+                                        batchNum: batchNum,
+                                        indexInBatch: j
+                                    });
+                                    console.error(`❌ 记录写入失败 [批次${batchNum}, 索引${j}]:`, recordError.message);
+                                }
                             }
 
-                            transaction.oncomplete = () => {
-                                if (onProgress) {
-                                    const progress = Math.floor((totalStored / allData.length) * 100);
-                                    onProgress(totalStored, allData.length, progress);
-                                }
-                                console.log(`📦 批次 ${batchNum}/${totalBatches} 完成 (${totalStored}/${allData.length})`);
-                                resolve();
-                            };
-                            transaction.onerror = () => reject(transaction.error);
-                        });
+                            totalStored += batchSuccessCount;
+                            console.log(`🔄 批次 ${batchNum} 逐条写入完成: 成功 ${batchSuccessCount}/${batch.length}`);
+
+                            if (onProgress) {
+                                const progress = Math.floor((totalStored / allData.length) * 100);
+                                onProgress(totalStored, allData.length, progress);
+                            }
+                        }
                     }
 
                     // 3. 更新元数据
@@ -740,7 +795,30 @@
                     });
 
                     const perfTime = performance.now() - perfStart;
-                    console.log(`✅ [优化版] 缓存完成! ${totalStored} 条记录，耗时: ${(perfTime / 1000).toFixed(1)}秒`);
+
+                    // 4. 数据完整性验证
+                    const expectedCount = allData.length;
+                    const lostCount = expectedCount - totalStored;
+                    const successRate = ((totalStored / expectedCount) * 100).toFixed(2);
+
+                    console.log(`✅ [优化版] 缓存完成! ${totalStored}/${expectedCount} 条记录，耗时: ${(perfTime / 1000).toFixed(1)}秒`);
+                    console.log(`📊 写入成功率: ${successRate}%`);
+
+                    // 如果有失败的记录，发出警告
+                    if (failedRecords.length > 0) {
+                        console.error(`⚠️ 数据完整性警告: ${failedRecords.length} 条记录写入失败`);
+                        console.error('失败记录详情:', failedRecords.slice(0, 10)); // 只显示前10条
+
+                        // 如果失败率超过 1%，抛出错误
+                        if (lostCount > expectedCount * 0.01) {
+                            throw new Error(`数据丢失率过高: ${lostCount}条记录 (${(100 - parseFloat(successRate)).toFixed(2)}%) 写入失败`);
+                        }
+                    }
+
+                    // 如果所有数据都成功写入，但数量不符
+                    if (lostCount > 0 && failedRecords.length === 0) {
+                        console.warn(`⚠️ 数据计数不匹配: 预期 ${expectedCount}, 实际 ${totalStored}, 差值 ${lostCount}`);
+                    }
 
                     return totalStored;
 
@@ -1515,13 +1593,38 @@
                     const parsedRecords = await this.parseCSVWithWorker(compressedData);
 
                     console.log(`✅ CSV 解析完成: ${parsedRecords.length} 条记录`);
+
+                    // 3.1 验证解析后的记录数量
+                    if (recordCount > 0) {
+                        const parseLossCount = recordCount - parsedRecords.length;
+                        const parseSuccessRate = ((parsedRecords.length / recordCount) * 100).toFixed(2);
+
+                        console.log(`📊 CSV 解析成功率: ${parseSuccessRate}% (${parsedRecords.length}/${recordCount})`);
+
+                        if (parseLossCount > 0) {
+                            console.warn(`⚠️ CSV 解析数据丢失: ${parseLossCount} 条记录`);
+
+                            // 如果解析丢失率超过 5%，回退到 JSON 加载
+                            if (parseLossCount > recordCount * 0.05) {
+                                console.error(`❌ CSV 解析丢失率过高 (${(100 - parseFloat(parseSuccessRate)).toFixed(2)}%)，回退到 JSON 模式`);
+                                return await this.fetchAllDataFromAPI();
+                            }
+                        }
+                    }
+
                     this.updatePreloadStatus(`正在处理数据... (${parsedRecords.length} 条)`, 'loading');
 
                     // 4. 使用 Data Processor Worker 处理和排序
                     const processedRecords = await this.processDataWithWorker(parsedRecords);
 
+                    // 4.1 验证处理后的记录数量
+                    if (processedRecords.length !== parsedRecords.length) {
+                        const processLossCount = parsedRecords.length - processedRecords.length;
+                        console.warn(`⚠️ 数据处理丢失: ${processLossCount} 条记录 (${parsedRecords.length} → ${processedRecords.length})`);
+                    }
+
                     const totalTime = ((performance.now() - perfStart) / 1000).toFixed(1);
-                    console.log(`✅ [优化版] 数据加载完成: ${processedRecords.length} 条，耗时: ${totalTime}秒`);
+                    console.log(`✅ [优化版] 数据加载完成: ${processedRecords.length}/${recordCount} 条，耗时: ${totalTime}秒`);
 
                     return processedRecords;
 
@@ -1538,9 +1641,14 @@
                     const worker = new Worker('/public/js/csv-parser.worker.js');
 
                     worker.onmessage = (e) => {
-                        const { type, records, error } = e.data;
+                        const { type, records, error, errorCount, totalLines, errorRate } = e.data;
 
                         if (type === 'COMPLETE') {
+                            // 检查 CSV 解析错误率
+                            if (errorCount > 0) {
+                                console.warn(`⚠️ CSV 解析警告: ${errorCount} 行解析失败 (错误率: ${errorRate}%)`);
+                            }
+
                             worker.terminate();
                             resolve(records);
                         } else if (type === 'ERROR') {
