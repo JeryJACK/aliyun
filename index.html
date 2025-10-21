@@ -543,18 +543,21 @@
     </div>
 
     <script>
+        console.log('📌 主脚本开始加载...');
+
         // ==================== 数据缓存和预载系统 ====================
-        
+
         // IndexedDB缓存管理器
         class CacheManager {
             constructor() {
                 this.dbName = 'SatelliteDataCache';
-                this.dbVersion = 3;
+                this.dbVersion = 4;  // 升级到版本4
                 this.allDataStoreName = 'allDataCache';
                 this.metaStoreName = 'metaData';
                 this.db = null;
                 // 移除缓存过期时间，始终使用本地缓存
-                this.cacheExpiry = Infinity; 
+                this.cacheExpiry = Infinity;
+                console.log('✅ CacheManager 构造函数执行');
             }
 
             async init() {
@@ -1523,14 +1526,25 @@
             async performCatchupSync() {
                 try {
                     const lastSyncTime = await this.cacheManager.getLastSyncTime();
-                    console.log(`🔄 开始断线补同步，最后同步时间: ${new Date(lastSyncTime).toLocaleString()}`);
+                    const now = Date.now();
+                    const offlineDuration = (now - lastSyncTime) / 1000 / 60; // 分钟
 
-                    // 调用后端补同步 API
-                    const catchupUrl = CONFIG.isGitHubPages
-                        ? CONFIG.API_ENDPOINTS.catchup || `${CONFIG.API_ENDPOINTS.records}/changes`
-                        : `${CONFIG.API_BASE_URL}/satellite/changes`;
+                    console.log(`🔄 WebSocket 重连，开始补同步`);
+                    console.log(`   最后同步: ${new Date(lastSyncTime).toLocaleString()}`);
+                    console.log(`   离线时长: ${offlineDuration.toFixed(1)} 分钟`);
 
-                    const response = await fetch(`${catchupUrl}?since=${lastSyncTime}`, {
+                    // 如果离线时间很短（小于30秒），跳过补同步
+                    if (offlineDuration < 0.5) {
+                        console.log('✅ 离线时间很短，无需补同步');
+                        return;
+                    }
+
+                    // 调用后端增量同步 API
+                    const apiUrl = CONFIG.isGitHubPages
+                        ? CONFIG.API_ENDPOINTS.records
+                        : `${CONFIG.API_BASE_URL}/satellite/records`;
+
+                    const response = await fetch(`${apiUrl}?since=${lastSyncTime}`, {
                         method: 'GET',
                         headers: {
                             'Content-Type': 'application/json'
@@ -1538,31 +1552,93 @@
                     });
 
                     if (!response.ok) {
-                        console.warn('⚠️ 补同步请求失败');
-                        return;
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
                     }
 
                     const result = await response.json();
-                    if (result.success && result.data && result.data.changes) {
-                        const changes = result.data.changes;
 
-                        if (changes.length > 0) {
-                            console.log(`📦 收到 ${changes.length} 条补同步变更`);
+                    if (result.success && result.data) {
+                        const changes = result.data.changes || [];
+                        const count = result.data.count || 0;
 
-                            // 批量更新
-                            await this.cacheManager.batchUpdateRecords(changes);
+                        if (count > 0) {
+                            console.log(`📦 补同步: 收到 ${count} 条变更记录`);
+
+                            // 更新缓存中的数据
+                            await this.updateLocalDataWithChanges(changes);
 
                             // 触发更新回调
                             if (this.onSyncUpdate) {
-                                this.onSyncUpdate({ operation: 'catchup_sync', count: changes.length });
+                                this.onSyncUpdate({
+                                    operation: 'catchup_sync',
+                                    count: count,
+                                    success: true
+                                });
                             }
+
+                            console.log('✅ 补同步完成');
                         } else {
-                            console.log('✅ 无需补同步，数据已是最新');
+                            console.log('✅ 无增量数据，已是最新');
                         }
+                    } else {
+                        console.warn('⚠️ 补同步响应格式异常:', result);
                     }
 
                 } catch (error) {
-                    console.error('❌ 断线补同步失败:', error);
+                    console.error('❌ 补同步失败:', error);
+                    // 补同步失败不影响实时推送功能
+                }
+            }
+
+            // 用增量数据更新本地缓存
+            async updateLocalDataWithChanges(changes) {
+                if (!changes || changes.length === 0) return;
+
+                try {
+                    // 获取当前所有数据
+                    const allData = await this.cacheManager.getAllData();
+
+                    if (!allData || allData.length === 0) {
+                        console.log('⚠️ 本地无缓存数据，增量更新被跳过');
+                        return;
+                    }
+
+                    // 合并变更记录
+                    let updateCount = 0;
+                    let insertCount = 0;
+
+                    for (const change of changes) {
+                        const recordId = change.id || change.plan_id;
+                        const index = allData.findIndex(r => (r.id || r.plan_id) === recordId);
+
+                        if (index >= 0) {
+                            // 更新现有记录
+                            allData[index] = change;
+                            updateCount++;
+                        } else {
+                            // 插入新记录
+                            allData.push(change);
+                            insertCount++;
+                        }
+                    }
+
+                    // 更新缓存
+                    await this.cacheManager.storeAllData(allData);
+
+                    // 如果应用已初始化，同步更新应用数据
+                    if (window.app && window.app.data) {
+                        window.app.data = allData;
+
+                        // 如果图表正在显示，刷新图表
+                        if (window.app.hasSavedStats && window.app.chart) {
+                            window.app.generateStatistics();
+                        }
+                    }
+
+                    console.log(`✅ 本地数据已更新: ${insertCount} 条新增, ${updateCount} 条修改`);
+
+                } catch (error) {
+                    console.error('❌ 更新本地数据失败:', error);
                 }
             }
 
@@ -1602,9 +1678,13 @@
         }
 
         // 全局实例
+        console.log('📌 创建全局实例...');
         const cacheManager = new CacheManager();
+        console.log('✅ cacheManager 已创建');
         const dataPreloader = new DataPreloader();
+        console.log('✅ dataPreloader 已创建');
         const wsSyncManager = new WebSocketSyncManager(cacheManager);
+        console.log('✅ wsSyncManager 已创建');
 
         // ==================== 原有的API函数（改为从缓存获取）====================
         
@@ -3705,6 +3785,7 @@
         // 分组逻辑已验证正确
 
         // 检测页面刷新并清空 sessionStorage
+        console.log('📌 检测页面加载类型...');
         (function() {
             // 使用 performance.navigation 或 performance.getEntriesByType 检测刷新
             const navigationType = performance.getEntriesByType('navigation')[0]?.type;
@@ -3719,8 +3800,11 @@
             }
         })();
 
+        console.log('📌 注册 DOMContentLoaded 事件监听器...');
+
         // 初始化应用 - 添加自动数据预载
         document.addEventListener('DOMContentLoaded', async () => {
+            console.log('📌 DOMContentLoaded 事件触发');
             try {
                 console.log('🌟 页面加载完成，快速初始化中...');
 
