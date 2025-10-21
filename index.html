@@ -550,12 +550,12 @@
         class CacheManager {
             constructor() {
                 this.dbName = 'SatelliteDataCache';
-                this.dbVersion = 3;
+                this.dbVersion = 4; // 升级版本以触发结构更新
                 this.allDataStoreName = 'allDataCache';
                 this.metaStoreName = 'metaData';
                 this.db = null;
                 // 移除缓存过期时间，始终使用本地缓存
-                this.cacheExpiry = Infinity; 
+                this.cacheExpiry = Infinity;
             }
 
             async init() {
@@ -569,13 +569,14 @@
 
                     request.onsuccess = () => {
                         this.db = request.result;
-                        console.log('✅ IndexedDB初始化成功');
+                        console.log('✅ IndexedDB初始化成功, 版本:', this.db.version);
+                        console.log('📦 可用存储空间:', Array.from(this.db.objectStoreNames).join(', '));
                         resolve(this.db);
                     };
 
                     request.onupgradeneeded = (event) => {
                         this.db = event.target.result;
-                        console.log('🔧 升级IndexedDB结构...');
+                        console.log(`🔧 升级IndexedDB结构 (${event.oldVersion} → ${event.newVersion})...`);
 
                         // 全数据存储空间
                         if (!this.db.objectStoreNames.contains(this.allDataStoreName)) {
@@ -594,14 +595,26 @@
                 });
             }
 
+            // 检查 object store 是否存在
+            hasObjectStore(storeName) {
+                return this.db && this.db.objectStoreNames.contains(storeName);
+            }
+
             // 存储所有数据到本地缓存
             async storeAllData(allData) {
-                if (!this.db) await this.init();
-                
-                return new Promise(async (resolve, reject) => {
-                    const transaction = this.db.transaction([this.allDataStoreName, this.metaStoreName], 'readwrite');
-                    const allDataStore = transaction.objectStore(this.allDataStoreName);
-                    const metaStore = transaction.objectStore(this.metaStoreName);
+                try {
+                    if (!this.db) await this.init();
+
+                    // 检查必需的 object stores 是否存在
+                    if (!this.hasObjectStore(this.allDataStoreName) || !this.hasObjectStore(this.metaStoreName)) {
+                        console.error('❌ 缺少必需的 object stores，无法存储数据');
+                        throw new Error('Database structure is incomplete');
+                    }
+
+                    return new Promise(async (resolve, reject) => {
+                        const transaction = this.db.transaction([this.allDataStoreName, this.metaStoreName], 'readwrite');
+                        const allDataStore = transaction.objectStore(this.allDataStoreName);
+                        const metaStore = transaction.objectStore(this.metaStoreName);
                     
                     try {
                         // 清空现有数据
@@ -822,8 +835,13 @@
 
                     return totalStored;
 
+                    } catch (error) {
+                        console.error('❌ [优化版] 存储失败:', error);
+                        reject(error);
+                    }
+                });
                 } catch (error) {
-                    console.error('❌ [优化版] 存储失败:', error);
+                    console.error('❌ IndexedDB 访问失败:', error);
                     throw error;
                 }
             }
@@ -1120,31 +1138,42 @@
 
             // 检查全数据缓存是否存在
             async checkAllDataCache() {
-                if (!this.db) await this.init();
+                try {
+                    if (!this.db) await this.init();
 
-                return new Promise((resolve) => {
-                    const transaction = this.db.transaction([this.metaStoreName], 'readonly');
-                    const store = transaction.objectStore(this.metaStoreName);
-                    const request = store.get('allDataMeta');
+                    // 检查 object store 是否存在
+                    if (!this.db.objectStoreNames.contains(this.metaStoreName)) {
+                        console.warn('⚠️ 元数据存储空间不存在，需要重新初始化数据库');
+                        return null;
+                    }
 
-                    request.onsuccess = () => {
-                        const meta = request.result;
+                    return new Promise((resolve) => {
+                        const transaction = this.db.transaction([this.metaStoreName], 'readonly');
+                        const store = transaction.objectStore(this.metaStoreName);
+                        const request = store.get('allDataMeta');
 
-                        if (!meta) {
-                            console.log('🔍 本地缓存不存在');
+                        request.onsuccess = () => {
+                            const meta = request.result;
+
+                            if (!meta) {
+                                console.log('🔍 本地缓存不存在');
+                                resolve(null);
+                                return;
+                            }
+
+                            console.log(`✅ 本地缓存存在，包含 ${meta.totalCount} 条记录，最后更新：${new Date(meta.lastUpdated).toLocaleString()}`);
+                            resolve(meta);
+                        };
+
+                        request.onerror = () => {
+                            console.error('❌ 检查本地缓存失败:', request.error);
                             resolve(null);
-                            return;
-                        }
-
-                        console.log(`✅ 本地缓存存在，包含 ${meta.totalCount} 条记录，最后更新：${new Date(meta.lastUpdated).toLocaleString()}`);
-                        resolve(meta);
-                    };
-
-                    request.onerror = () => {
-                        console.error('❌ 检查本地缓存失败:', request.error);
-                        resolve(null);
-                    };
-                });
+                        };
+                    });
+                } catch (error) {
+                    console.error('❌ 检查本地缓存异常:', error);
+                    return null;
+                }
             }
 
             // 清空全数据缓存
