@@ -2346,7 +2346,7 @@
             async updateCacheStatus() {
                 try {
                     const cacheInfo = await cacheManager.checkAllDataCache();
-                    
+
                     if (cacheInfo) {
                         this.cacheStatus.textContent = '✅ 已缓存';
                         this.cacheStatus.className = 'text-xs px-2 py-1 rounded-full bg-success/10 text-success';
@@ -2360,6 +2360,54 @@
                     this.cacheStatus.textContent = '⚠️ 检查失败';
                     this.cacheStatus.className = 'text-xs px-2 py-1 rounded-full bg-warning/10 text-warning';
                     this.cacheInfo.textContent = '缓存状态检查失败';
+                }
+            }
+
+            // 处理实时数据更新（WebSocket 推送或跨页面广播）
+            handleRealtimeUpdate(operation, record) {
+                if (!this.data || !Array.isArray(this.data)) {
+                    console.warn('⚠️ 应用数据未初始化，忽略实时更新');
+                    return;
+                }
+
+                const perfStart = performance.now();
+                console.log(`🔄 处理实时更新: ${operation}`, record);
+
+                try {
+                    const recordId = record.id || record.plan_id;
+
+                    // 更新内存数据
+                    if (operation === 'insert' || operation === 'update') {
+                        const index = this.data.findIndex(r => (r.id || r.plan_id) === recordId);
+                        if (index >= 0) {
+                            // 更新现有记录
+                            this.data[index] = record;
+                            console.log(`✏️ 更新内存记录: ${recordId}`);
+                        } else {
+                            // 新增记录
+                            this.data.push(record);
+                            console.log(`➕ 新增内存记录: ${recordId}`);
+                        }
+                    } else if (operation === 'delete') {
+                        const index = this.data.findIndex(r => (r.id || r.plan_id) === recordId);
+                        if (index >= 0) {
+                            this.data.splice(index, 1);
+                            console.log(`🗑️ 删除内存记录: ${recordId}`);
+                        }
+                    }
+
+                    const perfTime = performance.now() - perfStart;
+                    console.log(`⚡ 实时数据更新完成 (${perfTime.toFixed(2)}ms)`);
+
+                    // 如果当前正在显示统计结果，增量更新图表
+                    if (this.hasSavedStats && this.chart) {
+                        console.log(`📊 检测到数据变更，增量刷新图表...`);
+                        // 重新生成统计（基于内存中的最新数据）
+                        this.generateStatistics();
+                    }
+
+                } catch (error) {
+                    console.error('❌ 处理实时更新失败:', error);
                 }
             }
 
@@ -3673,34 +3721,39 @@
         // 初始化应用 - 添加自动数据预载
         document.addEventListener('DOMContentLoaded', async () => {
             try {
-                // 页面加载时自动预载所有数据
-                console.log('🌟 页面加载完成，开始自动预载数据...');
+                console.log('🌟 页面加载完成，快速初始化中...');
 
-                // 分组逻辑已验证正确，移除测试代码
-
-                await dataPreloader.autoPreloadAllData();
-
-                // 初始化应用
+                // 🚀 优化：立即初始化应用界面（不等待数据加载）
                 window.app = new SatelliteApp();
+                console.log('✅ 应用界面已就绪（<1秒）');
 
-                console.log('✅ 应用初始化完成，数据已预载到本地缓存');
-
-                // ==================== WebSocket 实时同步初始化 ====================
-
-                // 启动 WebSocket 实时同步
+                // 🔌 立即启动 WebSocket 实时同步
                 console.log('🔌 启动 WebSocket 实时同步...');
                 wsSyncManager.connect();
+
+                // 📡 后台异步预加载数据（不阻塞界面）
+                console.log('📦 后台开始预加载数据...');
+                dataPreloader.autoPreloadAllData().then(() => {
+                    console.log('✅ 后台数据预加载完成');
+                    // 如果用户已经在查看数据，自动刷新
+                    if (window.app && window.app.hasSavedStats) {
+                        console.log('🔄 自动刷新统计数据...');
+                        window.app.generateStatistics();
+                    }
+                }).catch(error => {
+                    console.error('❌ 后台数据预加载失败:', error);
+                });
+
+                // ==================== WebSocket 实时同步初始化 ====================
 
                 // 监听实时同步更新
                 wsSyncManager.onSyncUpdate = (update) => {
                     const { operation, record } = update;
-                    console.log(`🔄 实时同步更新: ${operation}`, record);
+                    console.log(`📡 WebSocket 推送: ${operation}`, record?.id || record?.plan_id);
 
-                    // 如果当前正在显示数据，刷新界面
-                    if (window.app && window.app.hasSavedStats) {
-                        console.log('📊 检测到数据变更，刷新统计结果...');
-                        // 重新生成统计（会自动从 IndexedDB 读取最新数据）
-                        window.app.generateStatistics();
+                    // 调用增量更新方法（自动更新内存数据和图表）
+                    if (window.app && window.app.handleRealtimeUpdate) {
+                        window.app.handleRealtimeUpdate(operation, record);
                     }
                 };
 
