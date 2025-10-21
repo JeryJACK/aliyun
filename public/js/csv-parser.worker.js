@@ -64,6 +64,8 @@ async function parseCSV(csvString) {
     // 分批处理，避免阻塞太久
     const batchSize = 5000;
     let processedCount = 0;
+    let errorCount = 0; // 跟踪解析错误数量
+    const totalLines = lines.length - 1; // 减去表头行
 
     for (let i = 1; i < lines.length; i++) {
         const line = lines[i].trim();
@@ -87,7 +89,8 @@ async function parseCSV(csvString) {
                 self.postMessage({
                     type: 'PROGRESS',
                     message: `已解析 ${processedCount} 条记录...`,
-                    progress: progress
+                    progress: progress,
+                    errorCount: errorCount
                 });
 
                 // 让出线程，避免长时间阻塞
@@ -95,18 +98,38 @@ async function parseCSV(csvString) {
             }
 
         } catch (error) {
+            errorCount++;
             console.warn(`解析第 ${i + 1} 行失败:`, error.message);
+
+            // 如果错误率超过 10%，立即停止并报告
+            if (errorCount > totalLines * 0.1) {
+                const errorRate = ((errorCount / (i - 1)) * 100).toFixed(2);
+                self.postMessage({
+                    type: 'ERROR',
+                    error: `CSV 解析错误率过高 (${errorRate}%)，已停止解析`,
+                    errorCount: errorCount,
+                    processedLines: i - 1,
+                    errorRate: parseFloat(errorRate)
+                });
+                return;
+            }
         }
     }
 
     const parseTime = performance.now() - perfStart;
+    const errorRate = totalLines > 0 ? ((errorCount / totalLines) * 100).toFixed(2) : 0;
+
+    console.log(`✅ CSV 解析完成: 成功 ${records.length} 条, 失败 ${errorCount} 条, 错误率: ${errorRate}%`);
 
     // 发送完成消息
     self.postMessage({
         type: 'COMPLETE',
         records: records,
         recordCount: records.length,
-        parseTime: parseTime
+        parseTime: parseTime,
+        errorCount: errorCount,
+        totalLines: totalLines,
+        errorRate: parseFloat(errorRate)
     });
 }
 

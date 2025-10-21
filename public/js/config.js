@@ -16,8 +16,8 @@ const CONFIG = {
         clear: 'https://stats-paixwbwiuk.cn-hangzhou.fcapp.run/clear',
 
         // WebSocket 实时同步配置
-        websocket: 'wss://120.26.182.38/ws',  // WebSocket SSL 服务器地址（暂时使用IP）
-        catchup: 'https://120.26.182.38/api/satellite/changes'  // 断线补同步 API（已实现并测试通过）
+        websocket: 'wss://ws.nxjyx.com.cn/ws',  // WebSocket SSL 服务器地址（使用域名，SSL 证书有效）
+        catchup: 'https://ws.nxjyx.com.cn/api/satellite/changes'  // 断线补同步 API（已实现并测试通过）
     },
     
     // 请求配置
