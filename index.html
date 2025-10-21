@@ -685,6 +685,10 @@
                         reject(error);
                     }
                 });
+                } catch (error) {
+                    console.error('❌ IndexedDB 访问失败:', error);
+                    throw error;
+                }
             }
 
             // 🚀 优化版：批量写入（分批事务，提升性能）
