@@ -1551,80 +1551,93 @@
             async fetchAllDataOptimized() {
                 try {
                     const perfStart = performance.now();
-                    console.log('🚀 [优化版] 使用 CSV + Worker 加载数据...');
+                    console.log('🚀 [优化版] 使用 CSV 分页 + Worker 加载数据...');
 
-                    // 1. 请求 CSV 格式数据（format=csv）
-                    const params = {
-                        no_limit: true,
-                        fetch_all: true,
-                        format: 'csv'  // 🔥 关键：请求 CSV 格式
-                    };
-
-                    const qs = new URLSearchParams(params).toString();
                     const url = getApiUrl('records');
+                    const chunkSize = 20000; // 每页 20000 条（CSV 压缩后约 300KB）
+                    let allRecords = [];
+                    let offset = 0;
+                    let pageNum = 1;
+                    let hasMore = true;
 
-                    this.updatePreloadStatus('正在下载数据（CSV + Gzip 压缩）...', 'loading');
+                    // 分页循环加载
+                    while (hasMore) {
+                        console.log(`📄 [第 ${pageNum} 页] 正在获取数据 (offset: ${offset}, 已加载: ${allRecords.length} 条)...`);
 
-                    const response = await fetch(`${url}?${qs}`, {
-                        method: 'GET',
-                        mode: 'cors',
-                        credentials: 'omit'
-                    });
+                        this.updatePreloadStatus(
+                            `正在加载第 ${pageNum} 页 (已加载 ${allRecords.length} 条)...`,
+                            'loading'
+                        );
 
-                    if (!response.ok) {
-                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                    }
+                        // 1. 请求单页 CSV 数据
+                        const params = {
+                            offset: offset,
+                            limit: chunkSize,
+                            format: 'csv'  // 🔥 关键：CSV 格式
+                        };
 
-                    // 检查是否是 CSV 格式
-                    const contentType = response.headers.get('Content-Type');
-                    if (!contentType || !contentType.includes('csv')) {
-                        console.warn('⚠️ 后端未返回 CSV 格式，回退到 JSON');
-                        return await this.fetchAllDataFromAPI();
-                    }
+                        const qs = new URLSearchParams(params).toString();
+                        const response = await fetch(`${url}?${qs}`, {
+                            method: 'GET',
+                            mode: 'cors',
+                            credentials: 'omit'
+                        });
 
-                    // 2. 获取压缩的 CSV 数据（Base64）
-                    const compressedData = await response.text();
-                    const recordCount = parseInt(response.headers.get('X-Record-Count') || '0');
+                        if (!response.ok) {
+                            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                        }
 
-                    console.log(`📥 下载完成，预计 ${recordCount} 条记录`);
-                    this.updatePreloadStatus(`正在解析数据... (${recordCount} 条)`, 'loading');
+                        // 检查是否是 CSV 格式
+                        const contentType = response.headers.get('Content-Type');
+                        if (!contentType || !contentType.includes('csv')) {
+                            console.warn('⚠️ 后端未返回 CSV 格式，回退到 JSON');
+                            return await this.fetchAllDataFromAPI();
+                        }
 
-                    // 3. 使用 CSV Parser Worker 解析
-                    const parsedRecords = await this.parseCSVWithWorker(compressedData);
+                        // 2. 获取压缩的 CSV 数据（Base64）
+                        const compressedData = await response.text();
+                        const recordCount = parseInt(response.headers.get('X-Record-Count') || '0');
 
-                    console.log(`✅ CSV 解析完成: ${parsedRecords.length} 条记录`);
+                        console.log(`📥 第 ${pageNum} 页下载完成，${recordCount} 条记录`);
 
-                    // 3.1 验证解析后的记录数量
-                    if (recordCount > 0) {
-                        const parseLossCount = recordCount - parsedRecords.length;
-                        const parseSuccessRate = ((parsedRecords.length / recordCount) * 100).toFixed(2);
+                        // 如果本页没有数据，结束循环
+                        if (recordCount === 0 || !compressedData) {
+                            hasMore = false;
+                            break;
+                        }
 
-                        console.log(`📊 CSV 解析成功率: ${parseSuccessRate}% (${parsedRecords.length}/${recordCount})`);
+                        // 3. 使用 CSV Parser Worker 解析
+                        const parsedRecords = await this.parseCSVWithWorker(compressedData);
+                        console.log(`✅ 第 ${pageNum} 页解析完成: ${parsedRecords.length} 条`);
 
-                        if (parseLossCount > 0) {
-                            console.warn(`⚠️ CSV 解析数据丢失: ${parseLossCount} 条记录`);
+                        // 4. 拼接到总数据
+                        allRecords = allRecords.concat(parsedRecords);
 
-                            // 如果解析丢失率超过 5%，回退到 JSON 加载
-                            if (parseLossCount > recordCount * 0.05) {
-                                console.error(`❌ CSV 解析丢失率过高 (${(100 - parseFloat(parseSuccessRate)).toFixed(2)}%)，回退到 JSON 模式`);
-                                return await this.fetchAllDataFromAPI();
-                            }
+                        // 5. 判断是否还有更多数据
+                        if (parsedRecords.length < chunkSize) {
+                            // 返回数据少于请求数量，说明已是最后一页
+                            hasMore = false;
+                        }
+
+                        // 更新偏移量和页码
+                        offset += chunkSize;
+                        pageNum++;
+
+                        // 安全阈值：最多加载 20 页（40万条）
+                        if (pageNum > 20) {
+                            console.warn('⚠️ 已达到最大页数限制（20页），停止加载');
+                            hasMore = false;
                         }
                     }
 
-                    this.updatePreloadStatus(`正在处理数据... (${parsedRecords.length} 条)`, 'loading');
+                    console.log(`📊 所有分页加载完成，共 ${allRecords.length} 条记录`);
+                    this.updatePreloadStatus(`正在处理数据... (${allRecords.length} 条)`, 'loading');
 
-                    // 4. 使用 Data Processor Worker 处理和排序
-                    const processedRecords = await this.processDataWithWorker(parsedRecords);
-
-                    // 4.1 验证处理后的记录数量
-                    if (processedRecords.length !== parsedRecords.length) {
-                        const processLossCount = parsedRecords.length - processedRecords.length;
-                        console.warn(`⚠️ 数据处理丢失: ${processLossCount} 条记录 (${parsedRecords.length} → ${processedRecords.length})`);
-                    }
+                    // 6. 使用 Data Processor Worker 处理和排序
+                    const processedRecords = await this.processDataWithWorker(allRecords);
 
                     const totalTime = ((performance.now() - perfStart) / 1000).toFixed(1);
-                    console.log(`✅ [优化版] 数据加载完成: ${processedRecords.length}/${recordCount} 条，耗时: ${totalTime}秒`);
+                    console.log(`✅ [优化版] 数据加载完成: ${processedRecords.length} 条，耗时: ${totalTime}秒`);
 
                     return processedRecords;
 
@@ -1839,6 +1852,11 @@
                     console.log('📨 收到 WebSocket 消息:', message);
 
                     switch (message.type) {
+                        case 'welcome':
+                            // 欢迎消息（连接成功确认）
+                            console.log('👋 收到服务器欢迎消息:', message.message || 'WebSocket 连接已建立');
+                            break;
+
                         case 'heartbeat':
                             // 心跳响应
                             this.missedHeartbeats = 0;
