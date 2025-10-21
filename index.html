@@ -674,6 +674,82 @@
                 });
             }
 
+            // 🚀 优化版：批量写入（分批事务，提升性能）
+            async storeAllDataOptimized(allData, onProgress = null) {
+                if (!this.db) await this.init();
+
+                const perfStart = performance.now();
+                const batchSize = 10000; // 每批次10000条
+                let totalStored = 0;
+
+                try {
+                    console.log(`💾 [优化版] 开始存储 ${allData.length} 条数据...`);
+
+                    // 1. 清空现有数据
+                    await new Promise((resolve, reject) => {
+                        const transaction = this.db.transaction([this.allDataStoreName], 'readwrite');
+                        const store = transaction.objectStore(this.allDataStoreName);
+                        store.clear();
+                        transaction.oncomplete = () => resolve();
+                        transaction.onerror = () => reject(transaction.error);
+                    });
+
+                    // 2. 分批写入（数据已在 Worker 中排序好）
+                    for (let i = 0; i < allData.length; i += batchSize) {
+                        const batch = allData.slice(i, i + batchSize);
+                        const batchNum = Math.floor(i / batchSize) + 1;
+                        const totalBatches = Math.ceil(allData.length / batchSize);
+
+                        await new Promise((resolve, reject) => {
+                            const transaction = this.db.transaction([this.allDataStoreName], 'readwrite');
+                            const store = transaction.objectStore(this.allDataStoreName);
+
+                            for (const record of batch) {
+                                store.put(record);
+                                totalStored++;
+                            }
+
+                            transaction.oncomplete = () => {
+                                if (onProgress) {
+                                    const progress = Math.floor((totalStored / allData.length) * 100);
+                                    onProgress(totalStored, allData.length, progress);
+                                }
+                                console.log(`📦 批次 ${batchNum}/${totalBatches} 完成 (${totalStored}/${allData.length})`);
+                                resolve();
+                            };
+                            transaction.onerror = () => reject(transaction.error);
+                        });
+                    }
+
+                    // 3. 更新元数据
+                    await new Promise((resolve, reject) => {
+                        const transaction = this.db.transaction([this.metaStoreName], 'readwrite');
+                        const store = transaction.objectStore(this.metaStoreName);
+
+                        const metaData = {
+                            key: 'allDataMeta',
+                            totalCount: totalStored,
+                            lastUpdated: Date.now(),
+                            dataVersion: 2,
+                            sortedByTime: true
+                        };
+
+                        store.put(metaData);
+                        transaction.oncomplete = () => resolve();
+                        transaction.onerror = () => reject(transaction.error);
+                    });
+
+                    const perfTime = performance.now() - perfStart;
+                    console.log(`✅ [优化版] 缓存完成! ${totalStored} 条记录，耗时: ${(perfTime / 1000).toFixed(1)}秒`);
+
+                    return totalStored;
+
+                } catch (error) {
+                    console.error('❌ [优化版] 存储失败:', error);
+                    throw error;
+                }
+            }
+
             // 按时间对数据进行升序排列
             sortDataByTime(data) {
                 if (!data || !Array.isArray(data)) return [];
@@ -1196,24 +1272,34 @@
                         return { success: true, totalCount: cacheInfo.totalCount };
                     }
 
-                    // 没有缓存时从数据库获取
-                    console.log('🌐 首次使用，从 Postgres 数据库获取全部数据...');
+                    // 没有缓存时从数据库获取（🚀 使用优化版本）
+                    console.log('🌐 首次使用，从数据库获取全部数据...');
                     this.updatePreloadStatus('首次使用，正在从数据库获取全部数据...', 'loading');
 
-                    const allData = await this.fetchAllDataFromAPI();
-                    
+                    // 🚀 尝试使用优化版本（CSV + Worker）
+                    let allData;
+                    try {
+                        allData = await this.fetchAllDataOptimized();
+                    } catch (error) {
+                        console.warn('⚠️ 优化版加载失败，使用普通模式:', error);
+                        allData = await this.fetchAllDataFromAPI();
+                    }
+
                     if (allData && allData.length > 0) {
                         console.log(`📥 成功获取 ${allData.length} 条数据，开始存储到本地缓存...`);
                         this.updatePreloadStatus(`正在将 ${allData.length} 条数据存储到本地缓存...`, 'loading');
-                        
-                        const storedCount = await cacheManager.storeAllData(allData);
-                        
+
+                        // 🚀 使用优化的批量写入
+                        const storedCount = await cacheManager.storeAllDataOptimized(allData, (current, total, progress) => {
+                            this.updatePreloadStatus(`正在缓存数据... ${current}/${total} (${progress}%)`, 'loading');
+                        });
+
                         console.log('✅ 数据预载完成！');
                         this.updatePreloadStatus(`✅ 成功预载并缓存 ${storedCount} 条数据，下次访问将秒速加载`, 'success');
-                        
+
                         this.isPreloading = false;
                         return { success: true, totalCount: storedCount };
-                        
+
                     } else {
                         console.warn('⚠️ 未能获取到数据');
                         this.updatePreloadStatus('⚠️ 数据库中暂无数据', 'warning');
@@ -1229,14 +1315,22 @@
                 }
             }
 
-            // 后台静默更新缓存
+            // 后台静默更新缓存（🚀 使用优化版本）
             async backgroundUpdate() {
                 try {
                     console.log('🔄 后台静默更新缓存...');
-                    const allData = await this.fetchAllDataFromAPI();
-                    
+
+                    // 🚀 使用优化版本
+                    let allData;
+                    try {
+                        allData = await this.fetchAllDataOptimized();
+                    } catch (error) {
+                        console.warn('⚠️ 优化版更新失败，使用普通模式:', error);
+                        allData = await this.fetchAllDataFromAPI();
+                    }
+
                     if (allData && allData.length > 0) {
-                        await cacheManager.storeAllData(allData);
+                        await cacheManager.storeAllDataOptimized(allData);
                         console.log(`✅ 后台缓存更新完成，更新了 ${allData.length} 条数据`);
                     }
                 } catch (error) {
@@ -1373,6 +1467,138 @@
                     console.error('❌ 单页API调用失败:', error);
                     throw error;
                 }
+            }
+
+            // 🚀 优化版：使用 CSV + Worker 加载数据
+            async fetchAllDataOptimized() {
+                try {
+                    const perfStart = performance.now();
+                    console.log('🚀 [优化版] 使用 CSV + Worker 加载数据...');
+
+                    // 1. 请求 CSV 格式数据（format=csv）
+                    const params = {
+                        no_limit: true,
+                        fetch_all: true,
+                        format: 'csv'  // 🔥 关键：请求 CSV 格式
+                    };
+
+                    const qs = new URLSearchParams(params).toString();
+                    const url = getApiUrl('records');
+
+                    this.updatePreloadStatus('正在下载数据（CSV + Gzip 压缩）...', 'loading');
+
+                    const response = await fetch(`${url}?${qs}`, {
+                        method: 'GET',
+                        mode: 'cors',
+                        credentials: 'omit'
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+
+                    // 检查是否是 CSV 格式
+                    const contentType = response.headers.get('Content-Type');
+                    if (!contentType || !contentType.includes('csv')) {
+                        console.warn('⚠️ 后端未返回 CSV 格式，回退到 JSON');
+                        return await this.fetchAllDataFromAPI();
+                    }
+
+                    // 2. 获取压缩的 CSV 数据（Base64）
+                    const compressedData = await response.text();
+                    const recordCount = parseInt(response.headers.get('X-Record-Count') || '0');
+
+                    console.log(`📥 下载完成，预计 ${recordCount} 条记录`);
+                    this.updatePreloadStatus(`正在解析数据... (${recordCount} 条)`, 'loading');
+
+                    // 3. 使用 CSV Parser Worker 解析
+                    const parsedRecords = await this.parseCSVWithWorker(compressedData);
+
+                    console.log(`✅ CSV 解析完成: ${parsedRecords.length} 条记录`);
+                    this.updatePreloadStatus(`正在处理数据... (${parsedRecords.length} 条)`, 'loading');
+
+                    // 4. 使用 Data Processor Worker 处理和排序
+                    const processedRecords = await this.processDataWithWorker(parsedRecords);
+
+                    const totalTime = ((performance.now() - perfStart) / 1000).toFixed(1);
+                    console.log(`✅ [优化版] 数据加载完成: ${processedRecords.length} 条，耗时: ${totalTime}秒`);
+
+                    return processedRecords;
+
+                } catch (error) {
+                    console.error('❌ [优化版] 加载失败，回退到普通模式:', error);
+                    // 回退到普通 JSON 加载
+                    return await this.fetchAllDataFromAPI();
+                }
+            }
+
+            // 使用 CSV Parser Worker 解析数据
+            async parseCSVWithWorker(compressedData) {
+                return new Promise((resolve, reject) => {
+                    const worker = new Worker('/public/js/csv-parser.worker.js');
+
+                    worker.onmessage = (e) => {
+                        const { type, records, error } = e.data;
+
+                        if (type === 'COMPLETE') {
+                            worker.terminate();
+                            resolve(records);
+                        } else if (type === 'ERROR') {
+                            worker.terminate();
+                            reject(new Error(error));
+                        } else if (type === 'PROGRESS') {
+                            // 更新进度
+                            this.updatePreloadStatus(e.data.message, 'loading');
+                        }
+                    };
+
+                    worker.onerror = (error) => {
+                        worker.terminate();
+                        reject(error);
+                    };
+
+                    // 发送数据到 Worker
+                    worker.postMessage({
+                        type: 'PARSE_CSV_GZIP',
+                        data: compressedData
+                    });
+                });
+            }
+
+            // 使用 Data Processor Worker 处理数据
+            async processDataWithWorker(records) {
+                return new Promise((resolve, reject) => {
+                    const worker = new Worker('/public/js/data-processor.worker.js');
+
+                    worker.onmessage = (e) => {
+                        const { type, records: processedRecords, error } = e.data;
+
+                        if (type === 'COMPLETE') {
+                            worker.terminate();
+                            resolve(processedRecords);
+                        } else if (type === 'ERROR') {
+                            worker.terminate();
+                            reject(new Error(error));
+                        } else if (type === 'PROGRESS') {
+                            // 更新进度
+                            this.updatePreloadStatus(e.data.message, 'loading');
+                        }
+                    };
+
+                    worker.onerror = (error) => {
+                        worker.terminate();
+                        reject(error);
+                    };
+
+                    // 发送数据到 Worker 处理（默认排序）
+                    worker.postMessage({
+                        type: 'PROCESS_RECORDS',
+                        data: {
+                            records: records,
+                            options: { sort: true }  // 启用排序
+                        }
+                    });
+                });
             }
 
             // 更新预载状态显示
