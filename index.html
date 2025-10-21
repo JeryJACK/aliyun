@@ -2114,7 +2114,8 @@
                     startTimeField: 'start_time',
                     taskResultField: 'task_result'
                 };
-                this.init();
+                // 🔧 移除构造函数中的 init() 调用，改为在外部异步调用
+                // this.init();
             }
 
             bindElements() {
@@ -3723,25 +3724,24 @@
             try {
                 console.log('🌟 页面加载完成，快速初始化中...');
 
-                // 🚀 优化：立即初始化应用界面（不等待数据加载）
+                // 🚀 优化：立即创建应用实例（不调用 init，避免阻塞）
                 window.app = new SatelliteApp();
-                console.log('✅ 应用界面已就绪（<1秒）');
+                console.log('✅ 应用实例创建完成（<100ms）');
 
                 // 🔌 立即启动 WebSocket 实时同步
                 console.log('🔌 启动 WebSocket 实时同步...');
                 wsSyncManager.connect();
 
-                // 📡 后台异步预加载数据（不阻塞界面）
-                console.log('📦 后台开始预加载数据...');
-                dataPreloader.autoPreloadAllData().then(() => {
-                    console.log('✅ 后台数据预加载完成');
-                    // 如果用户已经在查看数据，自动刷新
-                    if (window.app && window.app.hasSavedStats) {
-                        console.log('🔄 自动刷新统计数据...');
-                        window.app.generateStatistics();
-                    }
+                // 📦 后台异步初始化应用（加载数据）
+                console.log('📦 后台异步初始化应用...');
+                Promise.all([
+                    window.app.init(),                          // 初始化应用数据
+                    dataPreloader.autoPreloadAllData()          // 预加载数据到 IndexedDB
+                ]).then(([appResult, preloadResult]) => {
+                    console.log('✅ 应用初始化完成');
+                    console.log('✅ 数据预加载完成');
                 }).catch(error => {
-                    console.error('❌ 后台数据预加载失败:', error);
+                    console.error('❌ 初始化失败:', error);
                 });
 
                 // ==================== WebSocket 实时同步初始化 ====================
