@@ -1521,12 +1521,6 @@
 
             // 断线补同步（获取断线期间的变更）
             async performCatchupSync() {
-                // 🔧 禁用补同步功能（后端未实现 /satellite/changes API）
-                // WebSocket 实时推送仍然正常工作，只是断线期间的数据需要手动刷新页面重新加载
-                console.log('ℹ️ 补同步功能已禁用，依赖 WebSocket 实时推送');
-                return;
-
-                /* 原补同步代码（已禁用）
                 try {
                     const lastSyncTime = await this.cacheManager.getLastSyncTime();
                     console.log(`🔄 开始断线补同步，最后同步时间: ${new Date(lastSyncTime).toLocaleString()}`);
@@ -1570,7 +1564,6 @@
                 } catch (error) {
                     console.error('❌ 断线补同步失败:', error);
                 }
-                */
             }
 
             // 发送消息
