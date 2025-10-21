@@ -11,7 +11,8 @@
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
     
     <!-- 配置文件 -->
-    <script src="./public/js/config.js?v=3"></script>
+    <script src="./public/js/config.js?v=4"></script>
+    <script src="./public/js/shared-data-manager.js"></script>
 
     <!-- Tailwind 配置 -->
     <script>
@@ -543,21 +544,18 @@
     </div>
 
     <script>
-        console.log('📌 主脚本开始加载...');
-
         // ==================== 数据缓存和预载系统 ====================
-
+        
         // IndexedDB缓存管理器
         class CacheManager {
             constructor() {
                 this.dbName = 'SatelliteDataCache';
-                this.dbVersion = 4;  // 升级到版本4
+                this.dbVersion = 3;
                 this.allDataStoreName = 'allDataCache';
                 this.metaStoreName = 'metaData';
                 this.db = null;
                 // 移除缓存过期时间，始终使用本地缓存
-                this.cacheExpiry = Infinity;
-                console.log('✅ CacheManager 构造函数执行');
+                this.cacheExpiry = Infinity; 
             }
 
             async init() {
@@ -846,10 +844,130 @@
                 });
             }
 
+            // 【优化】快速获取元数据（< 10ms）
+            async getMetadataFast() {
+                if (!this.db) await this.init();
+
+                const perfStart = performance.now();
+
+                return new Promise((resolve) => {
+                    const transaction = this.db.transaction([this.metaStoreName, this.allDataStoreName], 'readonly');
+                    const metaStore = transaction.objectStore(this.metaStoreName);
+                    const allDataStore = transaction.objectStore(this.allDataStoreName);
+
+                    const metadata = {};
+
+                    // 1. 读取保存的元数据
+                    const metaRequest = metaStore.get('allDataMeta');
+                    metaRequest.onsuccess = () => {
+                        const meta = metaRequest.result;
+                        if (meta) {
+                            metadata.totalCount = meta.totalCount;
+                            metadata.lastUpdated = meta.lastUpdated;
+                            metadata.lastSyncTime = meta.lastSyncTime;
+                        }
+                    };
+
+                    // 2. 快速获取实际记录数（不读取数据）
+                    const countRequest = allDataStore.count();
+                    countRequest.onsuccess = () => {
+                        metadata.actualCount = countRequest.result;
+                    };
+
+                    // 3. 使用游标快速获取时间范围（只读第一条和最后一条）
+                    const index = allDataStore.index('start_time');
+
+                    // 读取最早的记录
+                    const firstRequest = index.openCursor(null, 'next');
+                    firstRequest.onsuccess = (e) => {
+                        const cursor = e.target.result;
+                        if (cursor) {
+                            metadata.minTimestamp = cursor.value.timestamp;
+                            metadata.minDate = new Date(cursor.value.timestamp);
+                        }
+                    };
+
+                    // 读取最新的记录
+                    const lastRequest = index.openCursor(null, 'prev');
+                    lastRequest.onsuccess = (e) => {
+                        const cursor = e.target.result;
+                        if (cursor) {
+                            metadata.maxTimestamp = cursor.value.timestamp;
+                            metadata.maxDate = new Date(cursor.value.timestamp);
+                        }
+                    };
+
+                    transaction.oncomplete = () => {
+                        const perfTime = performance.now() - perfStart;
+                        console.log(`⚡ 元数据快速查询完成 (${perfTime.toFixed(1)}ms):`, {
+                            总数: metadata.actualCount,
+                            时间范围: `${metadata.minDate?.toLocaleDateString()} - ${metadata.maxDate?.toLocaleDateString()}`
+                        });
+                        resolve(metadata);
+                    };
+
+                    transaction.onerror = () => {
+                        console.error('❌ 元数据查询失败');
+                        resolve(null);
+                    };
+                });
+            }
+
+            // 【优化】渐进式加载数据（使用游标分批，边加载边处理）
+            async queryAllDataProgressive(onBatch, batchSize = 5000) {
+                if (!this.db) await this.init();
+
+                const perfStart = performance.now();
+                let totalLoaded = 0;
+
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction([this.allDataStoreName], 'readonly');
+                    const store = transaction.objectStore(this.allDataStoreName);
+                    const request = store.openCursor();
+
+                    let batch = [];
+
+                    request.onsuccess = (event) => {
+                        const cursor = event.target.result;
+
+                        if (cursor) {
+                            // 将当前记录添加到批次
+                            batch.push(cursor.value);
+                            totalLoaded++;
+
+                            // 达到批次大小，触发回调
+                            if (batch.length >= batchSize) {
+                                if (onBatch) {
+                                    onBatch(batch, totalLoaded);
+                                }
+                                batch = []; // 清空批次，准备下一批
+                            }
+
+                            // 继续读取下一条记录
+                            cursor.continue();
+                        } else {
+                            // 游标结束，处理剩余数据
+                            if (batch.length > 0 && onBatch) {
+                                onBatch(batch, totalLoaded);
+                            }
+
+                            const perfTime = performance.now() - perfStart;
+                            console.log(`✅ 渐进式加载完成: ${totalLoaded.toLocaleString()} 条 (${perfTime.toFixed(0)}ms, ${(totalLoaded / (perfTime / 1000)).toFixed(0)} 条/秒)`);
+                            resolve(totalLoaded);
+                        }
+                    };
+
+                    request.onerror = () => {
+                        console.error('❌ 渐进式加载失败:', request.error);
+                        reject(request.error);
+                    };
+                });
+            }
+
             // 检查全数据缓存是否存在
             async checkAllDataCache() {
                 if (!this.db) await this.init();
-                
+
                 return new Promise((resolve) => {
                     const transaction = this.db.transaction([this.metaStoreName], 'readonly');
                     const store = transaction.objectStore(this.metaStoreName);
@@ -857,13 +975,13 @@
 
                     request.onsuccess = () => {
                         const meta = request.result;
-                        
+
                         if (!meta) {
                             console.log('🔍 本地缓存不存在');
                             resolve(null);
                             return;
                         }
-                        
+
                         console.log(`✅ 本地缓存存在，包含 ${meta.totalCount} 条记录，最后更新：${new Date(meta.lastUpdated).toLocaleString()}`);
                         resolve(meta);
                     };
@@ -1415,11 +1533,14 @@
                 const { operation, record } = changeData;
 
                 try {
-                    switch (operation) {
+                    // 统一转换为小写，支持大小写不敏感
+                    const op = operation.toLowerCase();
+
+                    switch (op) {
                         case 'insert':
                         case 'update':
                             await this.cacheManager.updateRecord(record);
-                            console.log(`🔄 实时同步：${operation === 'insert' ? '新增' : '更新'} 记录 ID: ${record.id}`);
+                            console.log(`🔄 实时同步：${op === 'insert' ? '新增' : '更新'} 记录 ID: ${record.id}`);
                             break;
 
                         case 'delete':
@@ -1431,9 +1552,9 @@
                             console.warn('⚠️ 未知操作类型:', operation);
                     }
 
-                    // 触发更新回调
+                    // 触发更新回调（使用统一的小写操作类型）
                     if (this.onSyncUpdate) {
-                        this.onSyncUpdate({ operation, record });
+                        this.onSyncUpdate({ operation: op, record });
                     }
 
                 } catch (error) {
@@ -1526,25 +1647,14 @@
             async performCatchupSync() {
                 try {
                     const lastSyncTime = await this.cacheManager.getLastSyncTime();
-                    const now = Date.now();
-                    const offlineDuration = (now - lastSyncTime) / 1000 / 60; // 分钟
+                    console.log(`🔄 开始断线补同步，最后同步时间: ${new Date(lastSyncTime).toLocaleString()}`);
 
-                    console.log(`🔄 WebSocket 重连，开始补同步`);
-                    console.log(`   最后同步: ${new Date(lastSyncTime).toLocaleString()}`);
-                    console.log(`   离线时长: ${offlineDuration.toFixed(1)} 分钟`);
+                    // 调用后端补同步 API
+                    const catchupUrl = CONFIG.isGitHubPages
+                        ? CONFIG.API_ENDPOINTS.catchup || `${CONFIG.API_ENDPOINTS.records}/changes`
+                        : `${CONFIG.API_BASE_URL}/satellite/changes`;
 
-                    // 如果离线时间很短（小于30秒），跳过补同步
-                    if (offlineDuration < 0.5) {
-                        console.log('✅ 离线时间很短，无需补同步');
-                        return;
-                    }
-
-                    // 调用后端增量同步 API
-                    const apiUrl = CONFIG.isGitHubPages
-                        ? CONFIG.API_ENDPOINTS.records
-                        : `${CONFIG.API_BASE_URL}/satellite/records`;
-
-                    const response = await fetch(`${apiUrl}?since=${lastSyncTime}`, {
+                    const response = await fetch(`${catchupUrl}?since=${lastSyncTime}`, {
                         method: 'GET',
                         headers: {
                             'Content-Type': 'application/json'
@@ -1552,93 +1662,32 @@
                     });
 
                     if (!response.ok) {
-                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                    }
-
-                    const result = await response.json();
-
-                    if (result.success && result.data) {
-                        const changes = result.data.changes || [];
-                        const count = result.data.count || 0;
-
-                        if (count > 0) {
-                            console.log(`📦 补同步: 收到 ${count} 条变更记录`);
-
-                            // 更新缓存中的数据
-                            await this.updateLocalDataWithChanges(changes);
-
-                            // 触发更新回调
-                            if (this.onSyncUpdate) {
-                                this.onSyncUpdate({
-                                    operation: 'catchup_sync',
-                                    count: count,
-                                    success: true
-                                });
-                            }
-
-                            console.log('✅ 补同步完成');
-                        } else {
-                            console.log('✅ 无增量数据，已是最新');
-                        }
-                    } else {
-                        console.warn('⚠️ 补同步响应格式异常:', result);
-                    }
-
-                } catch (error) {
-                    console.error('❌ 补同步失败:', error);
-                    // 补同步失败不影响实时推送功能
-                }
-            }
-
-            // 用增量数据更新本地缓存
-            async updateLocalDataWithChanges(changes) {
-                if (!changes || changes.length === 0) return;
-
-                try {
-                    // 获取当前所有数据
-                    const allData = await this.cacheManager.getAllData();
-
-                    if (!allData || allData.length === 0) {
-                        console.log('⚠️ 本地无缓存数据，增量更新被跳过');
+                        console.warn(`⚠️ 补同步请求失败 (${response.status}): ${response.statusText}`);
+                        console.warn('💡 提示：补同步功能可选，不影响页面正常使用');
                         return;
                     }
 
-                    // 合并变更记录
-                    let updateCount = 0;
-                    let insertCount = 0;
+                    const result = await response.json();
+                    if (result.success && result.data && result.data.changes) {
+                        const changes = result.data.changes;
 
-                    for (const change of changes) {
-                        const recordId = change.id || change.plan_id;
-                        const index = allData.findIndex(r => (r.id || r.plan_id) === recordId);
+                        if (changes.length > 0) {
+                            console.log(`📦 收到 ${changes.length} 条补同步变更`);
 
-                        if (index >= 0) {
-                            // 更新现有记录
-                            allData[index] = change;
-                            updateCount++;
+                            // 批量更新
+                            await this.cacheManager.batchUpdateRecords(changes);
+
+                            // 触发更新回调
+                            if (this.onSyncUpdate) {
+                                this.onSyncUpdate({ operation: 'catchup_sync', count: changes.length });
+                            }
                         } else {
-                            // 插入新记录
-                            allData.push(change);
-                            insertCount++;
+                            console.log('✅ 无需补同步，数据已是最新');
                         }
                     }
-
-                    // 更新缓存
-                    await this.cacheManager.storeAllData(allData);
-
-                    // 如果应用已初始化，同步更新应用数据
-                    if (window.app && window.app.data) {
-                        window.app.data = allData;
-
-                        // 如果图表正在显示，刷新图表
-                        if (window.app.hasSavedStats && window.app.chart) {
-                            window.app.generateStatistics();
-                        }
-                    }
-
-                    console.log(`✅ 本地数据已更新: ${insertCount} 条新增, ${updateCount} 条修改`);
 
                 } catch (error) {
-                    console.error('❌ 更新本地数据失败:', error);
+                    console.error('❌ 断线补同步失败:', error);
                 }
             }
 
@@ -1678,13 +1727,9 @@
         }
 
         // 全局实例
-        console.log('📌 创建全局实例...');
         const cacheManager = new CacheManager();
-        console.log('✅ cacheManager 已创建');
         const dataPreloader = new DataPreloader();
-        console.log('✅ dataPreloader 已创建');
         const wsSyncManager = new WebSocketSyncManager(cacheManager);
-        console.log('✅ wsSyncManager 已创建');
 
         // ==================== 原有的API函数（改为从缓存获取）====================
         
@@ -1757,6 +1802,214 @@
                 console.error('获取统计数据失败:', error);
                 showError('获取统计数据失败: ' + error.message);
                 return null;
+            }
+        }
+
+        // 【优化】数据桶存储 - 用于增量更新和快速查询
+        class DataStore {
+            constructor(fieldMapping = {}) {
+                this.buckets = new Map(); // key: groupKey, value: { records: [], rangeStart, rangeEnd, label, key }
+                this.recordToBucket = new Map(); // key: recordUniqueKey, value: groupKey (用于快速定位记录所在桶)
+                this.fieldMapping = {
+                    idField: fieldMapping.idField || 'id', // 记录唯一标识字段
+                    planIdField: fieldMapping.planIdField || 'plan_id',
+                    startTimeField: fieldMapping.startTimeField || 'start_time',
+                    taskResultField: fieldMapping.taskResultField || 'task_result'
+                };
+            }
+
+            // 获取记录的唯一键
+            getRecordKey(record) {
+                const idValue = record[this.fieldMapping.idField];
+                // 如果没有ID字段，使用 plan_id + start_time 作为唯一键
+                if (idValue === undefined || idValue === null) {
+                    const planId = record[this.fieldMapping.planIdField];
+                    const startTime = record[this.fieldMapping.startTimeField];
+                    return `${planId}_${startTime}`;
+                }
+                return String(idValue);
+            }
+
+            // 批量加载数据到桶（初始化）
+            loadData(data, cycleEngine, groupType = 'day') {
+                const perfStart = performance.now();
+                this.clear();
+
+                data.forEach(record => {
+                    this.addRecordToBucket(record, cycleEngine, groupType);
+                });
+
+                const perfTime = performance.now() - perfStart;
+                console.log(`✅ 数据桶初始化完成: ${this.buckets.size} 个桶, ${data.length} 条记录 (${perfTime.toFixed(2)}ms)`);
+            }
+
+            // 增量添加单条记录到桶
+            addRecordToBucket(record, cycleEngine, groupType) {
+                const { startTimeField } = this.fieldMapping;
+
+                try {
+                    const timeValue = record[startTimeField];
+                    let date;
+
+                    if (timeValue instanceof Date) {
+                        date = cycleEngine.createFileDate(timeValue);
+                    } else if (typeof timeValue === 'string') {
+                        date = new Date(timeValue);
+                    } else if (typeof timeValue === 'number') {
+                        date = new Date((timeValue - 25569) * 86400000);
+                    } else {
+                        console.warn('⚠️ 记录缺少有效的时间字段:', record);
+                        return null;
+                    }
+
+                    if (isNaN(date.getTime())) {
+                        console.warn('⚠️ 记录时间字段无效:', record);
+                        return null;
+                    }
+
+                    const groupInfo = cycleEngine.getGroup(date, groupType);
+                    const groupKey = groupInfo.key;
+
+                    // 获取或创建桶
+                    if (!this.buckets.has(groupKey)) {
+                        this.buckets.set(groupKey, {
+                            key: groupKey,
+                            label: groupInfo.label,
+                            records: [], // 存储完整记录
+                            rangeStart: groupInfo.rangeStart,
+                            rangeEnd: groupInfo.rangeEnd
+                        });
+                    }
+
+                    const bucket = this.buckets.get(groupKey);
+                    const recordKey = this.getRecordKey(record);
+
+                    // 检查是否已存在（避免重复添加）
+                    const existingIndex = bucket.records.findIndex(r => this.getRecordKey(r) === recordKey);
+                    if (existingIndex >= 0) {
+                        // 更新现有记录
+                        bucket.records[existingIndex] = record;
+                    } else {
+                        // 添加新记录
+                        bucket.records.push(record);
+                    }
+
+                    // 记录映射关系
+                    this.recordToBucket.set(recordKey, groupKey);
+
+                    return groupKey;
+
+                } catch (error) {
+                    console.warn('添加记录到桶失败:', record, error);
+                    return null;
+                }
+            }
+
+            // 增量更新/删除记录
+            updateRecord(record, cycleEngine, groupType, isDelete = false) {
+                const recordKey = this.getRecordKey(record);
+                const oldGroupKey = this.recordToBucket.get(recordKey);
+                const affectedBuckets = [];
+
+                try {
+                    // 从旧桶中删除记录
+                    if (oldGroupKey) {
+                        const oldBucket = this.buckets.get(oldGroupKey);
+                        if (oldBucket) {
+                            const oldIndex = oldBucket.records.findIndex(r => this.getRecordKey(r) === recordKey);
+                            if (oldIndex >= 0) {
+                                oldBucket.records.splice(oldIndex, 1);
+                                affectedBuckets.push(oldGroupKey);
+                            }
+                        }
+                        this.recordToBucket.delete(recordKey);
+                    }
+
+                    // 如果不是删除，添加到新桶
+                    if (!isDelete) {
+                        const newGroupKey = this.addRecordToBucket(record, cycleEngine, groupType);
+                        if (newGroupKey && newGroupKey !== oldGroupKey) {
+                            affectedBuckets.push(newGroupKey);
+                        }
+                    }
+
+                } catch (error) {
+                    console.warn('桶增量更新失败:', record, error);
+                }
+
+                return affectedBuckets; // 返回所有受影响的桶 keys
+            }
+
+            // 批量增量合并数据
+            mergeIncrementalData(records, cycleEngine, groupType = 'day') {
+                const perfStart = performance.now();
+                const affectedBuckets = new Set();
+
+                records.forEach(record => {
+                    const bucketKeys = this.updateRecord(record, cycleEngine, groupType, false);
+                    bucketKeys.forEach(key => affectedBuckets.add(key));
+                });
+
+                const perfTime = performance.now() - perfStart;
+                console.log(`✅ 批量增量合并完成: ${records.length} 条记录, 影响 ${affectedBuckets.size} 个桶 (${perfTime.toFixed(2)}ms)`);
+
+                return Array.from(affectedBuckets);
+            }
+
+            // 获取统计结果（按时间排序）
+            getStats(taskAnalyzer, startDate = null, endDate = null) {
+                const perfStart = performance.now();
+                const { planIdField, taskResultField } = this.fieldMapping;
+
+                let buckets = Array.from(this.buckets.values());
+
+                // 按时间范围过滤
+                if (startDate || endDate) {
+                    buckets = buckets.filter(bucket => {
+                        if (startDate && bucket.rangeStart < startDate) return false;
+                        if (endDate && bucket.rangeEnd >= endDate) return false;
+                        return true;
+                    });
+                }
+
+                // 按时间排序
+                buckets.sort((a, b) => a.rangeStart - b.rangeStart);
+
+                // 计算统计数据（从记录中提取）
+                const stats = buckets.map(bucket => {
+                    // 从记录中提取 planIds 和 results
+                    const planIds = new Set();
+                    const results = [];
+
+                    bucket.records.forEach(record => {
+                        const planId = record[planIdField];
+                        if (planId) planIds.add(planId);
+
+                        const result = record[taskResultField] || '未知';
+                        results.push(result);
+                    });
+
+                    return {
+                        key: bucket.key,
+                        label: bucket.label,
+                        count: planIds.size, // 唯一计划ID数量
+                        failureCount: taskAnalyzer.countFailures(results),
+                        successRate: taskAnalyzer.calculateSuccessRate(results, planIds.size),
+                        rangeStart: bucket.rangeStart,
+                        rangeEnd: bucket.rangeEnd
+                    };
+                });
+
+                const perfTime = performance.now() - perfStart;
+                console.log(`⚡ 从桶获取统计结果 (${perfTime.toFixed(2)}ms), ${stats.length} 个时间段`);
+
+                return stats;
+            }
+
+            // 清空所有桶
+            clear() {
+                this.buckets.clear();
+                this.recordToBucket.clear();
             }
         }
 
@@ -2177,6 +2430,17 @@
             constructor() {
                 this.cycleEngine = new CycleRuleEngine();
                 this.taskAnalyzer = new TaskResultAnalyzer();
+
+                // 字段映射配置（统一定义）
+                this.fieldMappingValues = {
+                    idField: 'id',
+                    planIdField: 'plan_id',
+                    startTimeField: 'start_time',
+                    taskResultField: 'task_result'
+                };
+
+                // 使用字段映射创建 DataStore
+                this.dataStore = new DataStore(this.fieldMappingValues);
                 this.chart = null;
 
                 // 预检查 sessionStorage，判断是否有保存的状态（加快恢复速度）
@@ -2189,13 +2453,12 @@
                 this.bindElements();
                 this.bindEvents();
                 this.data = null;
-                this.fieldMappingValues = {
-                    planIdField: 'plan_id',
-                    startTimeField: 'start_time',
-                    taskResultField: 'task_result'
-                };
-                // 🔧 移除构造函数中的 init() 调用，改为在外部异步调用
-                // this.init();
+
+                // 初始化状态标志和缓冲队列
+                this.isInitializing = true;  // 标记是否正在初始化
+                this.pendingUpdates = [];    // 暂存初始化期间的 WebSocket 推送
+
+                this.init();
             }
 
             bindElements() {
@@ -2281,7 +2544,15 @@
                 // 添加页面状态自动保存监听器
                 if (this.startDate) this.startDate.addEventListener('change', () => this.savePageState());
                 if (this.endDate) this.endDate.addEventListener('change', () => this.savePageState());
-                if (this.groupBy) this.groupBy.addEventListener('change', () => this.savePageState());
+                if (this.groupBy) this.groupBy.addEventListener('change', () => {
+                    this.savePageState();
+                    // 【优化】统计周期改变时，重新加载 DataStore 桶
+                    if (this.data && this.dataStore) {
+                        const newGroupType = this.groupBy.value;
+                        console.log(`🔄 统计周期已改变为 ${newGroupType}，重新加载 DataStore...`);
+                        this.dataStore.loadData(this.data, this.cycleEngine, newGroupType);
+                    }
+                });
                 if (this.dayStart) {
                     this.dayStart.addEventListener('change', (e) => {
                         this.dayStartDisplay.textContent = e.target.value;
@@ -2355,17 +2626,62 @@
 
             async init() {
                 try {
-                    console.log('🔧 SatelliteApp 初始化：从本地缓存加载数据...');
+                    const initStart = performance.now();
+                    console.log('🔧 SatelliteApp 初始化：数据结构优化模式...');
 
-                    // 如果有保存的统计结果，立即隐藏空状态提示（减少闪烁）
+                    // 【优化1】立即隐藏加载状态，先显示UI
+                    if (this.chartLoadingState) this.chartLoadingState.classList.add('hidden');
+                    if (this.chartEmptyState) this.chartEmptyState.classList.add('hidden');
+
+                    // 【优化2】如果有保存的统计结果，立即恢复显示（0延迟）
                     if (this.hasSavedStats) {
-                        console.log('🚀 检测到保存的统计结果，预先隐藏加载状态');
-                        if (this.chartLoadingState) this.chartLoadingState.classList.add('hidden');
-                        if (this.chartEmptyState) this.chartEmptyState.classList.add('hidden');
+                        console.log('⚡ 检测到保存的统计结果，立即恢复');
+                        const statsRestored = this.restoreStatisticsResult();
+                        if (statsRestored) {
+                            console.log('✅ 统计结果已从sessionStorage恢复（0延迟）');
+                        }
                     }
 
-                    // 从本地缓存获取所有数据
-                    const cachedData = await cacheManager.queryAllData();
+                    // 【优化3】快速获取元数据（< 10ms）
+                    const metadata = await cacheManager.getMetadataFast();
+
+                    if (!metadata || metadata.actualCount === 0) {
+                        console.warn('⚠️ 本地缓存为空，显示无数据提示');
+                        this.noDataAlert.classList.remove('hidden');
+                        return;
+                    }
+
+                    const metadataTime = performance.now() - initStart;
+                    console.log(`⚡ 元数据加载完成 (${metadataTime.toFixed(0)}ms)，页面立即可用！`);
+
+                    // 设置时间范围（基于元数据）
+                    if (metadata.minDate && metadata.maxDate) {
+                        console.log(`📊 数据时间范围: ${metadata.minDate.toLocaleString()} 至 ${metadata.maxDate.toLocaleString()}`);
+                    }
+
+                    // 【优化4】使用游标分批加载数据（边加载边处理，不阻塞UI）
+                    this.data = [];
+                    let loadedCount = 0;
+
+                    await cacheManager.queryAllDataProgressive((batch, total) => {
+                        // 边加载边追加到内存数组
+                        this.data.push(...batch);
+                        loadedCount = total;
+
+                        // 每5000条输出一次进度
+                        if (total % 5000 === 0) {
+                            const progress = Math.round((total / metadata.actualCount) * 100);
+                            console.log(`🔄 加载进度: ${total.toLocaleString()}/${metadata.actualCount.toLocaleString()} (${progress}%)`);
+                        }
+                    }, 5000); // 每批5000条
+
+                    const cachedData = this.data; // 兼容后续代码
+
+                    const loadTime = performance.now() - initStart;
+                    console.log(`✅ 数据加载完成: ${loadedCount.toLocaleString()} 条 (总耗时 ${loadTime.toFixed(0)}ms)`);
+
+                    // 【优化5】数据加载完成后折叠系统说明（视觉反馈）
+                    this.collapseInstructionsAfterLoad();
 
                     if (!cachedData || cachedData.length === 0) {
                         console.warn('⚠️ 本地缓存为空，显示无数据提示');
@@ -2377,6 +2693,10 @@
                     this.noDataAlert.classList.add('hidden');
 
                     console.log(`✅ 从本地缓存加载了 ${cachedData.length} 条数据`);
+
+                    // 【优化】初始化数据桶存储（用于增量更新）
+                    const groupType = this.groupBy ? this.groupBy.value : 'day';
+                    this.dataStore.loadData(this.data, this.cycleEngine, groupType);
 
                     // 使用 reduce 方法高效查找最小/最大时间戳，支持任意大小的数据集
                     if (cachedData.length > 0) {
@@ -2396,7 +2716,10 @@
                         this.setDefaultDates();
                     }
 
-                    this.updateCacheStatus();
+                    // 延迟更新缓存状态（避免IndexedDB事务冲突）
+                    setTimeout(() => {
+                        this.updateCacheStatus();
+                    }, 100);
 
                     // 恢复页面状态（如果有保存的状态）
                     if (this.hasSavedState) {
@@ -2416,10 +2739,101 @@
                         }
                     }
 
+                    // 【优化6】初始化完成，处理暂存的 WebSocket 更新
+                    this.isInitializing = false;
+                    if (this.pendingUpdates.length > 0) {
+                        console.log(`🔄 初始化完成，处理暂存的 ${this.pendingUpdates.length} 条更新...`);
+                        const updates = [...this.pendingUpdates];
+                        this.pendingUpdates = [];
+
+                        // 逐条应用暂存的更新
+                        updates.forEach(({ operation, record }) => {
+                            this.handleRealtimeUpdate(operation, record);
+                        });
+
+                        console.log(`✅ 暂存更新已全部应用`);
+                    }
+
                 } catch (error) {
                     console.error('❌ 应用初始化失败:', error);
                     showError('应用初始化失败: ' + (error.message || error));
                     this.noDataAlert.classList.remove('hidden');
+                    this.isInitializing = false; // 确保即使失败也清除初始化标志
+                }
+            }
+
+            // 数据加载完成后折叠系统说明（视觉反馈）
+            collapseInstructionsAfterLoad() {
+                if (typeof window.collapseInstructions === 'function') {
+                    window.collapseInstructions();
+                }
+            }
+
+            // 处理实时数据更新（WebSocket 推送或跨页面广播）
+            handleRealtimeUpdate(operation, record) {
+                // 如果正在初始化，暂存更新到队列
+                if (this.isInitializing) {
+                    this.pendingUpdates.push({ operation, record });
+                    console.log(`📦 初始化中，暂存更新: ${operation} (队列长度: ${this.pendingUpdates.length})`);
+                    return;
+                }
+
+                if (!this.data) {
+                    console.warn('⚠️ 应用未初始化，忽略实时更新');
+                    return;
+                }
+
+                const perfStart = performance.now();
+
+                try {
+                    // 【优化】使用 DataStore 增量更新桶数据
+                    const groupType = this.groupBy ? this.groupBy.value : 'day';
+                    const affectedBuckets = new Set();
+                    const recordKey = this.dataStore.getRecordKey(record);
+
+                    // 更新内存数据 this.data 和 DataStore
+                    if (operation === 'insert' || operation === 'update') {
+                        const index = this.data.findIndex(r => this.dataStore.getRecordKey(r) === recordKey);
+                        if (index >= 0) {
+                            // 更新现有记录：updateRecord 会处理旧桶删除和新桶添加
+                            const bucketKeys = this.dataStore.updateRecord(record, this.cycleEngine, groupType, false);
+                            bucketKeys.forEach(key => affectedBuckets.add(key));
+
+                            this.data[index] = record;
+                            console.log(`🔄 更新内存记录: ${recordKey}`);
+                        } else {
+                            // 新增记录
+                            this.data.push(record);
+                            const newBucketKey = this.dataStore.addRecordToBucket(record, this.cycleEngine, groupType);
+                            if (newBucketKey) affectedBuckets.add(newBucketKey);
+                            console.log(`➕ 新增内存记录: ${recordKey}`);
+                        }
+
+                    } else if (operation === 'delete') {
+                        const index = this.data.findIndex(r => this.dataStore.getRecordKey(r) === recordKey);
+                        if (index >= 0) {
+                            // 从桶中删除
+                            const bucketKeys = this.dataStore.updateRecord(this.data[index], this.cycleEngine, groupType, true);
+                            bucketKeys.forEach(key => affectedBuckets.add(key));
+
+                            this.data.splice(index, 1);
+                            console.log(`🗑️ 删除内存记录: ${recordKey}`);
+                        }
+                    }
+
+                    const perfTime = performance.now() - perfStart;
+                    console.log(`⚡ 实时数据更新完成 (${perfTime.toFixed(2)}ms)，影响 ${affectedBuckets.size} 个桶`);
+
+                    // 如果当前有图表显示，增量刷新图表（只更新受影响的桶）
+                    if (this.chart && affectedBuckets.size > 0) {
+                        console.log(`📊 检测到数据变更，增量刷新图表 (${affectedBuckets.size} 个桶)...`);
+                        this.updateChartIncremental(Array.from(affectedBuckets));
+                    } else if (affectedBuckets.size > 0) {
+                        console.log(`💡 数据已更新，但当前无图表显示，跳过刷新`);
+                    }
+
+                } catch (error) {
+                    console.error('❌ 处理实时更新失败:', error);
                 }
             }
 
@@ -2427,7 +2841,7 @@
             async updateCacheStatus() {
                 try {
                     const cacheInfo = await cacheManager.checkAllDataCache();
-
+                    
                     if (cacheInfo) {
                         this.cacheStatus.textContent = '✅ 已缓存';
                         this.cacheStatus.className = 'text-xs px-2 py-1 rounded-full bg-success/10 text-success';
@@ -2441,54 +2855,6 @@
                     this.cacheStatus.textContent = '⚠️ 检查失败';
                     this.cacheStatus.className = 'text-xs px-2 py-1 rounded-full bg-warning/10 text-warning';
                     this.cacheInfo.textContent = '缓存状态检查失败';
-                }
-            }
-
-            // 处理实时数据更新（WebSocket 推送或跨页面广播）
-            handleRealtimeUpdate(operation, record) {
-                if (!this.data || !Array.isArray(this.data)) {
-                    console.warn('⚠️ 应用数据未初始化，忽略实时更新');
-                    return;
-                }
-
-                const perfStart = performance.now();
-                console.log(`🔄 处理实时更新: ${operation}`, record);
-
-                try {
-                    const recordId = record.id || record.plan_id;
-
-                    // 更新内存数据
-                    if (operation === 'insert' || operation === 'update') {
-                        const index = this.data.findIndex(r => (r.id || r.plan_id) === recordId);
-                        if (index >= 0) {
-                            // 更新现有记录
-                            this.data[index] = record;
-                            console.log(`✏️ 更新内存记录: ${recordId}`);
-                        } else {
-                            // 新增记录
-                            this.data.push(record);
-                            console.log(`➕ 新增内存记录: ${recordId}`);
-                        }
-                    } else if (operation === 'delete') {
-                        const index = this.data.findIndex(r => (r.id || r.plan_id) === recordId);
-                        if (index >= 0) {
-                            this.data.splice(index, 1);
-                            console.log(`🗑️ 删除内存记录: ${recordId}`);
-                        }
-                    }
-
-                    const perfTime = performance.now() - perfStart;
-                    console.log(`⚡ 实时数据更新完成 (${perfTime.toFixed(2)}ms)`);
-
-                    // 如果当前正在显示统计结果，增量更新图表
-                    if (this.hasSavedStats && this.chart) {
-                        console.log(`📊 检测到数据变更，增量刷新图表...`);
-                        // 重新生成统计（基于内存中的最新数据）
-                        this.generateStatistics();
-                    }
-
-                } catch (error) {
-                    console.error('❌ 处理实时更新失败:', error);
                 }
             }
 
@@ -2655,9 +3021,20 @@
                     const startDate = range.startDate;
                     const endDate = range.endDate;
 
-                    const stats = this.groupDataByCycle(groupType, startDate, endDate);
+                    let stats;
 
-                    console.log(`📈 生成统计组数: ${stats.length}`);
+                    // 【优化】优先使用 DataStore 桶查询（O(n) -> O(1)）
+                    if (this.dataStore && this.dataStore.buckets.size > 0) {
+                        const perfStart = performance.now();
+                        stats = this.dataStore.getStats(this.taskAnalyzer, startDate, endDate);
+                        const perfTime = performance.now() - perfStart;
+                        console.log(`⚡ 使用桶查询生成统计 (${perfTime.toFixed(2)}ms, ${stats.length} 个桶)`);
+                    } else {
+                        // 兜底：使用传统方法遍历数据
+                        console.log('⚠️ DataStore 未初始化，使用传统遍历方法');
+                        stats = this.groupDataByCycle(groupType, startDate, endDate);
+                        console.log(`📈 生成统计组数: ${stats.length}`);
+                    }
 
                     this.updateChart(stats, groupType);
                     this.updateStatCards(stats);
@@ -2917,6 +3294,83 @@
                         }
                     }
                 });
+            }
+
+            // 【优化】增量更新图表 - 仅更新受影响的桶数据
+            updateChartIncremental(affectedBucketKeys) {
+                console.log(`🔍 开始增量更新，受影响的桶:`, affectedBucketKeys);
+
+                if (!this.chart) {
+                    console.warn('⚠️ 图表不存在，跳过增量更新');
+                    return;
+                }
+
+                if (!this.dataStore || affectedBucketKeys.length === 0) {
+                    console.warn('⚠️ DataStore 不存在或无受影响的桶，跳过更新');
+                    return;
+                }
+
+                const perfStart = performance.now();
+
+                try {
+                    const groupType = this.groupBy.value;
+                    const range = this.computeDateRangeForGroup(groupType, this.startDate.value, this.endDate.value);
+                    const startDate = range.startDate;
+                    const endDate = range.endDate;
+
+                    console.log(`📊 从 DataStore 获取统计数据 (${groupType}): ${startDate?.toLocaleDateString()} - ${endDate?.toLocaleDateString()}`);
+
+                    // 从 DataStore 获取所有统计数据（快速）
+                    const stats = this.dataStore.getStats(this.taskAnalyzer, startDate, endDate);
+
+                    console.log(`📈 获取到 ${stats.length} 个统计分组`);
+
+                    // 创建桶键到索引的映射
+                    const keyToIndex = new Map();
+                    stats.forEach((stat, index) => {
+                        keyToIndex.set(stat.key, index);
+                    });
+
+                    // 更新受影响的数据点
+                    let updatedCount = 0;
+                    affectedBucketKeys.forEach(bucketKey => {
+                        const index = keyToIndex.get(bucketKey);
+                        console.log(`🔍 查找桶 ${bucketKey} 的索引: ${index}`);
+
+                        if (index !== undefined && index < this.chart.data.labels.length) {
+                            const stat = stats[index];
+
+                            console.log(`📊 更新索引 ${index} 的数据: count=${stat.count}, failure=${stat.failureCount}, rate=${stat.successRate.toFixed(3)}%`);
+
+                            // 更新图表数据（3个数据集：计划ID数量、失败次数、成功率）
+                            this.chart.data.datasets[0].data[index] = stat.count;
+                            this.chart.data.datasets[1].data[index] = stat.failureCount;
+                            this.chart.data.datasets[2].data[index] = parseFloat(stat.successRate.toFixed(3));
+
+                            updatedCount++;
+                        } else {
+                            console.warn(`⚠️ 桶 ${bucketKey} 不在当前显示范围内 (index: ${index}, chart labels: ${this.chart.data.labels.length})`);
+                        }
+                    });
+
+                    // 刷新图表显示（使用 'none' 模式实现即时更新）
+                    console.log(`🔄 刷新图表显示...`);
+                    this.chart.update('none');
+
+                    // 同时更新统计卡片和详细表格
+                    this.updateStatCards(stats);
+                    this.updateDetailTable(stats);
+
+                    // 保存更新后的统计结果
+                    this.saveStatisticsResult(stats, groupType);
+
+                    const perfTime = performance.now() - perfStart;
+                    console.log(`✅ 增量更新完成 (${perfTime.toFixed(2)}ms)，更新了 ${updatedCount}/${affectedBucketKeys.length} 个数据点`);
+
+                } catch (error) {
+                    console.error('❌ 增量更新失败:', error);
+                    console.error('错误堆栈:', error.stack);
+                }
             }
 
             toggleDataLabels() {
@@ -3211,8 +3665,13 @@
                     console.warn('保存配置失败:', error);
                 }
                 
-                // 🚨 重要：配置更新后，重新计算当前显示的统计数据
-                console.log('🔄 配置已更新，重新生成统计...');
+                // 🚨 重要：配置更新后，重新加载 DataStore 并重新计算统计数据
+                console.log('🔄 配置已更新，重新加载 DataStore...');
+                if (this.data && this.dataStore) {
+                    const groupType = this.groupBy.value;
+                    this.dataStore.loadData(this.data, this.cycleEngine, groupType);
+                }
+                console.log('🔄 重新生成统计...');
                 this.generateStatistics();
                 
                 showSuccess('周期配置已更新，统计数据已刷新');
@@ -3785,7 +4244,6 @@
         // 分组逻辑已验证正确
 
         // 检测页面刷新并清空 sessionStorage
-        console.log('📌 检测页面加载类型...');
         (function() {
             // 使用 performance.navigation 或 performance.getEntriesByType 检测刷新
             const navigationType = performance.getEntriesByType('navigation')[0]?.type;
@@ -3800,46 +4258,58 @@
             }
         })();
 
-        console.log('📌 注册 DOMContentLoaded 事件监听器...');
-
         // 初始化应用 - 添加自动数据预载
         document.addEventListener('DOMContentLoaded', async () => {
-            console.log('📌 DOMContentLoaded 事件触发');
             try {
-                console.log('🌟 页面加载完成，快速初始化中...');
+                // 页面加载时自动预载所有数据
+                console.log('🌟 页面加载完成，开始自动预载数据...');
 
-                // 🚀 优化：立即创建应用实例（不调用 init，避免阻塞）
+                // 分组逻辑已验证正确，移除测试代码
+
+                await dataPreloader.autoPreloadAllData();
+
+                // 初始化应用
                 window.app = new SatelliteApp();
-                console.log('✅ 应用实例创建完成（<100ms）');
 
-                // 🔌 立即启动 WebSocket 实时同步
-                console.log('🔌 启动 WebSocket 实时同步...');
-                wsSyncManager.connect();
-
-                // 📦 后台异步初始化应用（加载数据）
-                console.log('📦 后台异步初始化应用...');
-                Promise.all([
-                    window.app.init(),                          // 初始化应用数据
-                    dataPreloader.autoPreloadAllData()          // 预加载数据到 IndexedDB
-                ]).then(([appResult, preloadResult]) => {
-                    console.log('✅ 应用初始化完成');
-                    console.log('✅ 数据预加载完成');
-                }).catch(error => {
-                    console.error('❌ 初始化失败:', error);
-                });
+                console.log('✅ 应用初始化完成，数据已预载到本地缓存');
 
                 // ==================== WebSocket 实时同步初始化 ====================
 
-                // 监听实时同步更新
+                // 启动 WebSocket 实时同步
+                console.log('🔌 启动 WebSocket 实时同步...');
+                wsSyncManager.connect();
+
+                // 监听实时同步更新（WebSocket 推送）
                 wsSyncManager.onSyncUpdate = (update) => {
                     const { operation, record } = update;
                     console.log(`📡 WebSocket 推送: ${operation}`, record?.id || record?.plan_id);
 
-                    // 调用增量更新方法（自动更新内存数据和图表）
-                    if (window.app && window.app.handleRealtimeUpdate) {
+                    // 1. 更新内存数据并刷新图表
+                    if (window.app && window.app.data) {
                         window.app.handleRealtimeUpdate(operation, record);
                     }
+
+                    // 2. 广播给其他页面（trend-analysis.html 等）
+                    if (typeof window.sharedDataManager !== 'undefined') {
+                        window.sharedDataManager.notifyDataUpdate({
+                            operation: operation,
+                            record: record
+                        });
+                    }
                 };
+
+                // 监听跨页面数据广播（来自 trend-analysis.html 等其他页面）
+                if (typeof window.sharedDataManager !== 'undefined') {
+                    window.sharedDataManager.onDataUpdate = (operation, record) => {
+                        console.log(`📡 收到跨页面广播: ${operation}`, record?.id || record?.plan_id);
+
+                        // 更新内存数据并刷新图表
+                        if (window.app && window.app.data) {
+                            window.app.handleRealtimeUpdate(operation, record);
+                        }
+                    };
+                    console.log('✅ SharedDataManager 跨页面同步已配置');
+                }
 
                 // 监听连接状态变化
                 wsSyncManager.onConnectionChange = (connected) => {
@@ -3891,11 +4361,12 @@
                 window.app = new SatelliteApp();
             }
 
-            // 系统说明自动折叠功能
+            // 【优化】系统说明默认折叠，立即可用
             const instructionsToggle = document.getElementById('instructionsToggle');
             const instructionsContent = document.getElementById('instructionsContent');
             const instructionsIcon = document.getElementById('instructionsIcon');
-            let isExpanded = true;
+            let isExpanded = false; // 默认折叠
+            let autoCollapseTimer = null; // 自动折叠定时器
 
             // 折叠/展开函数
             function toggleInstructions() {
@@ -3913,18 +4384,38 @@
                 isExpanded = !isExpanded;
             }
 
-            // 初始设置展开状态
+            // 【优化】初始设置为展开状态，数据加载完成后自动折叠
             instructionsContent.style.maxHeight = instructionsContent.scrollHeight + 'px';
+            instructionsIcon.classList.remove('fa-chevron-down');
+            instructionsIcon.classList.add('fa-chevron-up');
+            isExpanded = true;
 
-            // 点击标题切换折叠状态
-            instructionsToggle.addEventListener('click', toggleInstructions);
+            // 点击标题切换折叠状态 + 1秒后自动折叠
+            instructionsToggle.addEventListener('click', () => {
+                // 切换折叠状态
+                toggleInstructions();
 
-            // 5秒后自动折叠
-            setTimeout(() => {
+                // 清除之前的定时器
+                if (autoCollapseTimer) {
+                    clearTimeout(autoCollapseTimer);
+                }
+
+                // 1秒后自动折叠（无论当前是展开还是折叠）
+                autoCollapseTimer = setTimeout(() => {
+                    if (isExpanded) {
+                        toggleInstructions();
+                        console.log('⏱️ 系统说明自动折叠（点击1秒后）');
+                    }
+                }, 1000);
+            });
+
+            // 提供全局方法供 SatelliteApp 调用（数据加载完成后折叠）
+            window.collapseInstructions = () => {
                 if (isExpanded) {
                     toggleInstructions();
+                    console.log('📋 系统说明已折叠（数据加载完成标志）');
                 }
-            }, 5000);
+            };
         });
     </script>
 </body>
