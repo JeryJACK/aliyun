@@ -1507,6 +1507,13 @@
                 this.updateTags();
                 this.updateSelectAllStatus();
 
+                // 【自动清除搜索框】选择后自动清空搜索内容
+                const searchEl = document.getElementById(this.searchId);
+                if (searchEl) {
+                    searchEl.value = '';
+                    this.filterOptions(''); // 重置过滤，显示所有选项
+                }
+
                 if (this.onChange) {
                     this.onChange([...this.selectedValues]);
                 }
