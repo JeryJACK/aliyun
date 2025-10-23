@@ -1680,6 +1680,31 @@
             getSelectedValues() {
                 return [...this.selectedValues];
             }
+
+            // 【双向同步】设置选中的值（不触发 onChange 回调）
+            setSelectedValues(values) {
+                // 设置选中的值
+                this.selectedValues = [...values];
+
+                // 更新显示
+                this.updateDisplay();
+                this.updateTags();
+
+                // 更新复选框状态
+                const optionsContainer = document.getElementById(this.optionsId);
+                if (optionsContainer) {
+                    const checkboxes = optionsContainer.querySelectorAll('input[type="checkbox"]');
+                    checkboxes.forEach(cb => {
+                        const value = cb.dataset.value;
+                        if (value) {
+                            cb.checked = this.selectedValues.includes(value);
+                        }
+                    });
+                }
+
+                // 更新全选状态
+                this.updateSelectAllStatus();
+            }
         }
 
         // 下载工具函数（通用）
@@ -1871,6 +1896,8 @@
                         // 【双向同步】同步到顶部筛选器（仅在非同步状态下）
                         if (!this.isSyncingFilters) {
                             this.syncBottomToTop('station', values);
+                            // 【新增】自动应用筛选
+                            this.autoApplyFilters();
                         }
                         // 测站改变 → 更新客户、卫星、类型、状态选项
                         this.updateCustomerChartOptions();
@@ -1888,6 +1915,8 @@
                         // 【双向同步】同步到顶部筛选器（仅在非同步状态下）
                         if (!this.isSyncingFilters) {
                             this.syncBottomToTop('customer', values);
+                            // 【新增】自动应用筛选
+                            this.autoApplyFilters();
                         }
                         // 客户改变 → 更新卫星、类型、状态选项
                         this.updateSatelliteChartOptions();
@@ -1904,6 +1933,8 @@
                         // 【双向同步】同步到顶部筛选器（仅在非同步状态下）
                         if (!this.isSyncingFilters) {
                             this.syncBottomToTop('satellite', values);
+                            // 【新增】自动应用筛选
+                            this.autoApplyFilters();
                         }
                         // 卫星改变 → 更新类型、状态选项
                         this.updateTypeChartOptions();
@@ -1919,6 +1950,8 @@
                         // 【双向同步】同步到顶部筛选器（仅在非同步状态下）
                         if (!this.isSyncingFilters) {
                             this.syncBottomToTop('type', values);
+                            // 【新增】自动应用筛选
+                            this.autoApplyFilters();
                         }
                         // 类型改变 → 更新状态选项
                         this.updateStatusChartOptions();
@@ -1933,6 +1966,8 @@
                         // 【双向同步】同步到顶部筛选器（仅在非同步状态下）
                         if (!this.isSyncingFilters) {
                             this.syncBottomToTop('status', values);
+                            // 【新增】自动应用筛选
+                            this.autoApplyFilters();
                         }
                         // 状态改变 → 级联末端，仅重新生成状态图表
                         this.generateStatusChartWithFilter();
