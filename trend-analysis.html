@@ -2351,28 +2351,26 @@
             }
 
             initializeFilters() {
+                // 【级联优化】只初始化顶级筛选器（测站），其他筛选器通过级联更新方法设置
                 const stationOptions = this.filterValues['测站名称'].map(station => ({ value: station, label: station }));
                 this.stationSelect.setOptions(stationOptions);
-
-                const customerOptions = this.filterValues['客户名称'].map(customer => ({ value: customer, label: customer }));
-                this.customerSelect.setOptions(customerOptions);
-
-                // 初始化图表专用筛选
                 this.stationChartSelect.setOptions(stationOptions);
-                this.customerChartSelect.setOptions(customerOptions);
-                
-                // 为其他图表也初始化筛选选项
-                const satelliteOptions = this.filterValues['卫星名称'].map(satellite => ({ value: satellite, label: satellite }));
-                const statusOptions = this.filterValues['任务结果状态'].map(status => ({ value: status, label: status }));
-                const typeOptions = this.filterValues['任务类型'].map(type => ({ value: type, label: type }));
-                
-                this.satelliteChartSelect.setOptions(satelliteOptions);
-                
+
+                // 【级联优化】通过调用级联更新方法来初始化其他筛选器的选项
+                // 这样可以确保从一开始就显示所有可用选项（因为没有选择测站）
+                this.updateCustomerOptions();
+                this.updateSatelliteOptions();
+                this.updateTypeOptions();
+                this.updateStatusOptions();
+
+                // 【级联优化】底部图表筛选器也通过级联方法初始化
+                this.updateCustomerChartOptions();
+                this.updateSatelliteChartOptions();
+                this.updateTypeChartOptions();
+                this.updateStatusChartOptions();
+
                 // 初始化图表选项
                 this.initializeAllChartOptions();
-
-                // 初始化级联关系
-                this.updateChartFilterOptions();
 
                 if (this.filterValues['客户名称'].length === 0 && this.data.some(item => getFieldValue(item, '客户名称'))) {
                     document.getElementById('dataStructureAlert').classList.remove('hidden');
@@ -2387,6 +2385,8 @@
 
                 const stationValues = this.stationSelect.getSelectedValues();
 
+                console.log(`🔄 [级联] 更新客户选项 - 当前选择的测站: [${stationValues.join(', ')}]`);
+
                 // 允许独立选择：如果没有选择测站，显示所有客户
                 const filteredCustomers = [...new Set(
                     this.data
@@ -2397,6 +2397,8 @@
                         .map(item => (getFieldValue(item, '客户名称') || '').toString().trim())
                         .filter(Boolean)
                 )].sort();
+
+                console.log(`✅ [级联] 客户选项已更新: ${filteredCustomers.length} 个可选项 [${filteredCustomers.slice(0, 3).join(', ')}${filteredCustomers.length > 3 ? '...' : ''}]`);
 
                 const customerOptions = filteredCustomers.map(customer => ({ value: customer, label: customer }));
 
@@ -2409,6 +2411,7 @@
                 // 如果有有效的选择，保留它们
                 if (validSelection.length > 0) {
                     this.customerSelect.setSelectedValues(validSelection);
+                    console.log(`✅ [级联] 保留了 ${validSelection.length} 个有效的客户选择`);
                 }
             }
 
