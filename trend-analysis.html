@@ -1807,14 +1807,15 @@
                     'stationDropdown', 'stationOptions', 'stationDisplay',
                     'stationValue', 'stationTags', 'stationSearch', 'selectAllStations',
                     (values) => {
-                        // 测站选择 → 影响客户、卫星、任务类型、状态
-                        this.updateCustomerOptions();
-                        this.updateSatelliteOptions();
-                        this.updateTypeOptions();
-                        this.updateStatusOptions();
-                        this.updateChartFilterOptions();
-                        // 【双向同步】同步到底部筛选器（仅在非同步状态下）
+                        // 【性能优化】仅在非同步状态下执行更新
                         if (!this.isSyncingFilters) {
+                            // 测站选择 → 影响客户、卫星、任务类型、状态
+                            this.updateCustomerOptions();
+                            this.updateSatelliteOptions();
+                            this.updateTypeOptions();
+                            this.updateStatusOptions();
+                            this.updateChartFilterOptions();
+                            // 【双向同步】同步到底部筛选器
                             this.syncTopToBottom('station', values);
                             // 【新增】自动应用筛选
                             this.autoApplyFilters();
@@ -1826,13 +1827,14 @@
                     'customerDropdown', 'customerOptions', 'customerDisplay',
                     'customerValue', 'customerTags', 'customerSearch', 'selectAllCustomers',
                     (values) => {
-                        // 客户选择 → 影响卫星、任务类型、状态
-                        this.updateSatelliteOptions();
-                        this.updateTypeOptions();
-                        this.updateStatusOptions();
-                        this.updateChartFilterOptions();
-                        // 【双向同步】同步到底部筛选器（仅在非同步状态下）
+                        // 【性能优化】仅在非同步状态下执行更新
                         if (!this.isSyncingFilters) {
+                            // 客户选择 → 影响卫星、任务类型、状态
+                            this.updateSatelliteOptions();
+                            this.updateTypeOptions();
+                            this.updateStatusOptions();
+                            this.updateChartFilterOptions();
+                            // 【双向同步】同步到底部筛选器
                             this.syncTopToBottom('customer', values);
                             // 【新增】自动应用筛选
                             this.autoApplyFilters();
@@ -1844,12 +1846,13 @@
                     'satelliteDropdown', 'satelliteOptions', 'satelliteDisplay',
                     'satelliteValue', 'satelliteTags', 'satelliteSearch', 'selectAllSatellites',
                     (values) => {
-                        // 卫星选择 → 影响任务类型、状态
-                        this.updateTypeOptions();
-                        this.updateStatusOptions();
-                        this.updateChartFilterOptions();
-                        // 【双向同步】同步到底部筛选器（仅在非同步状态下）
+                        // 【性能优化】仅在非同步状态下执行更新
                         if (!this.isSyncingFilters) {
+                            // 卫星选择 → 影响任务类型、状态
+                            this.updateTypeOptions();
+                            this.updateStatusOptions();
+                            this.updateChartFilterOptions();
+                            // 【双向同步】同步到底部筛选器
                             this.syncTopToBottom('satellite', values);
                             // 【新增】自动应用筛选
                             this.autoApplyFilters();
@@ -1861,11 +1864,12 @@
                     'typeDropdown', 'typeOptions', 'typeDisplay',
                     'typeValue', 'typeTags', 'typeSearch', 'selectAllTypes',
                     (values) => {
-                        // 任务类型选择 → 影响任务结果状态
-                        this.updateStatusOptions();
-                        this.updateChartFilterOptions();
-                        // 【双向同步】同步到底部筛选器（仅在非同步状态下）
+                        // 【性能优化】仅在非同步状态下执行更新
                         if (!this.isSyncingFilters) {
+                            // 任务类型选择 → 影响任务结果状态
+                            this.updateStatusOptions();
+                            this.updateChartFilterOptions();
+                            // 【双向同步】同步到底部筛选器
                             this.syncTopToBottom('type', values);
                             // 【新增】自动应用筛选
                             this.autoApplyFilters();
@@ -1877,10 +1881,11 @@
                     'statusDropdown', 'statusOptions', 'statusDisplay',
                     'statusValue', 'statusTags', 'statusSearch', 'selectAllStatuses',
                     (values) => {
-                        // 状态选择 → 不影响其他筛选器（级联末端）
-                        this.updateChartFilterOptions();
-                        // 【双向同步】同步到底部筛选器（仅在非同步状态下）
+                        // 【性能优化】仅在非同步状态下执行更新
                         if (!this.isSyncingFilters) {
+                            // 状态选择 → 不影响其他筛选器（级联末端）
+                            this.updateChartFilterOptions();
+                            // 【双向同步】同步到底部筛选器
                             this.syncTopToBottom('status', values);
                             // 【新增】自动应用筛选
                             this.autoApplyFilters();
@@ -1896,15 +1901,16 @@
                         // 【双向同步】同步到顶部筛选器（仅在非同步状态下）
                         if (!this.isSyncingFilters) {
                             this.syncBottomToTop('station', values);
-                            // 【新增】自动应用筛选
+                            // 【性能优化】只需调用一次 autoApplyFilters，它会处理所有更新
                             this.autoApplyFilters();
+                            // 测站改变 → 更新客户、卫星、类型、状态选项
+                            this.updateCustomerChartOptions();
+                            this.updateSatelliteChartOptions();
+                            this.updateTypeChartOptions();
+                            this.updateStatusChartOptions();
+                            this.generateStationChartWithFilter();
                         }
-                        // 测站改变 → 更新客户、卫星、类型、状态选项
-                        this.updateCustomerChartOptions();
-                        this.updateSatelliteChartOptions();
-                        this.updateTypeChartOptions();
-                        this.updateStatusChartOptions();
-                        this.generateStationChartWithFilter();
+                        // 【性能优化】同步时跳过所有更新，避免重复计算
                     }
                 );
 
@@ -1915,14 +1921,15 @@
                         // 【双向同步】同步到顶部筛选器（仅在非同步状态下）
                         if (!this.isSyncingFilters) {
                             this.syncBottomToTop('customer', values);
-                            // 【新增】自动应用筛选
+                            // 【性能优化】只需调用一次 autoApplyFilters，它会处理所有更新
                             this.autoApplyFilters();
+                            // 客户改变 → 更新卫星、类型、状态选项
+                            this.updateSatelliteChartOptions();
+                            this.updateTypeChartOptions();
+                            this.updateStatusChartOptions();
+                            this.generateCustomerChartWithFilter();
                         }
-                        // 客户改变 → 更新卫星、类型、状态选项
-                        this.updateSatelliteChartOptions();
-                        this.updateTypeChartOptions();
-                        this.updateStatusChartOptions();
-                        this.generateCustomerChartWithFilter();
+                        // 【性能优化】同步时跳过所有更新，避免重复计算
                     }
                 );
 
@@ -1933,13 +1940,14 @@
                         // 【双向同步】同步到顶部筛选器（仅在非同步状态下）
                         if (!this.isSyncingFilters) {
                             this.syncBottomToTop('satellite', values);
-                            // 【新增】自动应用筛选
+                            // 【性能优化】只需调用一次 autoApplyFilters，它会处理所有更新
                             this.autoApplyFilters();
+                            // 卫星改变 → 更新类型、状态选项
+                            this.updateTypeChartOptions();
+                            this.updateStatusChartOptions();
+                            this.generateSatelliteChartWithFilter();
                         }
-                        // 卫星改变 → 更新类型、状态选项
-                        this.updateTypeChartOptions();
-                        this.updateStatusChartOptions();
-                        this.generateSatelliteChartWithFilter();
+                        // 【性能优化】同步时跳过所有更新，避免重复计算
                     }
                 );
 
@@ -1950,12 +1958,13 @@
                         // 【双向同步】同步到顶部筛选器（仅在非同步状态下）
                         if (!this.isSyncingFilters) {
                             this.syncBottomToTop('type', values);
-                            // 【新增】自动应用筛选
+                            // 【性能优化】只需调用一次 autoApplyFilters，它会处理所有更新
                             this.autoApplyFilters();
+                            // 类型改变 → 更新状态选项
+                            this.updateStatusChartOptions();
+                            this.generateTypeChartWithFilter();
                         }
-                        // 类型改变 → 更新状态选项
-                        this.updateStatusChartOptions();
-                        this.generateTypeChartWithFilter();
+                        // 【性能优化】同步时跳过所有更新，避免重复计算
                     }
                 );
 
@@ -1966,11 +1975,12 @@
                         // 【双向同步】同步到顶部筛选器（仅在非同步状态下）
                         if (!this.isSyncingFilters) {
                             this.syncBottomToTop('status', values);
-                            // 【新增】自动应用筛选
+                            // 【性能优化】只需调用一次 autoApplyFilters，它会处理所有更新
                             this.autoApplyFilters();
+                            // 状态改变 → 级联末端，仅重新生成状态图表
+                            this.generateStatusChartWithFilter();
                         }
-                        // 状态改变 → 级联末端，仅重新生成状态图表
-                        this.generateStatusChartWithFilter();
+                        // 【性能优化】同步时跳过所有更新，避免重复计算
                     }
                 );
             }
@@ -2375,9 +2385,6 @@
             updateCustomerOptions() {
                 if (!this.data || !this.data.length) return;
 
-                // 清除客户及其之后的所有选择
-                this.resetSubsequentFilters('station');
-
                 const stationValues = this.stationSelect.getSelectedValues();
 
                 // 允许独立选择：如果没有选择测站，显示所有客户
@@ -2392,16 +2399,22 @@
                 )].sort();
 
                 const customerOptions = filteredCustomers.map(customer => ({ value: customer, label: customer }));
+
+                // 【级联优化】保留仍然有效的选择，移除无效的选择
+                const currentSelection = this.customerSelect.getSelectedValues();
+                const validSelection = currentSelection.filter(value => filteredCustomers.includes(value));
+
                 this.customerSelect.setOptions(customerOptions);
-                document.getElementById('customerDisplay').textContent = '请选择客户';
+
+                // 如果有有效的选择，保留它们
+                if (validSelection.length > 0) {
+                    this.customerSelect.setSelectedValues(validSelection);
+                }
             }
 
             // 卫星选项更新 - 受测站和客户影响
             updateSatelliteOptions() {
                 if (!this.data || !this.data.length) return;
-
-                // 清除卫星及其之后的所有选择
-                this.resetSubsequentFilters('customer');
 
                 const stationValues = this.stationSelect.getSelectedValues();
                 const customerValues = this.customerSelect.getSelectedValues();
@@ -2424,16 +2437,22 @@
                 )].sort();
 
                 const satelliteOptions = filteredSatellites.map(satellite => ({ value: satellite, label: satellite }));
+
+                // 【级联优化】保留仍然有效的选择，移除无效的选择
+                const currentSelection = this.satelliteSelect.getSelectedValues();
+                const validSelection = currentSelection.filter(value => filteredSatellites.includes(value));
+
                 this.satelliteSelect.setOptions(satelliteOptions);
-                document.getElementById('satelliteDisplay').textContent = '请选择卫星';
+
+                // 如果有有效的选择，保留它们
+                if (validSelection.length > 0) {
+                    this.satelliteSelect.setSelectedValues(validSelection);
+                }
             }
 
             // 【级联优化】任务类型选项更新 - 受测站、客户、卫星影响
             updateTypeOptions() {
                 if (!this.data || !this.data.length) return;
-
-                // 清除类型及其之后的所有选择
-                this.resetSubsequentFilters('satellite');
 
                 const stationValues = this.stationSelect.getSelectedValues();
                 const customerValues = this.customerSelect.getSelectedValues();
@@ -2461,16 +2480,22 @@
                 )].sort();
 
                 const typeOptions = filteredTypes.map(type => ({ value: type, label: type }));
+
+                // 【级联优化】保留仍然有效的选择，移除无效的选择
+                const currentSelection = this.typeSelect.getSelectedValues();
+                const validSelection = currentSelection.filter(value => filteredTypes.includes(value));
+
                 this.typeSelect.setOptions(typeOptions);
-                document.getElementById('typeDisplay').textContent = '请选择任务类型';
+
+                // 如果有有效的选择，保留它们
+                if (validSelection.length > 0) {
+                    this.typeSelect.setSelectedValues(validSelection);
+                }
             }
 
             // 【级联优化】状态选项更新 - 受测站、客户、卫星、任务类型影响（级联末端）
             updateStatusOptions() {
                 if (!this.data || !this.data.length) return;
-
-                // 清除状态的选择（级联末端）
-                this.resetSubsequentFilters('type');
 
                 const stationValues = this.stationSelect.getSelectedValues();
                 const customerValues = this.customerSelect.getSelectedValues();
@@ -2502,8 +2527,17 @@
                 )].sort();
 
                 const statusOptions = filteredStatuses.map(status => ({ value: status, label: status }));
+
+                // 【级联优化】保留仍然有效的选择，移除无效的选择
+                const currentSelection = this.statusSelect.getSelectedValues();
+                const validSelection = currentSelection.filter(value => filteredStatuses.includes(value));
+
                 this.statusSelect.setOptions(statusOptions);
-                document.getElementById('statusDisplay').textContent = '请选择任务状态';
+
+                // 如果有有效的选择，保留它们
+                if (validSelection.length > 0) {
+                    this.statusSelect.setSelectedValues(validSelection);
+                }
             }
 
             // 【级联优化】重置后续筛选器 - 级联顺序：测站 → 客户 → 卫星 → 类型 → 状态
@@ -3185,9 +3219,6 @@
             updateCustomerChartOptions() {
                 if (!this.data || !this.data.length) return;
 
-                // 清除客户的选择
-                this.customerChartSelect.clearSelection();
-
                 const chartStationValues = this.stationChartSelect.getSelectedValues();
                 const topStationValues = this.stationSelect.getSelectedValues();
 
@@ -3211,7 +3242,17 @@
                 )].sort((a, b) => a.localeCompare(b, 'zh-CN'));
 
                 const customerOptions = availableCustomers.map(customer => ({ value: customer, label: customer }));
+
+                // 【级联优化】保留仍然有效的选择，移除无效的选择
+                const currentSelection = this.customerChartSelect.getSelectedValues();
+                const validSelection = currentSelection.filter(value => availableCustomers.includes(value));
+
                 this.customerChartSelect.setOptions(customerOptions);
+
+                // 如果有有效的选择，保留它们
+                if (validSelection.length > 0) {
+                    this.customerChartSelect.setSelectedValues(validSelection);
+                }
 
                 console.log(`✅ 客户选项已更新: ${availableCustomers.length} 个可选项`);
             }
@@ -3219,9 +3260,6 @@
             // 【级联优化】2. 客户改变 → 更新卫星选项（清除卫星及其之后的选择）
             updateSatelliteChartOptions() {
                 if (!this.data || !this.data.length) return;
-
-                // 清除卫星的选择
-                this.satelliteChartSelect.clearSelection();
 
                 const chartStationValues = this.stationChartSelect.getSelectedValues();
                 const chartCustomerValues = this.customerChartSelect.getSelectedValues();
@@ -3257,7 +3295,17 @@
                 )].sort((a, b) => a.localeCompare(b, 'zh-CN'));
 
                 const satelliteOptions = availableSatellites.map(satellite => ({ value: satellite, label: satellite }));
+
+                // 【级联优化】保留仍然有效的选择，移除无效的选择
+                const currentSelection = this.satelliteChartSelect.getSelectedValues();
+                const validSelection = currentSelection.filter(value => availableSatellites.includes(value));
+
                 this.satelliteChartSelect.setOptions(satelliteOptions);
+
+                // 如果有有效的选择，保留它们
+                if (validSelection.length > 0) {
+                    this.satelliteChartSelect.setSelectedValues(validSelection);
+                }
 
                 console.log(`✅ 卫星选项已更新: ${availableSatellites.length} 个可选项`);
             }
@@ -3265,9 +3313,6 @@
             // 【级联优化】3. 卫星改变 → 更新类型选项（清除类型及其之后的选择）
             updateTypeChartOptions() {
                 if (!this.data || !this.data.length) return;
-
-                // 清除类型的选择
-                this.typeChartSelect.clearSelection();
 
                 const chartStationValues = this.stationChartSelect.getSelectedValues();
                 const chartCustomerValues = this.customerChartSelect.getSelectedValues();
@@ -3311,7 +3356,17 @@
                 )].sort((a, b) => a.localeCompare(b, 'zh-CN'));
 
                 const typeOptions = availableTypes.map(type => ({ value: type, label: type }));
+
+                // 【级联优化】保留仍然有效的选择，移除无效的选择
+                const currentSelection = this.typeChartSelect.getSelectedValues();
+                const validSelection = currentSelection.filter(value => availableTypes.includes(value));
+
                 this.typeChartSelect.setOptions(typeOptions);
+
+                // 如果有有效的选择，保留它们
+                if (validSelection.length > 0) {
+                    this.typeChartSelect.setSelectedValues(validSelection);
+                }
 
                 console.log(`✅ 类型选项已更新: ${availableTypes.length} 个可选项`);
             }
@@ -3319,9 +3374,6 @@
             // 【级联优化】4. 类型改变 → 更新状态选项（清除状态的选择 - 级联末端）
             updateStatusChartOptions() {
                 if (!this.data || !this.data.length) return;
-
-                // 清除状态的选择（级联末端）
-                this.statusChartSelect.clearSelection();
 
                 const chartStationValues = this.stationChartSelect.getSelectedValues();
                 const chartCustomerValues = this.customerChartSelect.getSelectedValues();
@@ -3375,7 +3427,17 @@
                 )].sort((a, b) => a.localeCompare(b, 'zh-CN'));
 
                 const statusOptions = availableStatuses.map(status => ({ value: status, label: status }));
+
+                // 【级联优化】保留仍然有效的选择，移除无效的选择
+                const currentSelection = this.statusChartSelect.getSelectedValues();
+                const validSelection = currentSelection.filter(value => availableStatuses.includes(value));
+
                 this.statusChartSelect.setOptions(statusOptions);
+
+                // 如果有有效的选择，保留它们
+                if (validSelection.length > 0) {
+                    this.statusChartSelect.setSelectedValues(validSelection);
+                }
 
                 console.log(`✅ 状态选项已更新: ${availableStatuses.length} 个可选项`);
             }
