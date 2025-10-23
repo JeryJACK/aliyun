@@ -2385,20 +2385,36 @@
 
                 const stationValues = this.stationSelect.getSelectedValues();
 
-                console.log(`🔄 [级联] 更新客户选项 - 当前选择的测站: [${stationValues.join(', ')}]`);
+                console.log(`🔄 [顶部级联] 更新客户选项 - 当前选择的测站: [${stationValues.join(', ')}]`);
+                console.log(`📊 [顶部级联] 总数据条数: ${this.data.length}`);
 
                 // 允许独立选择：如果没有选择测站，显示所有客户
-                const filteredCustomers = [...new Set(
-                    this.data
-                        .filter(item => {
-                            if (stationValues.length === 0) return true; // 无上级选择时显示所有
-                            return stationValues.includes((getFieldValue(item, '测站名称') || '').toString().trim());
-                        })
-                        .map(item => (getFieldValue(item, '客户名称') || '').toString().trim())
-                        .filter(Boolean)
-                )].sort();
+                const filteredData = this.data.filter(item => {
+                    if (stationValues.length === 0) return true; // 无上级选择时显示所有
+                    const itemStation = (getFieldValue(item, '测站名称') || '').toString().trim();
+                    return stationValues.includes(itemStation);
+                });
 
-                console.log(`✅ [级联] 客户选项已更新: ${filteredCustomers.length} 个可选项 [${filteredCustomers.slice(0, 3).join(', ')}${filteredCustomers.length > 3 ? '...' : ''}]`);
+                console.log(`📊 [顶部级联] 过滤后数据条数: ${filteredData.length}`);
+
+                // 获取唯一的客户名称
+                const customerMap = new Map();
+                filteredData.forEach(item => {
+                    const customer = (getFieldValue(item, '客户名称') || '').toString().trim();
+                    if (customer) {
+                        if (!customerMap.has(customer)) {
+                            customerMap.set(customer, 0);
+                        }
+                        customerMap.set(customer, customerMap.get(customer) + 1);
+                    }
+                });
+
+                const filteredCustomers = Array.from(customerMap.keys()).sort();
+
+                console.log(`✅ [顶部级联] 客户选项已更新: ${filteredCustomers.length} 个可选项`);
+                customerMap.forEach((count, customer) => {
+                    console.log(`   - ${customer}: ${count} 条记录`);
+                });
 
                 const customerOptions = filteredCustomers.map(customer => ({ value: customer, label: customer }));
 
@@ -2411,7 +2427,7 @@
                 // 如果有有效的选择，保留它们
                 if (validSelection.length > 0) {
                     this.customerSelect.setSelectedValues(validSelection);
-                    console.log(`✅ [级联] 保留了 ${validSelection.length} 个有效的客户选择`);
+                    console.log(`✅ [顶部级联] 保留了 ${validSelection.length} 个有效的客户选择`);
                 }
             }
 
@@ -3148,12 +3164,17 @@
             updateChartFilterOptions() {
                 if (!this.data || !this.data.length) return;
 
+                console.log(`🔄 [updateChartFilterOptions] 开始更新底部筛选器选项`);
+
                 // 获取顶部当前的筛选条件
                 const stationValues = this.stationSelect.getSelectedValues();
                 const customerValues = this.customerSelect.getSelectedValues();
                 const satelliteValues = this.satelliteSelect.getSelectedValues();
                 const typeValues = this.typeSelect.getSelectedValues();
                 const statusValues = this.statusSelect.getSelectedValues();
+
+                // 【修复】更新客户图表的筛选选项（基于已选择的测站）
+                this.updateCustomerChartOptions();
 
                 // 更新卫星图表的筛选选项（基于已选择的测站和客户）
                 const filteredForSatellite = this.data.filter(item => {
@@ -3171,7 +3192,16 @@
                 )].sort((a, b) => a.localeCompare(b, 'zh-CN'));
 
                 const satelliteOptions = availableSatellites.map(satellite => ({ value: satellite, label: satellite }));
+
+                // 【级联优化】保留仍然有效的选择
+                const currentSatelliteSelection = this.satelliteChartSelect.getSelectedValues();
+                const validSatelliteSelection = currentSatelliteSelection.filter(value => availableSatellites.includes(value));
+
                 this.satelliteChartSelect.setOptions(satelliteOptions);
+
+                if (validSatelliteSelection.length > 0) {
+                    this.satelliteChartSelect.setSelectedValues(validSatelliteSelection);
+                }
 
                 // 【级联优化】更新类型图表的筛选选项（基于测站、客户、卫星）
                 const filteredForType = this.data.filter(item => {
@@ -3191,7 +3221,16 @@
                 )].sort((a, b) => a.localeCompare(b, 'zh-CN'));
 
                 const typeOptions = availableTypes.map(type => ({ value: type, label: type }));
+
+                // 【级联优化】保留仍然有效的选择
+                const currentTypeSelection = this.typeChartSelect.getSelectedValues();
+                const validTypeSelection = currentTypeSelection.filter(value => availableTypes.includes(value));
+
                 this.typeChartSelect.setOptions(typeOptions);
+
+                if (validTypeSelection.length > 0) {
+                    this.typeChartSelect.setSelectedValues(validTypeSelection);
+                }
 
                 // 【级联优化】更新状态图表的筛选选项（基于测站、客户、卫星、类型 - 级联末端）
                 const filteredForStatus = this.data.filter(item => {
@@ -3213,7 +3252,16 @@
                 )].sort((a, b) => a.localeCompare(b, 'zh-CN'));
 
                 const statusOptions = availableStatuses.map(status => ({ value: status, label: status }));
+
+                // 【级联优化】保留仍然有效的选择
+                const currentStatusSelection = this.statusChartSelect.getSelectedValues();
+                const validStatusSelection = currentStatusSelection.filter(value => availableStatuses.includes(value));
+
                 this.statusChartSelect.setOptions(statusOptions);
+
+                if (validStatusSelection.length > 0) {
+                    this.statusChartSelect.setSelectedValues(validStatusSelection);
+                }
             }
 
             // ========【级联筛选】底部图表筛选的链式级联更新方法 ========
@@ -3224,6 +3272,9 @@
 
                 const chartStationValues = this.stationChartSelect.getSelectedValues();
                 const topStationValues = this.stationSelect.getSelectedValues();
+
+                console.log(`🔄 [底部级联] 更新客户选项 - 底部测站: [${chartStationValues.join(', ')}], 顶部测站: [${topStationValues.join(', ')}]`);
+                console.log(`📊 [底部级联] 总数据条数: ${this.data.length}`);
 
                 // 过滤数据：根据底部测站筛选（或顶部测站）
                 const filteredForCustomer = this.data.filter(item => {
@@ -3240,9 +3291,26 @@
                     return true;
                 });
 
-                const availableCustomers = [...new Set(
-                    filteredForCustomer.map(item => (getFieldValue(item, '客户名称') || '').toString().trim()).filter(Boolean)
-                )].sort((a, b) => a.localeCompare(b, 'zh-CN'));
+                console.log(`📊 [底部级联] 过滤后数据条数: ${filteredForCustomer.length}`);
+
+                // 获取唯一的客户名称并统计
+                const customerMap = new Map();
+                filteredForCustomer.forEach(item => {
+                    const customer = (getFieldValue(item, '客户名称') || '').toString().trim();
+                    if (customer) {
+                        if (!customerMap.has(customer)) {
+                            customerMap.set(customer, 0);
+                        }
+                        customerMap.set(customer, customerMap.get(customer) + 1);
+                    }
+                });
+
+                const availableCustomers = Array.from(customerMap.keys()).sort((a, b) => a.localeCompare(b, 'zh-CN'));
+
+                console.log(`✅ [底部级联] 客户选项已更新: ${availableCustomers.length} 个可选项`);
+                customerMap.forEach((count, customer) => {
+                    console.log(`   - ${customer}: ${count} 条记录`);
+                });
 
                 const customerOptions = availableCustomers.map(customer => ({ value: customer, label: customer }));
 
@@ -3255,9 +3323,8 @@
                 // 如果有有效的选择，保留它们
                 if (validSelection.length > 0) {
                     this.customerChartSelect.setSelectedValues(validSelection);
+                    console.log(`✅ [底部级联] 保留了 ${validSelection.length} 个有效的客户选择`);
                 }
-
-                console.log(`✅ 客户选项已更新: ${availableCustomers.length} 个可选项`);
             }
 
             // 【级联优化】2. 客户改变 → 更新卫星选项（清除卫星及其之后的选择）
