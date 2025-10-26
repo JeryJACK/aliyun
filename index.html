@@ -1287,7 +1287,12 @@
                     });
 
                     const group1Results = await Promise.all(group1Promises);
-                    allRecords.push(...group1Results.flat());
+                    // 🔥 修复栈溢出：不使用 spread 操作符，改用循环
+                    for (const batch of group1Results) {
+                        for (const record of batch) {
+                            allRecords.push(record);
+                        }
+                    }
 
                     // 第2组：15-30天（2个并发）
                     console.log('📦 第2组：加载15-30天（2个批次并发）');
@@ -1306,7 +1311,12 @@
                     });
 
                     const group2Results = await Promise.all(group2Promises);
-                    allRecords.push(...group2Results.flat());
+                    // 🔥 修复栈溢出：不使用 spread 操作符，改用循环
+                    for (const batch of group2Results) {
+                        for (const record of batch) {
+                            allRecords.push(record);
+                        }
+                    }
 
                     const batchTime = performance.now() - batchStart;
                     console.log(`✅ 热数据加载完成: ${allRecords.length}条 (${batchTime.toFixed(0)}ms, 2组×2批次)`);
