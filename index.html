@@ -1252,18 +1252,73 @@
                 }
             }
 
-            // 🆕 获取热数据（最近7天的所有数据，极速加载）
+            // 🆕 获取热数据（最近30天的所有数据，并发快速加载）
             async fetchHotData() {
                 try {
-                    // 🔥 优化③：仅加载最近7天数据，确保极速响应（<1.5秒）
-                    const sevenDaysAgo = new Date();
-                    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+                    console.log('⚡ 并发加载热数据（最近30天）...');
 
+                    const now = new Date();
+
+                    // 🔥 将30天分为4个时间段，并发加载（速度提升4倍）
+                    const timeRanges = [
+                        { days: 7, label: '最近7天' },      // 0-7天
+                        { days: 14, label: '8-14天' },      // 8-14天
+                        { days: 21, label: '15-21天' },     // 15-21天
+                        { days: 30, label: '22-30天' }      // 22-30天
+                    ];
+
+                    const fetchPromises = timeRanges.map((range, index) => {
+                        const startDays = index === 0 ? 0 : timeRanges[index - 1].days;
+                        const endDays = range.days;
+
+                        const startDate = new Date(now);
+                        startDate.setDate(startDate.getDate() - endDays);
+
+                        const endDate = new Date(now);
+                        endDate.setDate(endDate.getDate() - startDays);
+
+                        return this.fetchDateRangeBatch(startDate, endDate, range.label);
+                    });
+
+                    // 🚀 并发执行所有请求
+                    const batchStart = performance.now();
+                    const results = await Promise.all(fetchPromises);
+                    const batchTime = performance.now() - batchStart;
+
+                    // 合并所有批次的数据
+                    const allRecords = results.flat();
+
+                    console.log(`✅ 热数据并发加载完成: ${allRecords.length}条 (${batchTime.toFixed(0)}ms, 4个批次并发)`);
+
+                    // 🔥 记录已加载的日期范围
+                    if (allRecords.length > 0) {
+                        const thirtyDaysAgo = new Date(now);
+                        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+                        this.loadedDateRange = {
+                            start: thirtyDaysAgo,
+                            end: now
+                        };
+                        console.log(`📅 已加载日期范围: ${thirtyDaysAgo.toLocaleDateString()} - ${now.toLocaleDateString()}`);
+                    }
+
+                    return allRecords;
+
+                } catch (error) {
+                    console.error('❌ 获取热数据失败:', error);
+                    throw error;
+                }
+            }
+
+            // 🆕 获取指定日期范围的批次数据
+            async fetchDateRangeBatch(startDate, endDate, label) {
+                try {
                     const params = {
-                        start_date: sevenDaysAgo.toISOString().split('T')[0],
-                        // 🔥 优化1：移除limit限制，获取所有数据
+                        start_date: startDate.toISOString().split('T')[0],
+                        end_date: endDate.toISOString().split('T')[0],
+                        no_limit: 'true',
                         order_by: 'start_time',
-                        sort: 'DESC'          // 最新的在前
+                        sort: 'DESC'
                     };
 
                     const url = getApiUrl('records');
@@ -1275,9 +1330,9 @@
                         credentials: 'omit',
                         headers: {
                             'Content-Type': 'application/json',
-                            'Accept-Encoding': 'gzip, deflate'  // 启用压缩
+                            'Accept-Encoding': 'gzip, deflate'
                         },
-                        signal: AbortSignal.timeout(10000)  // 缩短超时时间至10秒
+                        signal: AbortSignal.timeout(10000)
                     });
 
                     if (!response.ok) {
@@ -1287,20 +1342,13 @@
                     const result = await response.json();
                     const records = result.data?.records || [];
 
-                    // 🔥 记录已加载的日期范围
-                    if (records.length > 0) {
-                        this.loadedDateRange = {
-                            start: sevenDaysAgo,
-                            end: new Date()
-                        };
-                        console.log(`📅 已加载日期范围: ${sevenDaysAgo.toLocaleDateString()} - ${new Date().toLocaleDateString()}`);
-                    }
+                    console.log(`  ✅ ${label}: ${records.length}条`);
 
                     return records;
 
                 } catch (error) {
-                    console.error('❌ 获取热数据失败:', error);
-                    throw error;
+                    console.warn(`⚠️ ${label} 加载失败:`, error.message);
+                    return [];  // 失败返回空数组，不影响其他批次
                 }
             }
 
@@ -1379,6 +1427,7 @@
                     const params = {
                         start_date: startDate.toISOString().split('T')[0],
                         end_date: endDate.toISOString().split('T')[0],
+                        no_limit: 'true',     // 🔥 不限制条数
                         order_by: 'start_time',
                         sort: 'DESC'
                     };
@@ -1469,7 +1518,7 @@
                 console.log('📦 后台静默加载全部历史数据（并发模式，由近及远）...');
 
                 try {
-                    // 🔥 优化③：热数据（7天）加载完毕后，剩余数据按时间倒序分批并发异步加载
+                    // 🔥 热数据（30天）加载完毕后，剩余数据按时间倒序分批并发异步加载
 
                     // 1. 获取数据库总数
                     const totalCount = await this.getTotalCount();
@@ -3394,6 +3443,9 @@
                     const initStart = performance.now();
                     console.log('🔧 SatelliteApp 初始化：数据结构优化模式...');
 
+                    // 🔥 关键修复：立即初始化 data 为空数组，确保后续可以 push
+                    this.data = [];
+
                     // 【优化1】立即隐藏加载状态，先显示UI
                     if (this.chartLoadingState) this.chartLoadingState.classList.add('hidden');
                     if (this.chartEmptyState) this.chartEmptyState.classList.add('hidden');
@@ -3411,8 +3463,8 @@
                     const metadata = await cacheManager.getMetadataFast();
 
                     if (!metadata || metadata.actualCount === 0) {
-                        console.warn('⚠️ 本地缓存为空，显示无数据提示');
-                        this.noDataAlert.classList.remove('hidden');
+                        console.warn('⚠️ 本地缓存为空，等待数据预载');
+                        // 🔥 不显示 noDataAlert，因为数据预载会加载数据
                         return;
                     }
 
@@ -5034,17 +5086,18 @@
         // 初始化应用 - 添加自动数据预载
         document.addEventListener('DOMContentLoaded', async () => {
             try {
-                // 页面加载时自动预载所有数据
-                console.log('🌟 页面加载完成，开始自动预载数据...');
+                // 页面加载时先初始化应用框架
+                console.log('🌟 页面加载完成，初始化应用框架...');
 
-                // 分组逻辑已验证正确，移除测试代码
+                // 🔥 关键修复：先创建应用实例（空数据），确保 window.app 存在
+                window.app = new SatelliteApp();
+                console.log('✅ 应用框架创建完成');
 
+                // 🔥 然后加载数据到应用内存中
+                console.log('🚀 开始自动预载数据...');
                 await dataPreloader.autoPreloadAllData();
 
-                // 初始化应用
-                window.app = new SatelliteApp();
-
-                console.log('✅ 应用初始化完成，数据已预载到本地缓存');
+                console.log('✅ 数据预载完成，应用可以使用');
 
                 // ==================== WebSocket 实时同步初始化 ====================
 
