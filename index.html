@@ -1252,14 +1252,15 @@
                 }
             }
 
-            // 🆕 获取热数据（最近30天的所有数据，并发快速加载）
+            // 🆕 获取热数据（最近30天的所有数据，分组并发加载）
             async fetchHotData() {
                 try {
-                    console.log('⚡ 并发加载热数据（最近30天）...');
+                    console.log('⚡ 分组并发加载热数据（最近30天）...');
 
                     const now = new Date();
+                    const batchStart = performance.now();
 
-                    // 🔥 将30天分为4个时间段，并发加载（速度提升4倍）
+                    // 🔥 将30天分为4个时间段
                     const timeRanges = [
                         { days: 7, label: '最近7天' },      // 0-7天
                         { days: 14, label: '8-14天' },      // 8-14天
@@ -1267,7 +1268,12 @@
                         { days: 30, label: '22-30天' }      // 22-30天
                     ];
 
-                    const fetchPromises = timeRanges.map((range, index) => {
+                    // 🔥 优化：分两组并发，避免服务器过载（每组2个请求）
+                    const allRecords = [];
+
+                    // 第1组：最近14天（2个并发）
+                    console.log('📦 第1组：加载最近14天（2个批次并发）');
+                    const group1Promises = timeRanges.slice(0, 2).map((range, index) => {
                         const startDays = index === 0 ? 0 : timeRanges[index - 1].days;
                         const endDays = range.days;
 
@@ -1280,15 +1286,30 @@
                         return this.fetchDateRangeBatch(startDate, endDate, range.label);
                     });
 
-                    // 🚀 并发执行所有请求
-                    const batchStart = performance.now();
-                    const results = await Promise.all(fetchPromises);
+                    const group1Results = await Promise.all(group1Promises);
+                    allRecords.push(...group1Results.flat());
+
+                    // 第2组：15-30天（2个并发）
+                    console.log('📦 第2组：加载15-30天（2个批次并发）');
+                    const group2Promises = timeRanges.slice(2, 4).map((range, index) => {
+                        const actualIndex = index + 2;
+                        const startDays = timeRanges[actualIndex - 1].days;
+                        const endDays = range.days;
+
+                        const startDate = new Date(now);
+                        startDate.setDate(startDate.getDate() - endDays);
+
+                        const endDate = new Date(now);
+                        endDate.setDate(endDate.getDate() - startDays);
+
+                        return this.fetchDateRangeBatch(startDate, endDate, range.label);
+                    });
+
+                    const group2Results = await Promise.all(group2Promises);
+                    allRecords.push(...group2Results.flat());
+
                     const batchTime = performance.now() - batchStart;
-
-                    // 合并所有批次的数据
-                    const allRecords = results.flat();
-
-                    console.log(`✅ 热数据并发加载完成: ${allRecords.length}条 (${batchTime.toFixed(0)}ms, 4个批次并发)`);
+                    console.log(`✅ 热数据加载完成: ${allRecords.length}条 (${batchTime.toFixed(0)}ms, 2组×2批次)`);
 
                     // 🔥 记录已加载的日期范围
                     if (allRecords.length > 0) {
@@ -1310,46 +1331,60 @@
                 }
             }
 
-            // 🆕 获取指定日期范围的批次数据
-            async fetchDateRangeBatch(startDate, endDate, label) {
-                try {
-                    const params = {
-                        start_date: startDate.toISOString().split('T')[0],
-                        end_date: endDate.toISOString().split('T')[0],
-                        no_limit: 'true',
-                        order_by: 'start_time',
-                        sort: 'DESC'
-                    };
+            // 🆕 获取指定日期范围的批次数据（带重试机制）
+            async fetchDateRangeBatch(startDate, endDate, label, retries = 2) {
+                for (let attempt = 0; attempt <= retries; attempt++) {
+                    try {
+                        if (attempt > 0) {
+                            console.log(`  🔄 ${label} 重试第 ${attempt} 次...`);
+                            // 等待一小段时间再重试
+                            await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+                        }
 
-                    const url = getApiUrl('records');
-                    const qs = new URLSearchParams(params).toString();
+                        const params = {
+                            start_date: startDate.toISOString().split('T')[0],
+                            end_date: endDate.toISOString().split('T')[0],
+                            no_limit: 'true',
+                            order_by: 'start_time',
+                            sort: 'DESC'
+                        };
 
-                    const response = await fetch(`${url}?${qs}`, {
-                        method: 'GET',
-                        mode: 'cors',
-                        credentials: 'omit',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Accept-Encoding': 'gzip, deflate'
-                        },
-                        signal: AbortSignal.timeout(10000)
-                    });
+                        const url = getApiUrl('records');
+                        const qs = new URLSearchParams(params).toString();
 
-                    if (!response.ok) {
-                        throw new Error(`HTTP ${response.status}`);
+                        const response = await fetch(`${url}?${qs}`, {
+                            method: 'GET',
+                            mode: 'cors',
+                            credentials: 'omit',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Accept-Encoding': 'gzip, deflate'
+                            },
+                            signal: AbortSignal.timeout(30000)  // 🔥 增加到30秒
+                        });
+
+                        if (!response.ok) {
+                            throw new Error(`HTTP ${response.status}`);
+                        }
+
+                        const result = await response.json();
+                        const records = result.data?.records || [];
+
+                        console.log(`  ✅ ${label}: ${records.length}条`);
+
+                        return records;
+
+                    } catch (error) {
+                        if (attempt === retries) {
+                            // 所有重试都失败
+                            console.warn(`⚠️ ${label} 加载失败（已重试${retries}次）:`, error.message);
+                            return [];  // 失败返回空数组，不影响其他批次
+                        }
+                        // 继续重试
+                        console.warn(`⚠️ ${label} 第${attempt + 1}次尝试失败:`, error.message);
                     }
-
-                    const result = await response.json();
-                    const records = result.data?.records || [];
-
-                    console.log(`  ✅ ${label}: ${records.length}条`);
-
-                    return records;
-
-                } catch (error) {
-                    console.warn(`⚠️ ${label} 加载失败:`, error.message);
-                    return [];  // 失败返回空数组，不影响其他批次
                 }
+                return [];
             }
 
             // 🆕 加载到应用内存（立即可用）
