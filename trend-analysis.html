@@ -2728,6 +2728,68 @@
                 }, 300);
             }
 
+            // 【修复时间轴跳跃】生成完整的时间序列（填充0值）
+            generateCompleteTimeline(startBound, endBound, groupBy) {
+                if (!startBound || !endBound) {
+                    console.warn('⚠️ 时间范围未设置，无法生成完整时间轴');
+                    return [];
+                }
+
+                const timeline = [];
+                const timelineKeys = new Set();
+                let currentDate = new Date(startBound);
+                const endDate = new Date(endBound);
+
+                // 使用一个足够大的迭代限制，防止无限循环
+                const maxIterations = 10000;
+                let iterations = 0;
+
+                while (currentDate < endDate && iterations < maxIterations) {
+                    iterations++;
+
+                    try {
+                        const group = this.cycleEngine.getGroup(currentDate, groupBy);
+
+                        // 避免重复添加同一个周期
+                        if (!timelineKeys.has(group.key)) {
+                            timelineKeys.add(group.key);
+                            timeline.push(group);
+                        }
+
+                        // 根据分组类型移动到下一个时间点
+                        switch (groupBy) {
+                            case 'day':
+                                currentDate.setDate(currentDate.getDate() + 1);
+                                break;
+                            case 'week':
+                                currentDate.setDate(currentDate.getDate() + 7);
+                                break;
+                            case 'month':
+                                currentDate.setMonth(currentDate.getMonth() + 1);
+                                break;
+                            case 'quarter':
+                                currentDate.setMonth(currentDate.getMonth() + 3);
+                                break;
+                            default:
+                                currentDate.setDate(currentDate.getDate() + 1);
+                        }
+                    } catch (error) {
+                        console.error('生成时间轴失败:', error);
+                        break;
+                    }
+                }
+
+                if (iterations >= maxIterations) {
+                    console.warn('⚠️ 时间轴生成达到迭代限制，可能时间范围过大');
+                }
+
+                // 按 rangeStart 排序
+                timeline.sort((a, b) => a.rangeStart - b.rangeStart);
+
+                console.log(`📅 生成完整时间轴: ${timeline.length} 个时间点 (${groupBy})`);
+                return timeline;
+            }
+
             // 【新增】时间改变时更新图表（保留底部筛选条件）
             updateChartsOnTimeChange() {
                 if (!this.data) return;
@@ -2762,6 +2824,13 @@
                     const range = this.computeDateRangeForGroup(groupBy, startInput, endInput);
                     const startBound = range.startDate;
                     const endBound = range.endDate;
+
+                    // 【修复时间轴跳跃】保存时间范围
+                    this.currentTimeRange = {
+                        startBound: startBound,
+                        endBound: endBound,
+                        groupBy: groupBy
+                    };
 
                     const normalizedField = FIELD_MAPPING['开始时间'];
                     const dataForFiltering = this.data.map(item => {
@@ -2854,6 +2923,13 @@
                 const range = this.computeDateRangeForGroup(groupBy, startInput, endInput);
                 const startBound = range.startDate; // may be null
                 const endBound = range.endDate; // may be null (inclusive)
+
+                // 【修复时间轴跳跃】保存时间范围，用于生成完整时间轴
+                this.currentTimeRange = {
+                    startBound: startBound,
+                    endBound: endBound,
+                    groupBy: groupBy
+                };
 
                 // 为了避免浏览器将 YYYY-MM-DD 当成 UTC 导致偏移，我们先把数据副本中的开始时间解析为本地 Date
                 const normalizedField = FIELD_MAPPING['开始时间'];
@@ -2948,7 +3024,21 @@
                     FIELD_MAPPING['开始时间']
                 );
 
-                if (!groupedResult.sortedKeys.length) {
+                // 【修复时间轴跳跃】生成完整的时间序列（包括0值时间点）
+                let completeTimeline;
+                if (this.currentTimeRange && this.currentTimeRange.startBound && this.currentTimeRange.endBound) {
+                    completeTimeline = this.generateCompleteTimeline(
+                        this.currentTimeRange.startBound,
+                        this.currentTimeRange.endBound,
+                        groupBy
+                    );
+                } else {
+                    // 如果没有设置时间范围，回退到原有逻辑（只显示有数据的时间点）
+                    console.warn('⚠️ 时间范围未设置，使用原有逻辑（可能出现时间轴跳跃）');
+                    completeTimeline = groupedResult.sortedKeys.map(key => groupedResult.groupMetadata[key]);
+                }
+
+                if (!completeTimeline || completeTimeline.length === 0) {
                     const emptyEl = document.getElementById(`${chartId}Empty`);
                     if (emptyEl) emptyEl.classList.remove('hidden');
                     this.chartGenerator.destroyChart(chartId);
@@ -2959,17 +3049,22 @@
                     dataToUse.map(item => getFieldValue(item, categoryField).toString().trim()).filter(Boolean)
                 )];
 
-                const xLabels = groupedResult.sortedKeys.map(key =>
-                    groupedResult.groupMetadata[key].label
-                );
+                // 使用完整时间轴生成X轴标签
+                const xLabels = completeTimeline.map(group => group.label);
 
+                // 【修复时间轴跳跃】为每个类别生成数据集（填充0值）
                 const datasets = categories.map(category => ({
                     label: category,
-                    data: groupedResult.sortedKeys.map(key =>
-                        groupedResult.groups[key].filter(item =>
-                            getFieldValue(item, categoryField).toString().trim() === category
-                        ).length
-                    )
+                    data: completeTimeline.map(group => {
+                        // 如果该时间点有数据，返回数据量；否则返回0
+                        if (groupedResult.groups[group.key]) {
+                            return groupedResult.groups[group.key].filter(item =>
+                                getFieldValue(item, categoryField).toString().trim() === category
+                            ).length;
+                        } else {
+                            return 0; // 填充0值，保持时间轴连续
+                        }
+                    })
                 }));
 
                 // 生成图表
@@ -3691,7 +3786,7 @@
                 });
             }
 
-            // 从指定数据生成分类图表
+            // 从指定数据生成分类图表（修复时间轴跳跃：填充0值）
             generateCategoryChartFromData(chartId, title, categoryField, groupBy, dataToUse) {
                 if (!dataToUse || !dataToUse.length) {
                     const emptyEl = document.getElementById(`${chartId}Empty`);
@@ -3700,6 +3795,7 @@
                     return null;
                 }
 
+                // 1. 对数据进行分组
                 const groupedResult = this.cycleEngine.groupByStartTime(
                     dataToUse,
                     groupBy,
@@ -3707,28 +3803,48 @@
                     FIELD_MAPPING['开始时间']
                 );
 
-                if (!groupedResult.sortedKeys.length) {
+                // 2. 【修复时间轴跳跃】生成完整的时间序列（包括0值时间点）
+                let completeTimeline;
+                if (this.currentTimeRange && this.currentTimeRange.startBound && this.currentTimeRange.endBound) {
+                    completeTimeline = this.generateCompleteTimeline(
+                        this.currentTimeRange.startBound,
+                        this.currentTimeRange.endBound,
+                        groupBy
+                    );
+                } else {
+                    // 如果没有设置时间范围，回退到原有逻辑（只显示有数据的时间点）
+                    console.warn('⚠️ 时间范围未设置，使用原有逻辑（可能出现时间轴跳跃）');
+                    completeTimeline = groupedResult.sortedKeys.map(key => groupedResult.groupMetadata[key]);
+                }
+
+                if (!completeTimeline || completeTimeline.length === 0) {
                     const emptyEl = document.getElementById(`${chartId}Empty`);
                     if (emptyEl) emptyEl.classList.remove('hidden');
                     this.chartGenerator.destroyChart(chartId);
                     return null;
                 }
 
+                // 3. 获取所有类别
                 const categories = [...new Set(
                     dataToUse.map(item => getFieldValue(item, categoryField).toString().trim()).filter(Boolean)
                 )];
 
-                const xLabels = groupedResult.sortedKeys.map(key =>
-                    groupedResult.groupMetadata[key].label
-                );
+                // 4. 生成X轴标签（使用完整时间轴）
+                const xLabels = completeTimeline.map(group => group.label);
 
+                // 5. 【修复时间轴跳跃】为每个类别生成数据集（填充0值）
                 const datasets = categories.map(category => ({
                     label: category,
-                    data: groupedResult.sortedKeys.map(key =>
-                        groupedResult.groups[key].filter(item =>
-                            getFieldValue(item, categoryField).toString().trim() === category
-                        ).length
-                    )
+                    data: completeTimeline.map(group => {
+                        // 如果该时间点有数据，返回数据量；否则返回0
+                        if (groupedResult.groups[group.key]) {
+                            return groupedResult.groups[group.key].filter(item =>
+                                getFieldValue(item, categoryField).toString().trim() === category
+                            ).length;
+                        } else {
+                            return 0; // 填充0值，保持时间轴连续
+                        }
+                    })
                 }));
 
                 // 生成图表
