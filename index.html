@@ -4272,54 +4272,39 @@
                 const startDate = range.startDate;
                 const endDate = range.endDate;
 
-                // 🎯 新增：检测用户选择的日期范围是否需要按需加载
-                if (startDate && endDate) {
+                // 🎯 简化：检测是否需要按需加载（边加载边渲染）
+                if (startDate && endDate && !this.dataStoreReady) {
+                    // 🔥 简化逻辑：只要DataStore未完全就绪，就使用渐进式加载
+                    // 这样可以让用户看到加载过程和图表实时更新
                     let needsOnDemandLoad = false;
                     let loadReason = '';
 
-                    // 🔥 优先检查：快速初始化模式，检查日期范围是否超出已加载范围
-                    if (this.dataLoadingStrategy === 'quick') {
-                        // 检查用户选择的日期范围是否超出已加载范围
-                        const rangeExceedsLoaded = this.loadedDataRange && (
+                    // 检查1：快速初始化模式，且选择范围超出已加载范围
+                    if (this.dataLoadingStrategy === 'quick' && this.loadedDataRange) {
+                        const rangeExceedsLoaded = (
                             startDate < this.loadedDataRange.start ||
                             endDate > this.loadedDataRange.end
                         );
 
-                        if (rangeExceedsLoaded || !this.loadedDataRange) {
+                        if (rangeExceedsLoaded) {
                             needsOnDemandLoad = true;
-                            loadReason = `选择范围超出已加载范围（已加载: ${this.loadedDataRange ? this.loadedDataRange.start.toLocaleDateString() + ' - ' + this.loadedDataRange.end.toLocaleDateString() : '无'}）`;
+                            loadReason = `范围超出已加载: ${this.loadedDataRange.start.toLocaleDateString()} - ${this.loadedDataRange.end.toLocaleDateString()}`;
                         }
                     }
 
-                    // 🔥 延迟加载模式：DataStore已就绪，不需要按需加载数据，可以直接统计
-                    // （DataStore已包含全部历史数据）
-
-                    // 🔥 备用检查：DataStore未完全就绪，且数据量明显不足
-                    if (!needsOnDemandLoad && !this.dataStoreReady && this.data && this.data.length > 0) {
-                        // 检查该范围的数据是否已加载到this.data
+                    // 检查2：DataStore有数据但未完全就绪，检查数据密度
+                    if (!needsOnDemandLoad && this.data && this.data.length > 0) {
                         const existingDataInRange = this.data.filter(record => {
                             const recordDate = new Date(record.start_time || record['开始时间']);
                             return recordDate >= startDate && recordDate <= endDate;
                         });
 
-                        // 估算需要的数据量
                         const daysDiff = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
 
-                        // 计算数据密度（使用已加载数据估算）
-                        let expectedDensity = 0;
-                        if (this.loadedDataRange) {
-                            const loadedDays = Math.ceil((this.loadedDataRange.end - this.loadedDataRange.start) / (1000 * 60 * 60 * 24));
-                            expectedDensity = this.data.length / loadedDays;
-                        } else {
-                            expectedDensity = this.data.length / 90; // 默认按90天计算
-                        }
-
-                        const expectedCount = Math.floor(expectedDensity * daysDiff);
-
-                        // 如果已加载数据明显少于预期（少于50%）
-                        if (existingDataInRange.length < expectedCount * 0.5 && expectedCount > 100) {
+                        // 🔥 简化：如果范围>7天且数据很少，就触发加载
+                        if (daysDiff > 7 && existingDataInRange.length < 100) {
                             needsOnDemandLoad = true;
-                            loadReason = `数据量不足（已有 ${existingDataInRange.length} 条，预期约 ${expectedCount} 条）`;
+                            loadReason = `数据不足: ${existingDataInRange.length} 条`;
                         }
                     }
 
@@ -4358,7 +4343,7 @@
                                         // 使用当前已加载的数据生成图表（横轴和纵轴会随数据增加而扩展）
                                         const stats = this.dataStore.getStats(this.taskAnalyzer, startDate, endDate);
                                         if (stats.length > 0) {
-                                            this.updateChart(stats, groupType);
+                                            this.updateChart(stats, groupType, true); // isProgressive=true
                                             this.updateStatCards(stats);
                                             this.updateDetailTable(stats);
                                         }
@@ -4528,13 +4513,13 @@
                 return statsArray;
             }
 
-            updateChart(stats, groupType) {
-                if (this.chart) {
-                    this.chart.destroy();
-                }
-
+            updateChart(stats, groupType, isProgressive = false) {
                 if (!stats || stats.length === 0) {
                     this.chartEmptyState.classList.remove('hidden');
+                    if (this.chart) {
+                        this.chart.destroy();
+                        this.chart = null;
+                    }
                     return;
                 }
 
@@ -4544,9 +4529,27 @@
                 const planCounts = stats.map(stat => stat.count);
                 const failureCounts = stats.map(stat => stat.failureCount);
                 const successRates = stats.map(stat => parseFloat(stat.successRate.toFixed(3)));
-                
+
                 // 获取是否显示数据标签的设置
                 const showLabels = this.showDataLabels.checked;
+
+                // 🚀 性能优化：如果图表已存在，使用update而不是destroy
+                if (this.chart && isProgressive) {
+                    // 更新数据
+                    this.chart.data.labels = labels;
+                    this.chart.data.datasets[0].data = planCounts;
+                    this.chart.data.datasets[1].data = failureCounts;
+                    this.chart.data.datasets[2].data = successRates;
+
+                    // 使用update触发重绘（比destroy快10-50倍）
+                    this.chart.update('none'); // 'none'模式：立即更新，无动画
+                    return;
+                }
+
+                // 销毁旧图表（仅在非渐进模式或首次创建时）
+                if (this.chart) {
+                    this.chart.destroy();
+                }
 
                 const ctx = this.dataChart.getContext('2d');
 
