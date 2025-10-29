@@ -753,13 +753,28 @@
 
                 this.initPromise = Promise.race([
                     new Promise((resolve, reject) => {
-                        const request = indexedDB.open(this.dbName, 3);
+                        const request = indexedDB.open(this.dbName, 4); // 🆕 升级到v4以匹配index.html
 
                         request.onupgradeneeded = (event) => {
                             this.db = event.target.result;
+                            const oldVersion = event.oldVersion;
+
+                            // 创建 allDataCache store（主数据存储）
                             if (!this.db.objectStoreNames.contains(this.storeName)) {
                                 const store = this.db.createObjectStore(this.storeName, { keyPath: 'id' });
                                 store.createIndex(this.requiredIndex, 'timestamp', { unique: false });
+                                console.log('📦 创建 allDataCache 存储空间');
+                            }
+
+                            // 🆕 创建 metaData store（元数据存储，与 index.html 保持一致）
+                            if (!this.db.objectStoreNames.contains('metaData')) {
+                                this.db.createObjectStore('metaData', { keyPath: 'key' });
+                                console.log('📦 创建 metaData 存储空间');
+                            }
+
+                            // 🆕 v3->v4升级：向后兼容，不影响已有数据
+                            if (oldVersion > 0) {
+                                console.log(`🔧 数据库升级: v${oldVersion} -> v4`);
                             }
                         };
 
