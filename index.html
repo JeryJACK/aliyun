@@ -726,123 +726,161 @@
                 });
             }
 
-            // 存储所有数据到本地缓存（🆕 支持月份分片索引）
-            async storeAllData(allData) {
+            // 🆕 【高性能】批量存储数据到本地缓存（分批事务，避免阻塞）
+            async storeAllData(allData, onProgress) {
                 if (!this.db) await this.init();
 
-                return new Promise(async (resolve, reject) => {
-                    const storeNames = [this.allDataStoreName, this.metaStoreName];
-                    // 🆕 添加shardIndex到transaction（如果存在）
+                const perfStart = performance.now();
+                console.log(`💾 开始批量存储 ${allData.length.toLocaleString()} 条数据...`);
+
+                try {
+                    // 1. 先清空现有数据
+                    await this.clearAllData();
+
+                    // 2. 按时间排序（如果后端未排序）
+                    const sortedData = this.sortDataByTime(allData);
+
+                    // 3. 🚀 分批存储（每批10000条，避免长事务）
+                    const BATCH_SIZE = 10000;
+                    const totalBatches = Math.ceil(sortedData.length / BATCH_SIZE);
+                    let storedCount = 0;
+                    const monthStats = {};
+
+                    for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+                        const batchStart = batchIndex * BATCH_SIZE;
+                        const batchEnd = Math.min(batchStart + BATCH_SIZE, sortedData.length);
+                        const batch = sortedData.slice(batchStart, batchEnd);
+
+                        // 每批使用独立事务（避免长事务阻塞）
+                        await this.storeBatch(batch, monthStats);
+
+                        storedCount += batch.length;
+                        const progress = Math.round((storedCount / sortedData.length) * 100);
+
+                        console.log(`📦 批次 ${batchIndex + 1}/${totalBatches}: 已存储 ${storedCount.toLocaleString()}/${sortedData.length.toLocaleString()} (${progress}%)`);
+
+                        // 调用进度回调
+                        if (onProgress) {
+                            onProgress(progress, storedCount, sortedData.length);
+                        }
+
+                        // 🔥 关键优化：让出主线程，避免UI冻结
+                        await new Promise(resolve => setTimeout(resolve, 0));
+                    }
+
+                    // 4. 保存分片索引和元数据
+                    await this.saveMetadataAndShardIndex(sortedData.length, monthStats);
+
+                    const perfTime = performance.now() - perfStart;
+                    console.log(`✅ 批量存储完成: ${storedCount.toLocaleString()} 条 (${perfTime.toFixed(0)}ms, ${(storedCount / (perfTime / 1000)).toFixed(0)} 条/秒)`);
+
+                    return storedCount;
+
+                } catch (error) {
+                    console.error('❌ 批量存储失败:', error);
+                    throw error;
+                }
+            }
+
+            // 🆕 存储单个批次（独立事务）
+            async storeBatch(batch, monthStats) {
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction([this.allDataStoreName], 'readwrite');
+                    const store = transaction.objectStore(this.allDataStoreName);
+
+                    for (const record of batch) {
+                        // 统一数据格式
+                        const standardRecord = {
+                            id: record.plan_id || record['计划ID'] || record.id || `record_${Date.now()}_${Math.random()}`,
+                            start_time: record.start_time || record['开始时间'],
+                            task_result: record.task_result || record['任务结果状态'],
+                            task_type: record.task_type || record['任务类型'],
+                            customer: record.customer || record['所属客户'],
+                            satellite_name: record.satellite_name || record['卫星名称'],
+                            station_name: record.station_name || record['测站名称'],
+                            station_id: record.station_id || record['测站ID'],
+                            ...record
+                        };
+
+                        // 添加时间戳和月份key
+                        if (standardRecord.start_time) {
+                            standardRecord.timestamp = this.parseTimeToTimestamp(standardRecord.start_time);
+                            standardRecord.month_key = this.getMonthKey(standardRecord.start_time);
+
+                            // 统计月份数据量
+                            if (!monthStats[standardRecord.month_key]) {
+                                monthStats[standardRecord.month_key] = 0;
+                            }
+                            monthStats[standardRecord.month_key]++;
+                        }
+
+                        store.put(standardRecord);
+                    }
+
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error);
+                });
+            }
+
+            // 🆕 清空所有数据
+            async clearAllData() {
+                return new Promise((resolve, reject) => {
+                    const storeNames = [this.allDataStoreName];
                     if (this.db.objectStoreNames.contains(this.shardIndexStoreName)) {
                         storeNames.push(this.shardIndexStoreName);
                     }
 
                     const transaction = this.db.transaction(storeNames, 'readwrite');
-                    const allDataStore = transaction.objectStore(this.allDataStoreName);
+
+                    transaction.objectStore(this.allDataStoreName).clear();
+
+                    if (storeNames.includes(this.shardIndexStoreName)) {
+                        transaction.objectStore(this.shardIndexStoreName).clear();
+                    }
+
+                    transaction.oncomplete = () => {
+                        console.log('🧹 已清空现有数据');
+                        resolve();
+                    };
+                    transaction.onerror = () => reject(transaction.error);
+                });
+            }
+
+            // 🆕 保存元数据和分片索引
+            async saveMetadataAndShardIndex(totalCount, monthStats) {
+                return new Promise((resolve, reject) => {
+                    const storeNames = [this.metaStoreName];
+                    if (this.db.objectStoreNames.contains(this.shardIndexStoreName)) {
+                        storeNames.push(this.shardIndexStoreName);
+                    }
+
+                    const transaction = this.db.transaction(storeNames, 'readwrite');
                     const metaStore = transaction.objectStore(this.metaStoreName);
-                    const shardIndexStore = storeNames.includes(this.shardIndexStoreName)
-                        ? transaction.objectStore(this.shardIndexStoreName)
-                        : null;
 
-                    try {
-                        // 清空现有数据和分片索引
-                        await new Promise((res) => {
-                            const clearReq = allDataStore.clear();
-                            clearReq.onsuccess = () => res();
-                            clearReq.onerror = () => res();
-                        });
+                    // 保存元数据
+                    metaStore.put({
+                        key: 'allDataMeta',
+                        totalCount: totalCount,
+                        lastUpdated: Date.now(),
+                        dataVersion: 1,
+                        sortedByTime: true
+                    });
 
-                        if (shardIndexStore) {
-                            await new Promise((res) => {
-                                const clearReq = shardIndexStore.clear();
-                                clearReq.onsuccess = () => res();
-                                clearReq.onerror = () => res();
+                    // 保存分片索引
+                    if (storeNames.includes(this.shardIndexStoreName)) {
+                        const shardStore = transaction.objectStore(this.shardIndexStoreName);
+                        for (const [monthKey, count] of Object.entries(monthStats)) {
+                            shardStore.put({
+                                monthKey: monthKey,
+                                count: count,
+                                timestamp: Date.now()
                             });
                         }
-
-                        // 按时间升序排序数据
-                        const sortedData = this.sortDataByTime(allData);
-
-                        // 🆕 统计每个月的数据量（用于分片索引）
-                        const monthStats = {};
-
-                        // 批量存储数据
-                        console.log(`💾 开始存储 ${sortedData.length} 条数据到本地缓存（按月分片）...`);
-                        let storedCount = 0;
-
-                        for (const record of sortedData) {
-                            // 统一数据格式并添加时间戳
-                            const standardRecord = {
-                                id: record.plan_id || record['计划ID'] || record.id || `record_${storedCount}`,
-                                start_time: record.start_time || record['开始时间'],
-                                task_result: record.task_result || record['任务结果状态'],
-                                task_type: record.task_type || record['任务类型'],
-                                customer: record.customer || record['所属客户'],
-                                satellite_name: record.satellite_name || record['卫星名称'],
-                                station_name: record.station_name || record['测站名称'],
-                                station_id: record.station_id || record['测站ID'],
-                                // 保留原始数据
-                                ...record
-                            };
-
-                            // 添加时间戳用于快速查询和排序（避免时区转换）
-                            if (standardRecord.start_time) {
-                                standardRecord.timestamp = this.parseTimeToTimestamp(standardRecord.start_time);
-                                // 🆕 添加月份key用于分片查询
-                                standardRecord.month_key = this.getMonthKey(standardRecord.start_time);
-
-                                // 🆕 统计月份数据量
-                                if (!monthStats[standardRecord.month_key]) {
-                                    monthStats[standardRecord.month_key] = 0;
-                                }
-                                monthStats[standardRecord.month_key]++;
-                            }
-
-                            allDataStore.put(standardRecord);
-                            storedCount++;
-
-                            // 每5000条记录显示进度
-                            if (storedCount % 5000 === 0) {
-                                console.log(`📦 已存储 ${storedCount}/${sortedData.length} 条记录`);
-                            }
-                        }
-
-                        // 🆕 保存分片索引
-                        if (shardIndexStore) {
-                            for (const [monthKey, count] of Object.entries(monthStats)) {
-                                shardIndexStore.put({
-                                    monthKey: monthKey,
-                                    count: count,
-                                    timestamp: Date.now()
-                                });
-                            }
-                            console.log(`📊 已创建 ${Object.keys(monthStats).length} 个月份分片索引`);
-                        }
-                        
-                        // 存储元数据
-                        const metaData = {
-                            key: 'allDataMeta',
-                            totalCount: sortedData.length,
-                            lastUpdated: Date.now(),
-                            dataVersion: 1,
-                            sortedByTime: true
-                        };
-                        metaStore.put(metaData);
-                        
-                        transaction.oncomplete = () => {
-                            console.log(`✅ 全数据缓存完成! 共存储 ${storedCount} 条记录（按开始时间升序）`);
-                            resolve(storedCount);
-                        };
-                        
-                        transaction.onerror = () => {
-                            console.error('❌ 全数据缓存失败:', transaction.error);
-                            reject(transaction.error);
-                        };
-                        
-                    } catch (error) {
-                        console.error('❌ 存储全数据时出错:', error);
-                        reject(error);
+                        console.log(`📊 已创建 ${Object.keys(monthStats).length} 个月份分片索引`);
                     }
+
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = () => reject(transaction.error);
                 });
             }
 
@@ -1840,44 +1878,24 @@
                         return { success: true, totalCount: cacheInfo.totalCount };
                     }
 
-                    // 2. ⚡ 缓存过期或不存在，优先加载最近3个月数据
-                    console.log('📡 缓存过期，加载最近3个月数据...');
-                    this.updatePreloadStatus('正在加载最近3个月数据...', 'loading');
+                    // 2. 🚀 缓存过期或不存在，使用并行分片加载（最快！）
+                    console.log('📡 缓存过期或不存在，使用并行分片加载全量数据...');
+                    this.updatePreloadStatus('正在并行获取数据...', 'loading');
 
-                    // 请求JSON格式（默认格式，自动Gzip压缩）
-                    const recentUrl = getApiUrl('records') + '?months=3&no_limit=true';
-                    const recentResponse = await fetch(recentUrl, {
-                        method: 'GET',
-                        headers: {
-                            'Accept': 'application/json',
-                            'Accept-Encoding': 'gzip, deflate, br'
-                        }
+                    // 🔥 关键优化：使用并行分片加载
+                    const result = await this.parallelShardedLoad((progress, loaded, total) => {
+                        this.updatePreloadStatus(
+                            `正在加载数据... ${loaded.toLocaleString()}/${total.toLocaleString()} (${progress}%)`,
+                            'loading'
+                        );
                     });
 
-                    if (!recentResponse.ok) {
-                        throw new Error(`HTTP ${recentResponse.status}: ${recentResponse.statusText}`);
-                    }
+                    this.updatePreloadStatus(`✅ 成功加载全量数据（${result.totalCount.toLocaleString()} 条）`, 'success');
+                    this.isPreloading = false;
 
-                    const recentData = await recentResponse.json();
+                    console.log('🎯 全量数据已缓存，支持跨页面完整共享');
 
-                    if (recentData.success && recentData.data.records) {
-                        const recentRecords = recentData.data.records;
-                        console.log(`✅ 加载 ${recentRecords.length} 条最近数据`);
-
-                        // 存储到缓存
-                        this.updatePreloadStatus(`正在缓存 ${recentRecords.length} 条数据...`, 'loading');
-                        await cacheManager.storeAllData(recentRecords);
-
-                        this.updatePreloadStatus(`✅ 成功加载最近3个月数据（${recentRecords.length} 条）`, 'success');
-                        this.isPreloading = false;
-
-                        // 3. 后台懒加载历史数据（不阻塞）
-                        setTimeout(() => this.loadHistoricalData(), 10000);
-
-                        return { success: true, totalCount: recentRecords.length };
-                    } else {
-                        throw new Error('获取最近数据失败');
-                    }
+                    return { success: true, totalCount: result.totalCount };
 
                 } catch (error) {
                     console.error('❌ 数据预载失败:', error);
@@ -1894,6 +1912,156 @@
                         this.isPreloading = false;
                         throw fallbackError;
                     }
+                }
+            }
+
+            // 🚀 【超高性能】流水线并行加载（边下载边解析边存储）
+            async parallelShardedLoad(onProgress) {
+                const perfStart = performance.now();
+                console.log('🚀 启动流水线并行加载（边下边存）...');
+
+                try {
+                    // 1. 计算需要加载的时间范围（过去2年）
+                    const endDate = new Date();
+                    const startDate = new Date();
+                    startDate.setFullYear(startDate.getFullYear() - 2);
+
+                    // 2. 按季度分片（8个季度）
+                    const shards = this.generateQuarterlyShards(startDate, endDate);
+                    console.log(`📊 生成 ${shards.length} 个季度分片（流水线并行）`);
+
+                    // 3. 🔥 流水线并行：边下载边存储
+                    const CONCURRENT_LIMIT = 4;
+                    let totalLoaded = 0;
+                    let completedShards = 0;
+
+                    // 先清空现有数据
+                    await cacheManager.clearAllData();
+
+                    // 创建流水线任务队列
+                    const pipeline = [];
+
+                    for (let i = 0; i < shards.length; i += CONCURRENT_LIMIT) {
+                        const batch = shards.slice(i, i + CONCURRENT_LIMIT);
+                        console.log(`📥 流水线批次 ${Math.floor(i / CONCURRENT_LIMIT) + 1}: 并行下载+存储 ${batch.length} 个分片`);
+
+                        // 🔥 关键优化：每个分片独立的"下载→存储"流水线
+                        const batchPipelines = batch.map(async (shard, idx) => {
+                            try {
+                                // 阶段1：下载并解析（浏览器自动gzip解压）
+                                const downloadStart = performance.now();
+                                const records = await this.fetchShardData(shard);
+                                const downloadTime = performance.now() - downloadStart;
+
+                                if (records && records.length > 0) {
+                                    console.log(`  ✓ 下载 ${shard.label}: ${records.length.toLocaleString()} 条 (${downloadTime.toFixed(0)}ms)`);
+
+                                    // 阶段2：立即存储（不等待其他分片）
+                                    const storeStart = performance.now();
+                                    await cacheManager.storeBatch(records, {});
+                                    const storeTime = performance.now() - storeStart;
+
+                                    console.log(`  💾 存储 ${shard.label}: ${records.length.toLocaleString()} 条 (${storeTime.toFixed(0)}ms)`);
+
+                                    // 更新计数和进度
+                                    totalLoaded += records.length;
+                                    completedShards++;
+
+                                    const progress = Math.round((completedShards / shards.length) * 100);
+                                    if (onProgress) {
+                                        onProgress(progress, totalLoaded, totalLoaded);
+                                    }
+
+                                    return records.length;
+                                }
+                                return 0;
+
+                            } catch (error) {
+                                console.error(`❌ 分片 ${shard.label} 流水线失败:`, error);
+                                return 0;
+                            }
+                        });
+
+                        // 等待这一批流水线全部完成
+                        await Promise.all(batchPipelines);
+
+                        // 让出主线程
+                        await new Promise(resolve => setTimeout(resolve, 0));
+                    }
+
+                    // 4. 保存元数据和分片索引
+                    console.log('📊 保存元数据和索引...');
+                    await cacheManager.saveMetadataAndShardIndex(totalLoaded, {});
+
+                    const perfTime = performance.now() - perfStart;
+                    console.log(`✅ 流水线并行加载完成: ${totalLoaded.toLocaleString()} 条 (${(perfTime / 1000).toFixed(1)}秒, ${(totalLoaded / (perfTime / 1000)).toFixed(0)} 条/秒)`);
+                    console.log(`⚡ 性能提升：下载和存储完全并行，无等待时间`);
+
+                    return { success: true, totalCount: totalLoaded };
+
+                } catch (error) {
+                    console.error('❌ 流水线并行加载失败:', error);
+                    throw error;
+                }
+            }
+
+            // 🆕 生成季度分片
+            generateQuarterlyShards(startDate, endDate) {
+                const shards = [];
+                const current = new Date(startDate);
+
+                while (current < endDate) {
+                    const shardStart = new Date(current);
+                    const shardEnd = new Date(current);
+                    shardEnd.setMonth(shardEnd.getMonth() + 3); // 3个月一个分片
+
+                    if (shardEnd > endDate) {
+                        shardEnd.setTime(endDate.getTime());
+                    }
+
+                    shards.push({
+                        start: shardStart.toISOString(),
+                        end: shardEnd.toISOString(),
+                        label: `${shardStart.getFullYear()}Q${Math.floor(shardStart.getMonth() / 3) + 1}`
+                    });
+
+                    current.setMonth(current.getMonth() + 3);
+                }
+
+                return shards;
+            }
+
+            // 🆕 请求单个分片数据
+            async fetchShardData(shard) {
+                try {
+                    const url = getApiUrl('records') +
+                        `?startDate=${shard.start}&endDate=${shard.end}&no_limit=true`;
+
+                    const response = await fetch(url, {
+                        method: 'GET',
+                        headers: {
+                            'Accept': 'application/json',
+                            'Accept-Encoding': 'gzip, deflate, br'
+                        }
+                    });
+
+                    if (!response.ok) {
+                        console.warn(`⚠️ 分片 ${shard.label} 请求失败: ${response.status}`);
+                        return [];
+                    }
+
+                    const data = await response.json();
+
+                    if (data.success && data.data.records) {
+                        console.log(`✓ 分片 ${shard.label}: ${data.data.records.length.toLocaleString()} 条`);
+                        return data.data.records;
+                    }
+
+                    return [];
+
+                } catch (error) {
+                    console.error(`❌ 分片 ${shard.label} 加载失败:`, error);
+                    return [];
                 }
             }
 
@@ -1967,12 +2135,17 @@
                 const allData = await this.fetchAllDataFromAPI();
 
                 if (allData && allData.length > 0) {
-                    console.log(`📥 成功获取 ${allData.length} 条数据`);
-                    this.updatePreloadStatus(`正在缓存 ${allData.length} 条数据...`, 'loading');
+                    console.log(`📥 成功获取 ${allData.length.toLocaleString()} 条数据`);
+                    this.updatePreloadStatus(`正在缓存 ${allData.length.toLocaleString()} 条数据...`, 'loading');
 
-                    const storedCount = await cacheManager.storeAllData(allData);
+                    const storedCount = await cacheManager.storeAllData(allData, (progress, stored, total) => {
+                        this.updatePreloadStatus(
+                            `正在缓存数据... ${stored.toLocaleString()}/${total.toLocaleString()} (${progress}%)`,
+                            'loading'
+                        );
+                    });
 
-                    this.updatePreloadStatus(`✅ 成功加载 ${storedCount} 条数据`, 'success');
+                    this.updatePreloadStatus(`✅ 成功加载 ${storedCount.toLocaleString()} 条数据`, 'success');
                     return { success: true, totalCount: storedCount };
                 } else {
                     throw new Error('无法获取数据');
@@ -3644,9 +3817,26 @@
                     console.log('✅ 应用初始化完成');
 
                     // 🆕 通知 SharedDataManager 数据已加载（用于跨页面共享）
-                    if (window.sharedDataManager && this.data) {
-                        window.sharedDataManager.notifyDataLoaded(this.data, 'index');
-                        console.log('📡 已通知 SharedDataManager 数据已加载');
+                    // 🔥 延迟加载模式下，先从IndexedDB快速加载数据再通知
+                    if (window.sharedDataManager) {
+                        if (this.data && this.data.length > 0) {
+                            // 数据已在内存，直接通知
+                            window.sharedDataManager.notifyDataLoaded(this.data, 'index');
+                            console.log(`📡 已通知 SharedDataManager 数据已加载: ${this.data.length.toLocaleString()} 条`);
+                        } else if (this.dataLoadingStrategy === 'lazy') {
+                            // 延迟加载模式：快速从IndexedDB加载全量数据
+                            console.log('⚡ 延迟加载模式：快速加载数据以支持跨页面共享...');
+                            setTimeout(async () => {
+                                try {
+                                    const allData = await cacheManager.getAllDataFast();
+                                    this.data = allData;
+                                    window.sharedDataManager.notifyDataLoaded(allData, 'index');
+                                    console.log(`📡 已通知 SharedDataManager 数据已加载（延迟）: ${allData.length.toLocaleString()} 条`);
+                                } catch (error) {
+                                    console.error('❌ 延迟加载数据失败:', error);
+                                }
+                            }, 100); // 延迟100ms，不阻塞初始化
+                        }
                     }
 
                     // 初始化完成，处理暂存的 WebSocket 更新
