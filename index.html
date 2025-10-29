@@ -2701,7 +2701,9 @@
                 if (startDate || endDate) {
                     buckets = buckets.filter(bucket => {
                         if (startDate && bucket.rangeStart < startDate) return false;
-                        if (endDate && bucket.rangeEnd >= endDate) return false;
+                        // 🔥 修复：应该用 > 而不是 >=，确保包含用户选择的结束日期
+                        // 例如：用户选10月27日，endDate=10月28日00:00，10月27日的bucket(rangeEnd=10月28日00:00)应该被包含
+                        if (endDate && bucket.rangeEnd > endDate) return false;
                         return true;
                     });
                 }
