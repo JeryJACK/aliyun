@@ -2079,6 +2079,13 @@
                     await this.reloadData();
                 };
 
+                // 🆕 监听数据请求（其他页面请求共享数据）
+                window.sharedDataManager.onDataRequest = () => {
+                    console.log('📨 收到其他页面的数据请求');
+                    // onDataRequest 回调只是通知，实际响应在 SharedDataManager 内部处理
+                    // 只有当本页面的 this.data 已加载时，SharedDataManager 才会响应
+                };
+
                 console.log('✅ 跨页面广播监听器已设置');
             }
 
@@ -2277,7 +2284,37 @@
                 const dbLoading = document.getElementById('dbLoading');
 
                 try {
-                    // 【修复】检查是否有新鲜的共享数据（完全不显示进度条）
+                    // 🆕 【优先级1】尝试从其他页面（index.html）获取内存中的数据
+                    if (window.sharedDataManager) {
+                        console.log('🔍 尝试从其他页面获取共享数据...');
+
+                        try {
+                            const response = await window.sharedDataManager.requestData('trend-analysis', 1000); // 1秒超时
+
+                            if (response && response.data && response.data.length > 0) {
+                                console.log(`⚡ 成功获取共享数据: ${response.data.length.toLocaleString()} 条 (来源: ${response.metadata.source})`);
+                                console.log('🎯 零加载模式：直接使用其他页面内存中的数据，无需访问 IndexedDB');
+
+                                this.rawData = response.data;
+                                this.data = response.data;
+
+                                // 直接进入初始化流程
+                                this.extractFilterValues();
+                                this.initializeFilters();
+
+                                document.getElementById('filterSection').classList.remove('hidden');
+                                document.getElementById('chartsSection').classList.remove('hidden');
+                                this.updateDebugInfo();
+
+                                console.log('✅ 页面初始化完成（零加载模式）');
+                                return; // 成功获取共享数据，直接返回
+                            }
+                        } catch (error) {
+                            console.log('⏱️ 共享数据请求超时或失败，降级到 IndexedDB 加载');
+                        }
+                    }
+
+                    // 🆕 【优先级2】检查是否有新鲜的 IndexedDB 缓存
                     const hasSharedData = window.sharedDataManager && window.sharedDataManager.isDataFresh();
 
                     if (hasSharedData) {
@@ -2322,12 +2359,32 @@
 
                     this.updateDebugInfo();
 
+                    // 🆕 通知 SharedDataManager 数据已加载，以便响应其他页面的请求
+                    if (window.sharedDataManager && this.data) {
+                        window.sharedDataManager.notifyDataLoaded(this.data, 'trend-analysis');
+                        console.log('📡 已通知 SharedDataManager 数据已加载');
+                    }
+
                     // 【修复】刷新页面时不恢复状态，始终从初始化状态开始
                     console.log('🔄 页面已重新加载，从初始化状态开始（不恢复旧状态）');
 
                 } catch (error) {
                     if (dbLoading) dbLoading.classList.add('hidden');
                     console.error('加载数据失败:', error);
+
+                    // 显示错误提示
+                    const errorAlert = document.getElementById('dbErrorAlert');
+                    const errorMsg = document.getElementById('dbErrorMsg');
+                    if (errorAlert && errorMsg) {
+                        errorMsg.textContent = '数据加载失败: ' + (error.message || '未知错误');
+                        errorAlert.classList.remove('hidden');
+                    }
+
+                    // 同时显示无数据提示，给用户提供返回首页的选项
+                    const noDataAlert = document.getElementById('noDataAlert');
+                    if (noDataAlert) {
+                        noDataAlert.classList.remove('hidden');
+                    }
                 }
             }
 
