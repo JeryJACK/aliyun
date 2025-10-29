@@ -1592,11 +1592,12 @@
             }
 
             /**
-             * 从IndexedDB加载DataStore桶结构
+             * 从IndexedDB加载DataStore桶结构（带版本校验）
              * @param {string} groupType - 分组类型
+             * @param {number} lastSyncTime - 最后同步时间（用于校验缓存有效性）
              * @returns {Object|null} - 桶数据或null
              */
-            async loadDataStoreBuckets(groupType) {
+            async loadDataStoreBuckets(groupType, lastSyncTime = null) {
                 if (!this.db) await this.init();
 
                 // 检查是否支持dataStoreCache
@@ -1615,6 +1616,13 @@
 
                         if (!cacheData) {
                             console.log(`⚠️ DataStore桶缓存不存在 (${groupType})`);
+                            resolve(null);
+                            return;
+                        }
+
+                        // 🆕 检查缓存是否在数据最后更新之前创建（说明缓存过期）
+                        if (lastSyncTime && cacheData.timestamp < lastSyncTime) {
+                            console.warn(`⚠️ DataStore桶缓存已过期 (${groupType}): 缓存时间 ${new Date(cacheData.timestamp).toLocaleString()} < 数据更新时间 ${new Date(lastSyncTime).toLocaleString()}`);
                             resolve(null);
                             return;
                         }
@@ -3069,6 +3077,8 @@
                 this.pendingUpdates = [];    // 暂存初始化期间的 WebSocket 推送
                 this.dataStoreReady = false; // 标记DataStore是否已构建完成
                 this.pendingStatsRequest = false; // 标记是否有待处理的统计请求
+                this.dataStoreCacheDirty = false; // 🆕 标记DataStore缓存是否需要更新
+                this.needFullDataStoreConstruction = false; // 🆕 标记是否需要加载全部数据构建DataStore
 
                 this.init();
             }
@@ -3261,7 +3271,8 @@
 
                     // 3. ⚡⚡ 尝试加载缓存的DataStore桶结构（最快！）
                     const groupType = this.groupBy ? this.groupBy.value : 'day';
-                    const cachedBuckets = await cacheManager.loadDataStoreBuckets(groupType);
+                    // 🆕 传入lastUpdated用于校验缓存是否过期
+                    const cachedBuckets = await cacheManager.loadDataStoreBuckets(groupType, cachedMeta.lastUpdated);
 
                     if (cachedBuckets && cachedBuckets.buckets) {
                         // ✅ 缓存命中！直接恢复DataStore
@@ -3322,6 +3333,9 @@
                         );
 
                         console.log(`✅ 分片数据加载完成: ${loadedCount} 条`);
+
+                        // 🆕 标记需要加载全部数据来构建完整DataStore
+                        this.needFullDataStoreConstruction = true;
                     }
 
                     if (this.data.length === 0) {
@@ -3423,21 +3437,97 @@
 
             // ⚡ 新增：后台构建DataStore（不阻塞UI）
             buildDataStoreInBackground(groupType) {
-                // 使用requestIdleCallback确保不阻塞UI
-                if (window.requestIdleCallback) {
-                    requestIdleCallback(() => {
-                        this.executeBuildDataStore(groupType);
-                    }, { timeout: 500 });  // 最多延迟500ms
-                } else {
-                    // 降级方案：使用setTimeout
+                // 🆕 检查是否需要加载全部数据
+                if (this.needFullDataStoreConstruction) {
+                    console.log('📦 检测到需要完整DataStore，后台加载全部数据...');
+                    // 延迟执行，确保页面已经可用
                     setTimeout(() => {
-                        this.executeBuildDataStore(groupType);
-                    }, 50);
+                        this.buildFullDataStoreInBackground(groupType);
+                    }, 1000);
+                } else {
+                    // 使用requestIdleCallback确保不阻塞UI
+                    if (window.requestIdleCallback) {
+                        requestIdleCallback(() => {
+                            this.executeBuildDataStore(groupType);
+                        }, { timeout: 500 });  // 最多延迟500ms
+                    } else {
+                        // 降级方案：使用setTimeout
+                        setTimeout(() => {
+                            this.executeBuildDataStore(groupType);
+                        }, 50);
+                    }
+                }
+            }
+
+            // 🆕 后台加载全部数据并构建完整DataStore
+            async buildFullDataStoreInBackground(groupType) {
+                try {
+                    console.log('🔄 开始后台加载全部数据（用于完整DataStore）...');
+                    const startTime = performance.now();
+
+                    // 临时存储全部数据
+                    const allData = [];
+                    let loadedCount = 0;
+
+                    // 使用queryAllDataFast加载全部数据（比游标快）
+                    await cacheManager.queryAllDataFast(
+                        (batch) => {
+                            loadedCount += batch.length;
+                            allData.push(...batch);
+
+                            // 每加载10000条显示一次进度
+                            if (loadedCount % 10000 === 0) {
+                                console.log(`  📦 已加载 ${loadedCount.toLocaleString()} 条...`);
+                            }
+                        },
+                        10000 // 使用较大的批次
+                    );
+
+                    const loadTime = performance.now() - startTime;
+                    console.log(`✅ 全部数据加载完成: ${allData.length.toLocaleString()} 条 (${loadTime.toFixed(0)}ms)`);
+
+                    // 使用全部数据构建DataStore
+                    const buildStartTime = performance.now();
+                    this.dataStore.loadData(allData, this.cycleEngine, groupType);
+                    const buildTime = performance.now() - buildStartTime;
+
+                    console.log(`✅ 完整DataStore构建完成: ${this.dataStore.buckets.size} 个桶 (${buildTime.toFixed(0)}ms)`);
+
+                    // 标记DataStore已就绪
+                    this.dataStoreReady = true;
+                    this.needFullDataStoreConstruction = false;
+
+                    // 🆕 保存完整的DataStore桶到缓存
+                    try {
+                        await cacheManager.saveDataStoreBuckets(
+                            groupType,
+                            this.dataStore.buckets,
+                            allData.length
+                        );
+                        this.dataStoreCacheDirty = false;
+                        console.log('💾 完整DataStore桶缓存已保存');
+                    } catch (error) {
+                        console.error('⚠️ DataStore桶缓存保存失败:', error);
+                    }
+
+                    // 🆕 可选：将历史数据合并到this.data（如果需要）
+                    // 注意：这会增加内存占用，如果不需要查看历史详情可以跳过
+                    // this.data = allData;
+
+                    // 如果用户在等待统计结果，现在可以计算了
+                    if (this.pendingStatsRequest) {
+                        console.log('🔄 完整DataStore就绪，执行待处理的统计请求');
+                        this.pendingStatsRequest = false;
+                        this.generateStatistics();
+                    }
+
+                } catch (error) {
+                    console.error('❌ 后台加载全部数据失败:', error);
                 }
             }
 
             // 执行DataStore构建
-            async executeBuildDataStore(groupType) {
+            async executeBuildDataStore(groupType, saveToCache = true) {
                 console.log('🔄 后台构建DataStore...');
                 const start = performance.now();
 
@@ -3450,15 +3540,18 @@
                 // 标记DataStore已就绪
                 this.dataStoreReady = true;
 
-                // 🆕 保存DataStore桶结构到缓存（不阻塞）
-                try {
-                    await cacheManager.saveDataStoreBuckets(
-                        groupType,
-                        this.dataStore.buckets,
-                        this.data.length
-                    );
-                } catch (error) {
-                    console.error('⚠️ DataStore桶缓存保存失败（非阻塞）:', error);
+                // 🆕 保存DataStore桶结构到缓存（仅当需要时）
+                if (saveToCache) {
+                    try {
+                        await cacheManager.saveDataStoreBuckets(
+                            groupType,
+                            this.dataStore.buckets,
+                            this.data.length
+                        );
+                        this.dataStoreCacheDirty = false; // 重置脏标记
+                    } catch (error) {
+                        console.error('⚠️ DataStore桶缓存保存失败（非阻塞）:', error);
+                    }
                 }
 
                 // 如果用户在等待统计结果，现在可以计算了
@@ -3509,34 +3602,60 @@
                     const affectedBuckets = new Set();
                     const recordKey = this.dataStore.getRecordKey(record);
 
+                    // 🆕 检查记录时间范围（判断是否在加载的数据范围内）
+                    const recordTime = new Date(record.start_time || record['开始时间']);
+                    const threeMonthsAgo = new Date();
+                    threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+                    const isInLoadedRange = recordTime >= threeMonthsAgo;
+
                     // 更新内存数据 this.data 和 DataStore
                     if (operation === 'insert' || operation === 'update') {
                         const index = this.data.findIndex(r => this.dataStore.getRecordKey(r) === recordKey);
+
                         if (index >= 0) {
-                            // 更新现有记录：updateRecord 会处理旧桶删除和新桶添加
+                            // ✅ 找到记录：更新
                             const bucketKeys = this.dataStore.updateRecord(record, this.cycleEngine, groupType, false);
                             bucketKeys.forEach(key => affectedBuckets.add(key));
 
                             this.data[index] = record;
                             console.log(`🔄 更新内存记录: ${recordKey}`);
-                        } else {
-                            // 新增记录
+
+                        } else if (isInLoadedRange) {
+                            // ✅ 未找到但在最近3个月范围内：新增记录
                             this.data.push(record);
                             const newBucketKey = this.dataStore.addRecordToBucket(record, this.cycleEngine, groupType);
                             if (newBucketKey) affectedBuckets.add(newBucketKey);
                             console.log(`➕ 新增内存记录: ${recordKey}`);
+
+                        } else {
+                            // ⚠️ 历史数据更新：只更新DataStore桶，不加载到内存
+                            console.warn(`⚠️ 历史数据更新 (${recordTime.toLocaleDateString()})，仅更新DataStore桶`);
+                            const newBucketKey = this.dataStore.addRecordToBucket(record, this.cycleEngine, groupType);
+                            if (newBucketKey) affectedBuckets.add(newBucketKey);
+
+                            // 🆕 标记桶缓存需要更新
+                            this.dataStoreCacheDirty = true;
                         }
 
                     } else if (operation === 'delete') {
                         const index = this.data.findIndex(r => this.dataStore.getRecordKey(r) === recordKey);
                         if (index >= 0) {
-                            // 从桶中删除
+                            // ✅ 找到记录：删除
                             const bucketKeys = this.dataStore.updateRecord(this.data[index], this.cycleEngine, groupType, true);
                             bucketKeys.forEach(key => affectedBuckets.add(key));
 
                             this.data.splice(index, 1);
                             console.log(`🗑️ 删除内存记录: ${recordKey}`);
+
+                        } else {
+                            // ⚠️ 历史数据删除：尝试从DataStore删除
+                            console.warn(`⚠️ 历史数据删除 (${recordKey})，尝试从DataStore移除`);
+                            // 注意：这里需要record的完整信息才能从桶中删除
+                            // 如果WebSocket只推送了ID，需要额外查询
                         }
+
+                        // 🆕 标记桶缓存需要更新
+                        this.dataStoreCacheDirty = true;
                     }
 
                     const perfTime = performance.now() - perfStart;
@@ -3581,16 +3700,20 @@
                 try {
                     this.refreshCacheBtn.disabled = true;
                     this.refreshCacheBtn.innerHTML = '<i class="fa fa-spinner fa-spin mr-1"></i>刷新中...';
-                    
+
                     console.log('🔄 用户手动刷新缓存...');
+
+                    // 🆕 清除DataStore桶缓存（因为数据将更新）
+                    await cacheManager.clearDataStoreBucketsCache();
+
                     const result = await dataPreloader.autoPreloadAllData();
-                    
+
                     if (result.success) {
                         showSuccess(`缓存刷新成功！更新了 ${result.totalCount} 条数据`);
                         // 重新加载数据到应用
                         await this.init();
                     }
-                    
+
                     this.updateCacheStatus();
                     
                 } catch (error) {
@@ -3607,12 +3730,16 @@
                 if (!confirm('确定要清空本地缓存吗？下次访问将重新从数据库加载数据。')) {
                     return;
                 }
-                
+
                 try {
                     this.clearCacheBtn.disabled = true;
                     this.clearCacheBtn.innerHTML = '<i class="fa fa-spinner fa-spin mr-1"></i>清空中...';
-                    
+
                     console.log('🧹 用户清空缓存...');
+
+                    // 🆕 同时清除DataStore桶缓存
+                    await cacheManager.clearDataStoreBucketsCache();
+
                     await cacheManager.clearAllDataCache();
                     
                     // 清空应用数据
