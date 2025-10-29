@@ -2162,6 +2162,71 @@
                 // 事件回调
                 this.onSyncUpdate = null; // 收到数据更新时的回调
                 this.onConnectionChange = null; // 连接状态变化回调
+
+                // 🆕 初始化页面可见性监听
+                this.initVisibilityListener();
+            }
+
+            // 🆕 初始化页面可见性监听（页面关闭时保存时间戳）
+            initVisibilityListener() {
+                // 监听页面可见性变化
+                document.addEventListener('visibilitychange', () => {
+                    if (document.hidden) {
+                        // 页面隐藏时保存时间戳
+                        this.savePageLeaveTime();
+                        console.log('👋 页面隐藏，保存离开时间戳');
+                    } else {
+                        // 页面重新可见时触发补同步
+                        console.log('👀 页面可见，检查是否需要补同步');
+                        this.checkAndPerformCatchup();
+                    }
+                });
+
+                // 监听页面卸载（浏览器关闭）
+                window.addEventListener('beforeunload', () => {
+                    this.savePageLeaveTime();
+                });
+
+                // 监听页面进入后台（iOS Safari）
+                window.addEventListener('pagehide', () => {
+                    this.savePageLeaveTime();
+                });
+            }
+
+            // 🆕 保存页面离开时间
+            savePageLeaveTime() {
+                try {
+                    const now = Date.now();
+                    localStorage.setItem('satellitePageLeaveTime', now.toString());
+                    console.log(`💾 保存页面离开时间: ${new Date(now).toLocaleString()}`);
+                } catch (error) {
+                    console.error('❌ 保存页面离开时间失败:', error);
+                }
+            }
+
+            // 🆕 检查并执行补同步
+            async checkAndPerformCatchup() {
+                try {
+                    const leaveTime = localStorage.getItem('satellitePageLeaveTime');
+                    if (!leaveTime) {
+                        console.log('ℹ️ 无页面离开时间记录');
+                        return;
+                    }
+
+                    const leaveTimestamp = parseInt(leaveTime);
+                    const now = Date.now();
+                    const awayDuration = now - leaveTimestamp;
+
+                    // 如果离开超过30秒，触发补同步
+                    if (awayDuration > 30000) {
+                        console.log(`🔄 页面离开 ${Math.round(awayDuration / 1000)} 秒，触发补同步`);
+                        await this.performCatchupSync();
+                    } else {
+                        console.log(`ℹ️ 页面离开时间短 (${Math.round(awayDuration / 1000)}秒)，无需补同步`);
+                    }
+                } catch (error) {
+                    console.error('❌ 检查补同步失败:', error);
+                }
             }
 
             // 获取 WebSocket URL（根据环境自动配置）
@@ -5680,13 +5745,35 @@
 
                 // ==================== WebSocket 实时同步初始化 ====================
 
+                // 🆕 页面打开时先检查是否需要补同步
+                console.log('🔍 检查是否需要补同步（页面打开时）...');
+                await wsSyncManager.checkAndPerformCatchup();
+
                 // 启动 WebSocket 实时同步
                 console.log('🔌 启动 WebSocket 实时同步...');
                 wsSyncManager.connect();
 
                 // 监听实时同步更新（WebSocket 推送）
                 wsSyncManager.onSyncUpdate = (update) => {
-                    const { operation, record } = update;
+                    const { operation, record, count } = update;
+
+                    // 🆕 处理补同步完成事件
+                    if (operation === 'catchup_sync') {
+                        console.log(`✅ 补同步完成: ${count} 条变更`);
+
+                        if (count > 0 && window.app) {
+                            // 触发页面重新加载数据
+                            console.log('🔄 补同步后重新加载数据...');
+                            showInfo(`已同步 ${count} 条新数据，正在刷新...`);
+
+                            // 延迟刷新，让用户看到提示
+                            setTimeout(() => {
+                                window.location.reload();
+                            }, 1500);
+                        }
+                        return;
+                    }
+
                     console.log(`📡 WebSocket 推送: ${operation}`, record?.id || record?.plan_id);
 
                     // 1. 更新内存数据并刷新图表
