@@ -1302,6 +1302,31 @@
                 });
             }
 
+            // 🆕 一次性获取所有数据（用于跨页面共享）
+            async getAllDataFast() {
+                if (!this.db) await this.init();
+
+                const perfStart = performance.now();
+
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction([this.allDataStoreName], 'readonly');
+                    const store = transaction.objectStore(this.allDataStoreName);
+                    const request = store.getAll();
+
+                    request.onsuccess = (event) => {
+                        const allData = event.target.result;
+                        const perfTime = performance.now() - perfStart;
+                        console.log(`✅ 一次性加载完成: ${allData.length.toLocaleString()} 条 (${perfTime.toFixed(0)}ms)`);
+                        resolve(allData);
+                    };
+
+                    request.onerror = () => {
+                        console.error('❌ 加载失败:', request.error);
+                        reject(request.error);
+                    };
+                });
+            }
+
             // ⚡ 【优化】快速加载数据（使用getAll一次性读取，冷启动性能提升5-10倍）
             async queryAllDataFast(onBatch, batchSize = 5000) {
                 if (!this.db) await this.init();
@@ -3494,16 +3519,17 @@
 
                         // 🚀 性能优化：延迟加载 this.data
                         // DataStore已包含所有统计信息，this.data仅用于实时更新和导出
-                        // 初始化时不加载，后台按需加载，大幅提升启动速度（从10-20秒降至<1秒）
+                        // 初始化时不加载，完全跳过，极致提升启动速度
                         this.data = []; // 初始化为空
                         this.dataLoadingStrategy = 'lazy'; // 标记为延迟加载模式
-                        console.log('⚡ 跳过 this.data 初始加载（延迟到需要时，启动速度提升10-20倍）');
+                        console.log('⚡ 跳过 this.data 加载（DataStore缓存已包含所有统计数据）');
+                        console.log('💡 仅在需要时（导出/实时更新）才按需加载原始数据');
 
                         // 🔥 记录已加载的数据范围（DataStore已有全部数据，但this.data为空）
                         this.loadedDataRange = null; // this.data为空，无范围
 
-                        // 🔥 标记需要后台加载全部数据
-                        this.needFullDataStoreConstruction = true;
+                        // 🔥 关键优化：DataStore缓存命中时，不需要后台加载！
+                        this.needFullDataStoreConstruction = false;
 
                     } else {
                         // ❌ 缓存未命中，使用快速初始化 + 后台构建DataStore
@@ -3596,10 +3622,13 @@
                         skeleton.classList.add('hidden');
                     }
 
-                    console.log('✅ 页面初始化完成（DataStore将在后台构建）');
-
-                    // ⚡ 后台构建DataStore（不阻塞UI）
-                    this.buildDataStoreInBackground(groupType);
+                    // ⚡ 条件性后台构建DataStore（仅在需要时）
+                    if (!this.dataStoreReady || this.needFullDataStoreConstruction) {
+                        console.log('✅ 页面初始化完成（DataStore将在后台构建）');
+                        this.buildDataStoreInBackground(groupType);
+                    } else {
+                        console.log('✅ 页面初始化完成（DataStore已就绪，跳过后台构建）');
+                    }
 
                     // 延迟更新缓存状态（避免IndexedDB事务冲突）
                     setTimeout(() => {
@@ -5808,10 +5837,37 @@
                     };
 
                     // 🆕 监听数据请求（其他页面请求共享数据）
-                    window.sharedDataManager.onDataRequest = () => {
-                        console.log('📨 收到其他页面的数据请求');
-                        // onDataRequest 回调只是通知，实际响应在 SharedDataManager 内部处理
-                        // SharedDataManager 会自动发送 this.data
+                    window.sharedDataManager.onDataRequest = async (requestId, source) => {
+                        console.log(`📨 收到来自 ${source} 的数据请求: ${requestId}`);
+
+                        // 如果 this.data 为空（延迟加载模式），快速从 IndexedDB 加载
+                        if (window.app && (!window.app.data || window.app.data.length === 0)) {
+                            console.log('⚡ this.data 为空，快速加载数据以响应请求...');
+
+                            try {
+                                // 快速加载所有数据（使用游标，比查询快）
+                                const loadStart = performance.now();
+                                const allData = await cacheManager.getAllDataFast();
+                                window.app.data = allData;
+
+                                const loadTime = performance.now() - loadStart;
+                                console.log(`✅ 数据加载完成: ${allData.length.toLocaleString()} 条 (${loadTime.toFixed(0)}ms)`);
+
+                                // 响应数据请求
+                                window.sharedDataManager.data = allData;
+                                window.sharedDataManager.broadcast({
+                                    type: 'data_response',
+                                    requestId: requestId,
+                                    data: allData,
+                                    metadata: window.sharedDataManager.metadata,
+                                    timestamp: Date.now()
+                                });
+                                console.log(`✅ 已响应数据请求 ${requestId}: ${allData.length} 条记录（按需加载）`);
+
+                            } catch (error) {
+                                console.error('❌ 按需加载数据失败:', error);
+                            }
+                        }
                     };
 
                     console.log('✅ SharedDataManager 跨页面同步已配置');
