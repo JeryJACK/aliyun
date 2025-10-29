@@ -17,6 +17,10 @@ class SharedDataManager {
         this.onBatchUpdate = null; // 批量更新回调 (records, count)
         this.onDataReload = null; // 数据重载回调
         this.onProgressiveLoad = null; // 渐进式加载回调 (newRecord) - 实时接收每条新数据
+        this.onDataRequest = null; // 🆕 数据请求回调 - 当其他页面请求数据时触发
+
+        // 🆕 数据请求等待队列
+        this.dataRequestPromises = new Map(); // requestId -> {resolve, reject, timeout}
 
         this.initBroadcastChannel();
         this.loadMetadata();
@@ -95,6 +99,36 @@ class SharedDataManager {
                 this.metadata.recordCount = message.count;
                 this.metadata.lastUpdated = Date.now();
                 this.saveMetadata();
+                break;
+
+            case 'request_data':
+                // 🆕 其他页面请求完整数据
+                console.log(`📨 收到数据请求: ${message.requestId} (来自: ${message.source})`);
+                if (this.onDataRequest && this.data) {
+                    // 响应数据请求
+                    this.broadcast({
+                        type: 'data_response',
+                        requestId: message.requestId,
+                        data: this.data,
+                        metadata: this.metadata,
+                        timestamp: Date.now()
+                    });
+                    console.log(`✅ 已响应数据请求 ${message.requestId}: ${this.data.length} 条记录`);
+                }
+                break;
+
+            case 'data_response':
+                // 🆕 收到数据响应
+                console.log(`📦 收到数据响应: ${message.requestId}, ${message.data?.length || 0} 条记录`);
+                const promise = this.dataRequestPromises.get(message.requestId);
+                if (promise) {
+                    clearTimeout(promise.timeout);
+                    promise.resolve({
+                        data: message.data,
+                        metadata: message.metadata
+                    });
+                    this.dataRequestPromises.delete(message.requestId);
+                }
                 break;
 
             default:
@@ -224,6 +258,38 @@ class SharedDataManager {
     requestMetadata() {
         this.broadcast({
             type: 'request_metadata'
+        });
+    }
+
+    // 🆕 请求完整数据（从其他页面）
+    // 返回 Promise，超时时间默认 3 秒
+    requestData(source = 'unknown', timeout = 3000) {
+        return new Promise((resolve, reject) => {
+            const requestId = `data_request_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+            console.log(`📤 请求数据: ${requestId} (来源: ${source})`);
+
+            // 设置超时
+            const timeoutId = setTimeout(() => {
+                this.dataRequestPromises.delete(requestId);
+                console.log(`⏱️ 数据请求超时: ${requestId}`);
+                reject(new Error('数据请求超时'));
+            }, timeout);
+
+            // 保存 Promise 处理器
+            this.dataRequestPromises.set(requestId, {
+                resolve,
+                reject,
+                timeout: timeoutId
+            });
+
+            // 广播数据请求
+            this.broadcast({
+                type: 'request_data',
+                requestId,
+                source,
+                timestamp: Date.now()
+            });
         });
     }
 
