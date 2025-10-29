@@ -1162,6 +1162,102 @@
                 });
             }
 
+            // 🆕 按日期范围查询数据（支持渐进式加载）
+            async queryDateRangeFromShards(startDate, endDate, onBatch, batchSize = 5000) {
+                if (!this.db) await this.init();
+
+                const perfStart = performance.now();
+
+                // 计算需要查询的月份范围
+                const monthKeys = [];
+                const current = new Date(startDate);
+                current.setDate(1); // 设置为月初
+
+                const end = new Date(endDate);
+                end.setDate(1);
+
+                while (current <= end) {
+                    const monthKey = this.getMonthKey(current);
+                    monthKeys.push(monthKey);
+                    current.setMonth(current.getMonth() + 1);
+                }
+
+                console.log(`🔍 查询日期范围 ${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()}`);
+                console.log(`   需要查询的月份: ${monthKeys.join(', ')}`);
+
+                return new Promise(async (resolve, reject) => {
+                    try {
+                        const transaction = this.db.transaction([this.allDataStoreName], 'readonly');
+                        const store = transaction.objectStore(this.allDataStoreName);
+
+                        // 检查是否有month_key索引
+                        if (!store.indexNames.contains('month_key')) {
+                            console.warn('⚠️ month_key索引不存在，降级到start_time查询');
+                            // 降级：使用start_time索引
+                            const index = store.index('start_time');
+                            const range = IDBKeyRange.bound(startDate, endDate);
+                            const request = index.getAll(range);
+
+                            request.onsuccess = (event) => {
+                                const data = event.target.result;
+                                if (onBatch) {
+                                    for (let i = 0; i < data.length; i += batchSize) {
+                                        const batch = data.slice(i, i + batchSize);
+                                        onBatch(batch, Math.min(i + batchSize, data.length));
+                                    }
+                                }
+                                resolve(data.length);
+                            };
+
+                            request.onerror = () => reject(request.error);
+                            return;
+                        }
+
+                        const index = store.index('month_key');
+                        let totalLoaded = 0;
+
+                        // 按月份顺序加载（从最新到最旧，优先显示最近数据）
+                        for (const monthKey of monthKeys.reverse()) {
+                            const range = IDBKeyRange.only(monthKey);
+                            const monthData = await new Promise((res, rej) => {
+                                const request = index.getAll(range);
+                                request.onsuccess = (event) => {
+                                    const data = event.target.result;
+                                    // 过滤数据，只保留在日期范围内的
+                                    const filtered = data.filter(record => {
+                                        const recordDate = new Date(record.start_time || record['开始时间']);
+                                        return recordDate >= startDate && recordDate <= endDate;
+                                    });
+                                    console.log(`  ✓ ${monthKey}: ${filtered.length} 条（过滤后）`);
+                                    res(filtered);
+                                };
+                                request.onerror = () => {
+                                    console.error(`  ✗ ${monthKey}: 查询失败`);
+                                    res([]);
+                                };
+                            });
+
+                            // 立即触发回调（边加载边处理）
+                            if (monthData.length > 0 && onBatch) {
+                                for (let i = 0; i < monthData.length; i += batchSize) {
+                                    const batch = monthData.slice(i, i + batchSize);
+                                    totalLoaded += batch.length;
+                                    onBatch(batch, totalLoaded);
+                                }
+                            }
+                        }
+
+                        const perfTime = performance.now() - perfStart;
+                        console.log(`✅ 日期范围查询完成: ${totalLoaded.toLocaleString()} 条 (${perfTime.toFixed(0)}ms)`);
+                        resolve(totalLoaded);
+
+                    } catch (error) {
+                        console.error('❌ 日期范围查询失败:', error);
+                        reject(error);
+                    }
+                });
+            }
+
             // ⚡ 【冷启动优化】只加载最近N个月的数据（使用start_time索引）- 降级方案
             async queryRecentData(months = 1, onBatch, batchSize = 5000) {
                 if (!this.db) await this.init();
@@ -3344,6 +3440,9 @@
 
                         console.log(`✅ 最近数据加载完成: ${loadedCount} 条 (DataStore已就绪)`);
 
+                        // 🔥 修复：标记需要后台加载全部数据（虽然DataStore已就绪，但this.data只有3个月）
+                        this.needFullDataStoreConstruction = true;
+
                     } else {
                         // ❌ 缓存未命中，使用分片加载 + 后台构建DataStore
                         console.log('⚠️ DataStore缓存未命中，使用分片加载');
@@ -3541,6 +3640,72 @@
                 }
             }
 
+            // 🆕 新增：按需优先加载指定日期范围的数据（支持渐进式渲染）
+            async loadDateRangeOnDemand(startDate, endDate, groupType, onProgress) {
+                try {
+                    console.log(`🎯 优先加载日期范围: ${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()}`);
+
+                    // 显示加载进度
+                    this.showBackgroundLoadingIndicator();
+
+                    // 检查该范围的数据是否已经在this.data中
+                    const existingData = this.data ? this.data.filter(record => {
+                        const recordDate = new Date(record.start_time || record['开始时间']);
+                        return recordDate >= startDate && recordDate <= endDate;
+                    }) : [];
+
+                    console.log(`   已加载数据: ${existingData.length} 条`);
+
+                    // 从缓存加载该日期范围的数据
+                    const rangeData = [];
+                    let loadedCount = 0;
+                    const targetStart = performance.now();
+
+                    await cacheManager.queryDateRangeFromShards(
+                        startDate,
+                        endDate,
+                        (batch) => {
+                            loadedCount += batch.length;
+                            rangeData.push(...batch);
+
+                            // 立即添加到DataStore
+                            for (const record of batch) {
+                                this.dataStore.addRecordToBucket(record, this.cycleEngine, groupType);
+                            }
+
+                            // 合并到this.data（去重）
+                            const existingIds = new Set(this.data.map(r => this.dataStore.getRecordKey(r)));
+                            const newRecords = batch.filter(r => !existingIds.has(this.dataStore.getRecordKey(r)));
+                            this.data.push(...newRecords);
+
+                            // 触发进度回调（边加载边渲染）
+                            if (onProgress) {
+                                onProgress(loadedCount, rangeData.length);
+                            }
+
+                            // 更新UI进度
+                            this.updateBackgroundLoadingIndicator(loadedCount, loadedCount, 100);
+                        },
+                        5000
+                    );
+
+                    const loadTime = performance.now() - targetStart;
+                    console.log(`✅ 目标范围数据加载完成: ${loadedCount.toLocaleString()} 条 (${loadTime.toFixed(0)}ms)`);
+
+                    // 隐藏进度条
+                    setTimeout(() => {
+                        const dbLoading = document.getElementById('dbLoading');
+                        if (dbLoading) dbLoading.classList.add('hidden');
+                    }, 1000);
+
+                    return loadedCount;
+
+                } catch (error) {
+                    console.error('❌ 按需加载失败:', error);
+                    throw error;
+                }
+            }
+
             // ⚡ 新增：后台构建DataStore（不阻塞UI）
             buildDataStoreInBackground(groupType) {
                 // 🆕 检查是否需要加载全部数据
@@ -3624,6 +3789,12 @@
 
                     const loadTime = performance.now() - startTime;
                     console.log(`✅ 全部数据加载完成: ${allData.length.toLocaleString()} 条 (${loadTime.toFixed(0)}ms)`);
+
+                    // 🔥 关键修复：更新 this.data 为包含所有历史数据的完整数据集
+                    // 这样当用户改变统计周期时，DataStore 可以用全部数据重新构建
+                    const oldDataLength = this.data ? this.data.length : 0;
+                    this.data = allData;
+                    console.log(`🔄 更新内存数据: ${oldDataLength.toLocaleString()} -> ${allData.length.toLocaleString()} 条`);
 
                     // 标记DataStore已就绪
                     this.dataStoreReady = true;
@@ -3763,11 +3934,19 @@
                     const affectedBuckets = new Set();
                     const recordKey = this.dataStore.getRecordKey(record);
 
-                    // 🆕 检查记录时间范围（判断是否在加载的数据范围内）
-                    const recordTime = new Date(record.start_time || record['开始时间']);
-                    const threeMonthsAgo = new Date();
-                    threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
-                    const isInLoadedRange = recordTime >= threeMonthsAgo;
+                    // 🔥 修复：检查记录时间范围（判断是否在加载的数据范围内）
+                    // 如果全部数据已加载完成，则接受所有时间范围的更新
+                    let isInLoadedRange = false;
+                    if (this.dataStoreReady && !this.needFullDataStoreConstruction) {
+                        // 全部历史数据已加载，接受所有时间范围
+                        isInLoadedRange = true;
+                    } else {
+                        // 仅加载了最近3个月，只接受该范围内的更新
+                        const recordTime = new Date(record.start_time || record['开始时间']);
+                        const threeMonthsAgo = new Date();
+                        threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+                        isInLoadedRange = recordTime >= threeMonthsAgo;
+                    }
 
                     // 更新内存数据 this.data 和 DataStore
                     if (operation === 'insert' || operation === 'update') {
@@ -3782,15 +3961,16 @@
                             console.log(`🔄 更新内存记录: ${recordKey}`);
 
                         } else if (isInLoadedRange) {
-                            // ✅ 未找到但在最近3个月范围内：新增记录
+                            // ✅ 未找到但在数据范围内：新增记录
                             this.data.push(record);
                             const newBucketKey = this.dataStore.addRecordToBucket(record, this.cycleEngine, groupType);
                             if (newBucketKey) affectedBuckets.add(newBucketKey);
                             console.log(`➕ 新增内存记录: ${recordKey}`);
 
                         } else {
-                            // ⚠️ 历史数据更新：只更新DataStore桶，不加载到内存
-                            console.warn(`⚠️ 历史数据更新 (${recordTime.toLocaleDateString()})，仅更新DataStore桶`);
+                            // ⚠️ 超出范围的数据更新：只更新DataStore桶，不加载到内存
+                            const recordTime = new Date(record.start_time || record['开始时间']);
+                            console.warn(`⚠️ 超出范围的数据更新 (${recordTime.toLocaleDateString()})，仅更新DataStore桶`);
                             const newBucketKey = this.dataStore.addRecordToBucket(record, this.cycleEngine, groupType);
                             if (newBucketKey) affectedBuckets.add(newBucketKey);
 
@@ -4014,6 +4194,92 @@
                     return;
                 }
 
+                const groupType = this.groupBy.value;
+                const range = this.computeDateRangeForGroup(groupType, this.startDate.value, this.endDate.value);
+                const startDate = range.startDate;
+                const endDate = range.endDate;
+
+                // 🎯 新增：检测用户选择的日期范围是否需要按需加载
+                if (startDate && endDate && !this.dataStoreReady) {
+                    // 检查该范围的数据是否已加载到this.data
+                    const existingDataInRange = this.data.filter(record => {
+                        const recordDate = new Date(record.start_time || record['开始时间']);
+                        return recordDate >= startDate && recordDate <= endDate;
+                    });
+
+                    // 估算需要的数据量（根据已加载的最近3个月数据密度）
+                    const threeMonthsAgo = new Date();
+                    threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+                    const recentData = this.data.filter(record => {
+                        const recordDate = new Date(record.start_time || record['开始时间']);
+                        return recordDate >= threeMonthsAgo;
+                    });
+
+                    const daysDiff = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
+                    const expectedDensity = recentData.length / 90; // 最近3个月的平均密度
+                    const expectedCount = Math.floor(expectedDensity * daysDiff);
+
+                    // 如果已加载数据明显少于预期（少于50%），则需要按需加载
+                    const needsOnDemandLoad = existingDataInRange.length < expectedCount * 0.5 && daysDiff > 90;
+
+                    if (needsOnDemandLoad) {
+                        console.log(`🎯 检测到需要按需加载: 目标范围 ${daysDiff} 天，已有 ${existingDataInRange.length} 条，预期约 ${expectedCount} 条`);
+
+                        // 显示加载状态
+                        this.chartLoadingState.classList.remove('hidden');
+                        this.chartEmptyState.classList.add('hidden');
+                        this.chartErrorState.classList.add('hidden');
+
+                        try {
+                            // 优先加载目标范围，并在加载过程中渐进式渲染
+                            let lastRenderTime = 0;
+                            await this.loadDateRangeOnDemand(
+                                startDate,
+                                endDate,
+                                groupType,
+                                (loadedCount, totalCount) => {
+                                    // 节流渲染：每2秒或每加载1万条渲染一次
+                                    const now = Date.now();
+                                    if (now - lastRenderTime > 2000 || loadedCount % 10000 === 0) {
+                                        console.log(`   🔄 渐进式渲染: ${loadedCount} / ${totalCount} 条`);
+                                        lastRenderTime = now;
+
+                                        // 使用当前已加载的数据生成图表
+                                        const stats = this.dataStore.getStats(this.taskAnalyzer, startDate, endDate);
+                                        this.updateChart(stats, groupType);
+                                        this.updateStatCards(stats);
+                                        this.updateDetailTable(stats);
+                                    }
+                                }
+                            );
+
+                            // 最终渲染
+                            console.log('✅ 目标范围加载完成，最终渲染');
+                            const stats = this.dataStore.getStats(this.taskAnalyzer, startDate, endDate);
+                            this.updateChart(stats, groupType);
+                            this.updateStatCards(stats);
+                            this.updateDetailTable(stats);
+                            this.saveStatisticsResult(stats, groupType);
+
+                            this.chartLoadingState.classList.add('hidden');
+
+                            // 继续后台加载剩余的历史数据
+                            if (!this.isBackgroundLoading) {
+                                console.log('🔄 继续后台加载剩余历史数据...');
+                                setTimeout(() => {
+                                    this.buildFullDataStoreInBackground(groupType);
+                                }, 1000);
+                            }
+
+                            return;
+
+                        } catch (error) {
+                            console.error('❌ 按需加载失败:', error);
+                            // 继续使用已有数据生成统计
+                        }
+                    }
+                }
+
                 // ⚡ 允许使用部分数据生成图表（即使DataStore未完全就绪）
                 if (!this.dataStoreReady && this.dataStore.buckets.size === 0) {
                     // DataStore完全为空，需要等待
@@ -4041,11 +4307,7 @@
                 try {
                     console.log('📊 开始生成统计结果（基于本地缓存数据）...');
 
-                    const groupType = this.groupBy.value;
-                    const range = this.computeDateRangeForGroup(groupType, this.startDate.value, this.endDate.value);
-                    const startDate = range.startDate;
-                    const endDate = range.endDate;
-
+                    // groupType, startDate, endDate 已在方法开始时定义
                     let stats;
 
                     // 【优化】优先使用 DataStore 桶查询（O(n) -> O(1)）
