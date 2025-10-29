@@ -131,9 +131,21 @@
     <!-- 主内容区 -->
     <main class="container mx-auto px-4 py-6">
         <!-- 数据加载状态 -->
-        <div id="dbLoading" class="mb-6 p-3 bg-primary/10 text-primary rounded-lg flex items-center hidden">
-            <i class="fa fa-spinner fa-spin mr-2"></i>
-            <span>正在从 Postgres 数据库加载数据...</span>
+        <div id="dbLoading" class="mb-6 p-3 bg-primary/10 text-primary rounded-lg hidden">
+            <div class="flex items-center mb-2">
+                <i class="fa fa-spinner fa-spin mr-2"></i>
+                <span id="dbLoadingText">正在从 Postgres 数据库加载数据...</span>
+            </div>
+            <!-- 进度条 -->
+            <div id="dbLoadingProgressBar" class="hidden">
+                <div class="w-full bg-gray-200 rounded-full h-2.5 mb-1">
+                    <div id="dbLoadingProgressFill" class="bg-primary h-2.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+                </div>
+                <div class="flex justify-between text-xs text-gray-600">
+                    <span id="dbLoadingProgressText">0%</span>
+                    <span id="dbLoadingCountText">0 / 0</span>
+                </div>
+            </div>
         </div>
 
         <div id="noDataAlert" class="bg-warning/10 text-warning p-4 rounded-lg mb-6 hidden">
@@ -1996,14 +2008,21 @@
             // 更新预载状态显示
             updatePreloadStatus(message, type = 'info') {
                 const dbLoading = document.getElementById('dbLoading');
+                const dbLoadingText = document.getElementById('dbLoadingText');
+                const dbLoadingProgressBar = document.getElementById('dbLoadingProgressBar');
+
                 if (dbLoading) {
-                    const span = dbLoading.querySelector('span');
-                    if (span) {
-                        span.textContent = message;
+                    if (dbLoadingText) {
+                        dbLoadingText.textContent = message;
                     }
-                    
+
+                    // 隐藏进度条（预载状态不需要进度条）
+                    if (dbLoadingProgressBar) {
+                        dbLoadingProgressBar.classList.add('hidden');
+                    }
+
                     // 根据类型更新样式
-                    dbLoading.className = 'mb-6 p-3 rounded-lg flex items-center';
+                    dbLoading.className = 'mb-6 p-3 rounded-lg';
                     switch (type) {
                         case 'loading':
                             dbLoading.classList.add('bg-primary/10', 'text-primary');
@@ -2996,6 +3015,24 @@
             }, 3000);
         }
 
+        function showWarning(msg) {
+            console.warn(msg);
+            // 创建临时警告提示
+            const warningEl = document.createElement('div');
+            warningEl.className = 'fixed top-4 right-4 bg-warning text-white px-4 py-2 rounded-lg shadow-lg z-50 transform transition-all duration-300 translate-x-full';
+            warningEl.innerHTML = `<i class="fa fa-info-circle mr-2"></i>${msg}`;
+            document.body.appendChild(warningEl);
+
+            // 动画显示
+            setTimeout(() => warningEl.classList.remove('translate-x-full'), 100);
+
+            // 5秒后移除
+            setTimeout(() => {
+                warningEl.classList.add('translate-x-full');
+                setTimeout(() => document.body.removeChild(warningEl), 300);
+            }, 5000);
+        }
+
         // 下载工具函数
         function downloadFile(filename, content, mimeType = 'application/octet-stream') {
             const blob = new Blob([content], { type: mimeType });
@@ -3079,6 +3116,9 @@
                 this.pendingStatsRequest = false; // 标记是否有待处理的统计请求
                 this.dataStoreCacheDirty = false; // 🆕 标记DataStore缓存是否需要更新
                 this.needFullDataStoreConstruction = false; // 🆕 标记是否需要加载全部数据构建DataStore
+                this.backgroundLoadingProgress = 0; // 🆕 后台加载进度（0-100）
+                this.isBackgroundLoading = false; // 🆕 标记是否正在后台加载
+                this.backgroundLoadTarget = 0; // 🆕 后台加载目标数量
 
                 this.init();
             }
@@ -3435,6 +3475,72 @@
                 }
             }
 
+            // 🆕 新增：显示后台加载进度指示器
+            showBackgroundLoadingIndicator() {
+                const dbLoading = document.getElementById('dbLoading');
+                const dbLoadingText = document.getElementById('dbLoadingText');
+                const dbLoadingProgressBar = document.getElementById('dbLoadingProgressBar');
+
+                if (dbLoading && dbLoadingText) {
+                    dbLoading.classList.remove('hidden');
+                    dbLoadingText.textContent = '正在后台加载历史数据...';
+
+                    if (dbLoadingProgressBar) {
+                        dbLoadingProgressBar.classList.remove('hidden');
+                    }
+                }
+            }
+
+            // 🆕 新增：更新后台加载进度指示器
+            updateBackgroundLoadingIndicator(loadedCount, targetCount, progressPercent) {
+                const dbLoading = document.getElementById('dbLoading');
+                const dbLoadingText = document.getElementById('dbLoadingText');
+                const dbLoadingProgressBar = document.getElementById('dbLoadingProgressBar');
+                const dbLoadingProgressFill = document.getElementById('dbLoadingProgressFill');
+                const dbLoadingProgressText = document.getElementById('dbLoadingProgressText');
+                const dbLoadingCountText = document.getElementById('dbLoadingCountText');
+
+                if (!dbLoading || !dbLoadingText) return;
+
+                // 显示加载状态
+                dbLoading.classList.remove('hidden');
+
+                // 更新加载文本
+                dbLoadingText.textContent = '正在后台加载历史数据...';
+
+                // 显示进度条
+                if (dbLoadingProgressBar) {
+                    dbLoadingProgressBar.classList.remove('hidden');
+                }
+
+                // 更新进度条
+                if (dbLoadingProgressFill) {
+                    dbLoadingProgressFill.style.width = `${progressPercent}%`;
+                }
+
+                // 更新进度文本
+                if (dbLoadingProgressText) {
+                    dbLoadingProgressText.textContent = `${progressPercent}%`;
+                }
+
+                // 更新计数文本
+                if (dbLoadingCountText) {
+                    dbLoadingCountText.textContent = `${loadedCount.toLocaleString()} / ${targetCount.toLocaleString()}`;
+                }
+
+                // 如果完成，3秒后隐藏
+                if (progressPercent >= 100) {
+                    setTimeout(() => {
+                        if (dbLoading) {
+                            dbLoading.classList.add('hidden');
+                        }
+                        if (dbLoadingProgressBar) {
+                            dbLoadingProgressBar.classList.add('hidden');
+                        }
+                    }, 3000);
+                }
+            }
+
             // ⚡ 新增：后台构建DataStore（不阻塞UI）
             buildDataStoreInBackground(groupType) {
                 // 🆕 检查是否需要加载全部数据
@@ -3459,43 +3565,73 @@
                 }
             }
 
-            // 🆕 后台加载全部数据并构建完整DataStore
+            // 🆕 渐进式后台加载全部数据并构建完整DataStore
             async buildFullDataStoreInBackground(groupType) {
                 try {
-                    console.log('🔄 开始后台加载全部数据（用于完整DataStore）...');
+                    console.log('🔄 开始渐进式后台加载全部数据（用于完整DataStore）...');
                     const startTime = performance.now();
+
+                    // 标记后台加载状态
+                    this.isBackgroundLoading = true;
+                    this.backgroundLoadingProgress = 0;
+
+                    // 获取总数据量（用于计算进度）
+                    const metadata = await cacheManager.getMetadataFast();
+                    this.backgroundLoadTarget = metadata?.actualCount || 0;
+                    console.log(`📊 目标加载: ${this.backgroundLoadTarget.toLocaleString()} 条`);
+
+                    // 🆕 显示进度指示器
+                    this.showBackgroundLoadingIndicator();
 
                     // 临时存储全部数据
                     const allData = [];
                     let loadedCount = 0;
+                    let lastUpdateTime = Date.now();
 
-                    // 使用queryAllDataFast加载全部数据（比游标快）
+                    // ⚡ 渐进式加载：每批数据立即添加到DataStore
                     await cacheManager.queryAllDataFast(
                         (batch) => {
                             loadedCount += batch.length;
                             allData.push(...batch);
 
-                            // 每加载10000条显示一次进度
-                            if (loadedCount % 10000 === 0) {
-                                console.log(`  📦 已加载 ${loadedCount.toLocaleString()} 条...`);
+                            // 🆕 立即将批次数据添加到DataStore（边加载边构建）
+                            for (const record of batch) {
+                                this.dataStore.addRecordToBucket(record, this.cycleEngine, groupType);
+                            }
+
+                            // 更新进度
+                            if (this.backgroundLoadTarget > 0) {
+                                this.backgroundLoadingProgress = Math.round((loadedCount / this.backgroundLoadTarget) * 100);
+                            }
+
+                            // 🆕 更新进度指示器UI
+                            this.updateBackgroundLoadingIndicator(loadedCount, this.backgroundLoadTarget, this.backgroundLoadingProgress);
+
+                            // 每加载5000条或每2秒显示一次进度
+                            const now = Date.now();
+                            if (loadedCount % 5000 === 0 || now - lastUpdateTime > 2000) {
+                                console.log(`  📦 已加载 ${loadedCount.toLocaleString()} / ${this.backgroundLoadTarget.toLocaleString()} 条 (${this.backgroundLoadingProgress}%)`);
+                                lastUpdateTime = now;
+
+                                // 🆕 如果用户正在查看图表，增量更新
+                                if (this.chart && this.chart.data) {
+                                    this.refreshChartIfNeeded();
+                                }
                             }
                         },
-                        10000 // 使用较大的批次
+                        5000 // 较小的批次，更频繁的增量更新
                     );
 
                     const loadTime = performance.now() - startTime;
                     console.log(`✅ 全部数据加载完成: ${allData.length.toLocaleString()} 条 (${loadTime.toFixed(0)}ms)`);
 
-                    // 使用全部数据构建DataStore
-                    const buildStartTime = performance.now();
-                    this.dataStore.loadData(allData, this.cycleEngine, groupType);
-                    const buildTime = performance.now() - buildStartTime;
-
-                    console.log(`✅ 完整DataStore构建完成: ${this.dataStore.buckets.size} 个桶 (${buildTime.toFixed(0)}ms)`);
-
                     // 标记DataStore已就绪
                     this.dataStoreReady = true;
                     this.needFullDataStoreConstruction = false;
+                    this.isBackgroundLoading = false;
+                    this.backgroundLoadingProgress = 100;
+
+                    console.log(`✅ 完整DataStore构建完成: ${this.dataStore.buckets.size} 个桶`);
 
                     // 🆕 保存完整的DataStore桶到缓存
                     try {
@@ -3510,9 +3646,11 @@
                         console.error('⚠️ DataStore桶缓存保存失败:', error);
                     }
 
-                    // 🆕 可选：将历史数据合并到this.data（如果需要）
-                    // 注意：这会增加内存占用，如果不需要查看历史详情可以跳过
-                    // this.data = allData;
+                    // 🆕 后台加载完成后，如果图表已显示，最后刷新一次
+                    if (this.chart && this.chart.data) {
+                        console.log('🔄 后台加载完成，最终刷新图表');
+                        this.generateStatistics();
+                    }
 
                     // 如果用户在等待统计结果，现在可以计算了
                     if (this.pendingStatsRequest) {
@@ -3523,6 +3661,29 @@
 
                 } catch (error) {
                     console.error('❌ 后台加载全部数据失败:', error);
+                    this.isBackgroundLoading = false;
+                }
+            }
+
+            // 🆕 智能刷新图表（节流，避免频繁刷新）
+            refreshChartIfNeeded() {
+                // 使用节流，避免过于频繁的刷新
+                if (this._lastChartRefresh && Date.now() - this._lastChartRefresh < 3000) {
+                    return; // 3秒内不重复刷新
+                }
+
+                this._lastChartRefresh = Date.now();
+                console.log('🔄 增量刷新图表（后台数据已更新）');
+
+                // 静默刷新，不显示loading
+                const groupType = this.groupBy.value;
+                const range = this.computeDateRangeForGroup(groupType, this.startDate.value, this.endDate.value);
+
+                if (this.dataStore && this.dataStore.buckets.size > 0) {
+                    const stats = this.dataStore.getStats(this.taskAnalyzer, range.startDate, range.endDate);
+                    this.updateChart(stats, groupType);
+                    this.updateStatCards(stats);
+                    this.updateDetailTable(stats);
                 }
             }
 
@@ -3853,9 +4014,10 @@
                     return;
                 }
 
-                // ⚡ 检查DataStore是否就绪
-                if (!this.dataStoreReady) {
-                    console.log('⏳ DataStore正在构建中，统计请求已排队...');
+                // ⚡ 允许使用部分数据生成图表（即使DataStore未完全就绪）
+                if (!this.dataStoreReady && this.dataStore.buckets.size === 0) {
+                    // DataStore完全为空，需要等待
+                    console.log('⏳ DataStore正在初始化，统计请求已排队...');
                     this.pendingStatsRequest = true;
 
                     // 显示加载状态
@@ -3863,6 +4025,12 @@
                     this.chartEmptyState.classList.add('hidden');
                     this.chartErrorState.classList.add('hidden');
                     return;
+                }
+
+                // 🆕 如果DataStore有数据但未完全就绪，显示部分数据警告
+                if (!this.dataStoreReady && this.isBackgroundLoading) {
+                    console.warn(`⚠️ 使用部分数据生成图表 (${this.backgroundLoadingProgress}% 已加载)`);
+                    showWarning(`正在后台加载历史数据 (${this.backgroundLoadingProgress}%)，图表将显示部分数据并自动更新`);
                 }
 
                 this.chartLoadingState.classList.remove('hidden');
@@ -5275,5 +5443,20 @@
             };
         });
     </script>
+
+    <!-- 🆕 后台加载进度指示器 -->
+    <div id="background-loading-indicator" class="hidden fixed bottom-4 right-4 bg-white rounded-lg shadow-xl border border-gray-200 p-4 z-50 max-w-sm">
+        <div class="flex items-center mb-2">
+            <i class="fa fa-spinner fa-spin text-primary mr-2"></i>
+            <span class="font-medium text-gray-700">正在加载历史数据</span>
+        </div>
+        <div class="w-full bg-gray-200 rounded-full h-2 mb-1">
+            <div id="background-loading-progress-bar" class="bg-primary h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+        </div>
+        <div class="text-xs text-gray-500">
+            <span id="background-loading-progress-text">0%</span> ·
+            <span id="background-loading-count-text">0 / 0</span>
+        </div>
+    </div>
 </body>
 </html>
