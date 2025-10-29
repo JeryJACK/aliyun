@@ -2677,6 +2677,8 @@
                 // 初始化状态标志和缓冲队列
                 this.isInitializing = true;  // 标记是否正在初始化
                 this.pendingUpdates = [];    // 暂存初始化期间的 WebSocket 推送
+                this.dataStoreReady = false; // 标记DataStore是否已构建完成
+                this.pendingStatsRequest = false; // 标记是否有待处理的统计请求
 
                 this.init();
             }
@@ -2766,11 +2768,12 @@
                 if (this.endDate) this.endDate.addEventListener('change', () => this.savePageState());
                 if (this.groupBy) this.groupBy.addEventListener('change', () => {
                     this.savePageState();
-                    // 【优化】统计周期改变时，重新加载 DataStore 桶
+                    // ⚡ 统计周期改变时，在后台重新构建 DataStore
                     if (this.data && this.dataStore) {
                         const newGroupType = this.groupBy.value;
-                        console.log(`🔄 统计周期已改变为 ${newGroupType}，重新加载 DataStore...`);
-                        this.dataStore.loadData(this.data, this.cycleEngine, newGroupType);
+                        console.log(`🔄 统计周期已改变为 ${newGroupType}，后台重新构建 DataStore...`);
+                        this.dataStoreReady = false;  // 标记为未就绪
+                        this.buildDataStoreInBackground(newGroupType);
                     }
                 });
                 if (this.dayStart) {
@@ -2889,11 +2892,13 @@
                                 progressText.textContent = `正在加载数据... ${progress}%`;
                             }
 
-                            // 追加数据到内存和 DataStore
+                            // ⚡ 只追加数据到内存（极快，<1ms）
                             this.data.push(...batch);
-                            this.appendDataBatch(batch, groupType);
+
+                            // ❌ 移除实时DataStore构建（改为后台构建）
+                            // this.appendDataBatch(batch, groupType);
                         },
-                        1000  // ⚡ 批次大小从 5000 改为 1000，提升流畅度
+                        5000  // ⚡ 批次改为5000，减少回调次数（1000→5000）
                     );
 
                     console.log(`✅ 数据加载完成: ${loadedCount} 条`);
@@ -2927,10 +2932,15 @@
                         }
                     }
 
-                    // 6. 移除骨架屏
+                    // 6. 移除骨架屏（数据已加载，页面可用）
                     if (skeleton) {
                         skeleton.classList.add('hidden');
                     }
+
+                    console.log('✅ 页面初始化完成（DataStore将在后台构建）');
+
+                    // ⚡ 后台构建DataStore（不阻塞UI）
+                    this.buildDataStoreInBackground(groupType);
 
                     // 延迟更新缓存状态（避免IndexedDB事务冲突）
                     setTimeout(() => {
@@ -2987,6 +2997,43 @@
                 console.log(`📊 缓存元数据: ${metadata.actualCount} 条记录`);
                 if (metadata.minDate && metadata.maxDate) {
                     console.log(`📅 数据范围: ${metadata.minDate.toLocaleDateString()} - ${metadata.maxDate.toLocaleDateString()}`);
+                }
+            }
+
+            // ⚡ 新增：后台构建DataStore（不阻塞UI）
+            buildDataStoreInBackground(groupType) {
+                // 使用requestIdleCallback确保不阻塞UI
+                if (window.requestIdleCallback) {
+                    requestIdleCallback(() => {
+                        this.executeBuildDataStore(groupType);
+                    }, { timeout: 500 });  // 最多延迟500ms
+                } else {
+                    // 降级方案：使用setTimeout
+                    setTimeout(() => {
+                        this.executeBuildDataStore(groupType);
+                    }, 50);
+                }
+            }
+
+            // 执行DataStore构建
+            executeBuildDataStore(groupType) {
+                console.log('🔄 后台构建DataStore...');
+                const start = performance.now();
+
+                // 一次性构建DataStore（比分批快）
+                this.dataStore.loadData(this.data, this.cycleEngine, groupType);
+
+                const buildTime = performance.now() - start;
+                console.log(`✅ DataStore构建完成: ${this.dataStore.buckets.size} 个桶 (${buildTime.toFixed(0)}ms)`);
+
+                // 标记DataStore已就绪
+                this.dataStoreReady = true;
+
+                // 如果用户在等待统计结果，现在可以计算了
+                if (this.pendingStatsRequest) {
+                    console.log('🔄 DataStore就绪，执行待处理的统计请求');
+                    this.pendingStatsRequest = false;
+                    this.generateStatistics();
                 }
             }
 
@@ -3244,6 +3291,18 @@
             async generateStatistics() {
                 if (!this.data) {
                     showError('当前没有数据，请先导入数据后重试');
+                    return;
+                }
+
+                // ⚡ 检查DataStore是否就绪
+                if (!this.dataStoreReady) {
+                    console.log('⏳ DataStore正在构建中，统计请求已排队...');
+                    this.pendingStatsRequest = true;
+
+                    // 显示加载状态
+                    this.chartLoadingState.classList.remove('hidden');
+                    this.chartEmptyState.classList.add('hidden');
+                    this.chartErrorState.classList.add('hidden');
                     return;
                 }
 
