@@ -3614,6 +3614,12 @@
 
                     console.log('✅ 应用初始化完成');
 
+                    // 🆕 通知 SharedDataManager 数据已加载（用于跨页面共享）
+                    if (window.sharedDataManager && this.data) {
+                        window.sharedDataManager.notifyDataLoaded(this.data, 'index');
+                        console.log('📡 已通知 SharedDataManager 数据已加载');
+                    }
+
                     // 初始化完成，处理暂存的 WebSocket 更新
                     this.isInitializing = false;
                     if (this.pendingUpdates.length > 0) {
@@ -5800,6 +5806,14 @@
                             window.app.handleRealtimeUpdate(operation, record);
                         }
                     };
+
+                    // 🆕 监听数据请求（其他页面请求共享数据）
+                    window.sharedDataManager.onDataRequest = () => {
+                        console.log('📨 收到其他页面的数据请求');
+                        // onDataRequest 回调只是通知，实际响应在 SharedDataManager 内部处理
+                        // SharedDataManager 会自动发送 this.data
+                    };
+
                     console.log('✅ SharedDataManager 跨页面同步已配置');
                 }
 
