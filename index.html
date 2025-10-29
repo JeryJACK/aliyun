@@ -1163,6 +1163,69 @@
                 });
             }
 
+            // 🆕 追加数据（用于后台加载历史数据）
+            async appendData(newRecords) {
+                if (!this.db) await this.init();
+                if (!newRecords || newRecords.length === 0) return 0;
+
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction([this.allDataStoreName, this.metaStoreName], 'readwrite');
+                    const allDataStore = transaction.objectStore(this.allDataStoreName);
+                    const metaStore = transaction.objectStore(this.metaStoreName);
+
+                    let appendedCount = 0;
+
+                    // 批量添加新记录
+                    for (const record of newRecords) {
+                        const standardRecord = {
+                            id: record.plan_id || record['计划ID'] || record.id || `record_${Date.now()}_${appendedCount}`,
+                            start_time: record.start_time || record['开始时间'],
+                            task_result: record.task_result || record['任务结果状态'],
+                            task_type: record.task_type || record['任务类型'],
+                            customer: record.customer || record['所属客户'],
+                            satellite_name: record.satellite_name || record['卫星名称'],
+                            station_name: record.station_name || record['测站名称'],
+                            station_id: record.station_id || record['测站ID'],
+                            ...record
+                        };
+
+                        if (standardRecord.start_time) {
+                            standardRecord.timestamp = this.parseTimeToTimestamp(standardRecord.start_time);
+                        }
+
+                        const putRequest = allDataStore.put(standardRecord);
+                        putRequest.onsuccess = () => appendedCount++;
+                    }
+
+                    transaction.oncomplete = () => {
+                        // 更新元数据
+                        const metaTransaction = this.db.transaction([this.metaStoreName], 'readwrite');
+                        const ms = metaTransaction.objectStore(this.metaStoreName);
+                        const metaRequest = ms.get('allDataMeta');
+
+                        metaRequest.onsuccess = () => {
+                            const meta = metaRequest.result || {
+                                key: 'allDataMeta',
+                                totalCount: 0,
+                                lastUpdated: Date.now()
+                            };
+
+                            meta.totalCount = (meta.totalCount || 0) + appendedCount;
+                            meta.lastUpdated = Date.now();
+                            ms.put(meta);
+                        };
+
+                        console.log(`✅ 追加数据完成: ${appendedCount}/${newRecords.length} 条记录`);
+                        resolve(appendedCount);
+                    };
+
+                    transaction.onerror = () => {
+                        console.error('❌ 追加数据失败:', transaction.error);
+                        reject(transaction.error);
+                    };
+                });
+            }
+
             // 删除单条数据
             async deleteRecord(recordId) {
                 if (!this.db) await this.init();
@@ -1223,57 +1286,164 @@
                 this.preloadProgress = 0;
             }
 
-            // 页面加载时自动预载所有数据（优化版本）
+            // 页面加载时自动预载所有数据（优化版本 - 懒加载）
             async autoPreloadAllData() {
                 try {
                     console.log('🚀 页面加载：开始智能预载数据...');
                     this.isPreloading = true;
                     this.updatePreloadStatus('正在检查本地缓存...', 'loading');
 
-                    // 首先检查本地缓存
+                    // 1. 首先检查本地缓存
                     const cacheInfo = await cacheManager.checkAllDataCache();
-                    
-                    if (cacheInfo && cacheInfo.totalCount > 0) {
-                        // 如果有缓存，立即使用
-                        console.log(`💾 发现本地缓存 ${cacheInfo.totalCount} 条数据，立即可用！`);
+                    const cacheAge = cacheInfo ? Date.now() - cacheInfo.lastUpdated : Infinity;
+
+                    // 如果缓存新鲜（<30分钟），直接使用
+                    if (cacheAge < 30 * 60 * 1000) {
+                        console.log(`✅ 使用缓存数据（${Math.round(cacheAge / 1000)}秒前）`);
                         this.updatePreloadStatus(`✅ 从本地缓存加载 ${cacheInfo.totalCount} 条数据（秒速加载）`, 'success');
                         this.isPreloading = false;
-                        
-                        // 后台静默更新缓存
-                        setTimeout(() => this.backgroundUpdate(), 2000);
+
+                        // 后台静默更新（不阻塞）
+                        setTimeout(() => this.backgroundUpdate(), 5000);
                         return { success: true, totalCount: cacheInfo.totalCount };
                     }
 
-                    // 没有缓存时从数据库获取
-                    console.log('🌐 首次使用，从 Postgres 数据库获取全部数据...');
-                    this.updatePreloadStatus('首次使用，正在从数据库获取全部数据...', 'loading');
+                    // 2. ⚡ 缓存过期或不存在，优先加载最近3个月数据
+                    console.log('📡 缓存过期，加载最近3个月数据...');
+                    this.updatePreloadStatus('正在加载最近3个月数据...', 'loading');
 
-                    const allData = await this.fetchAllDataFromAPI();
-                    
-                    if (allData && allData.length > 0) {
-                        console.log(`📥 成功获取 ${allData.length} 条数据，开始存储到本地缓存...`);
-                        this.updatePreloadStatus(`正在将 ${allData.length} 条数据存储到本地缓存...`, 'loading');
-                        
-                        const storedCount = await cacheManager.storeAllData(allData);
-                        
-                        console.log('✅ 数据预载完成！');
-                        this.updatePreloadStatus(`✅ 成功预载并缓存 ${storedCount} 条数据，下次访问将秒速加载`, 'success');
-                        
+                    // 请求JSON格式（默认格式，自动Gzip压缩）
+                    const recentUrl = getApiUrl('records') + '?months=3&no_limit=true';
+                    const recentResponse = await fetch(recentUrl, {
+                        method: 'GET',
+                        headers: {
+                            'Accept': 'application/json',
+                            'Accept-Encoding': 'gzip, deflate, br'
+                        }
+                    });
+
+                    if (!recentResponse.ok) {
+                        throw new Error(`HTTP ${recentResponse.status}: ${recentResponse.statusText}`);
+                    }
+
+                    const recentData = await recentResponse.json();
+
+                    if (recentData.success && recentData.data.records) {
+                        const recentRecords = recentData.data.records;
+                        console.log(`✅ 加载 ${recentRecords.length} 条最近数据`);
+
+                        // 存储到缓存
+                        this.updatePreloadStatus(`正在缓存 ${recentRecords.length} 条数据...`, 'loading');
+                        await cacheManager.storeAllData(recentRecords);
+
+                        this.updatePreloadStatus(`✅ 成功加载最近3个月数据（${recentRecords.length} 条）`, 'success');
                         this.isPreloading = false;
-                        return { success: true, totalCount: storedCount };
-                        
+
+                        // 3. 后台懒加载历史数据（不阻塞）
+                        setTimeout(() => this.loadHistoricalData(), 10000);
+
+                        return { success: true, totalCount: recentRecords.length };
                     } else {
-                        console.warn('⚠️ 未能获取到数据');
-                        this.updatePreloadStatus('⚠️ 数据库中暂无数据', 'warning');
-                        this.isPreloading = false;
-                        return { success: false, totalCount: 0 };
+                        throw new Error('获取最近数据失败');
                     }
 
                 } catch (error) {
                     console.error('❌ 数据预载失败:', error);
-                    this.updatePreloadStatus(`❌ 数据预载失败: ${error.message}`, 'error');
-                    this.isPreloading = false;
-                    throw error;
+                    this.updatePreloadStatus('❌ 最近数据加载失败，尝试降级方案...', 'warning');
+
+                    // 降级：尝试加载全量数据
+                    try {
+                        const result = await this.fallbackLoadAll();
+                        this.isPreloading = false;
+                        return result;
+                    } catch (fallbackError) {
+                        console.error('❌ 降级方案也失败:', fallbackError);
+                        this.updatePreloadStatus(`❌ 数据预载失败: ${fallbackError.message}`, 'error');
+                        this.isPreloading = false;
+                        throw fallbackError;
+                    }
+                }
+            }
+
+            // 🆕 后台懒加载历史数据（不阻塞主流程）
+            async loadHistoricalData() {
+                try {
+                    console.log('🔄 后台任务：开始加载历史数据...');
+
+                    // 获取当前缓存的数据范围
+                    const metadata = await cacheManager.getMetadataFast();
+                    if (!metadata || !metadata.minDate) {
+                        console.log('⚠️ 无法获取元数据，跳过历史数据加载');
+                        return;
+                    }
+
+                    // 计算需要加载的历史数据时间范围
+                    const currentOldestDate = metadata.minDate;
+                    const targetDate = new Date();
+                    targetDate.setFullYear(targetDate.getFullYear() - 2); // 加载2年历史数据
+
+                    if (currentOldestDate <= targetDate) {
+                        console.log('✅ 历史数据已完整，无需加载');
+                        return;
+                    }
+
+                    // 加载更早的数据
+                    console.log(`📡 加载历史数据: ${targetDate.toLocaleDateString()} ~ ${currentOldestDate.toLocaleDateString()}`);
+
+                    const url = getApiUrl('records') +
+                        `?startDate=${targetDate.toISOString()}&endDate=${currentOldestDate.toISOString()}&no_limit=true`;
+
+                    const response = await fetch(url, {
+                        headers: {
+                            'Accept': 'application/json',
+                            'Accept-Encoding': 'gzip, deflate, br'
+                        }
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+
+                    const data = await response.json();
+
+                    if (data.success && data.data.records && data.data.records.length > 0) {
+                        const historicalRecords = data.data.records;
+                        console.log(`✅ 获取 ${historicalRecords.length} 条历史数据`);
+
+                        // 追加到缓存
+                        await cacheManager.appendData(historicalRecords);
+                        console.log('✅ 历史数据已追加到缓存');
+
+                        // 通知其他页面数据已更新
+                        if (window.sharedDataManager) {
+                            window.sharedDataManager.notifyDataUpdate('insert', historicalRecords);
+                        }
+                    } else {
+                        console.log('ℹ️ 无更多历史数据');
+                    }
+
+                } catch (error) {
+                    console.error('⚠️ 后台加载历史数据失败（非致命）:', error);
+                }
+            }
+
+            // 🆕 降级方案：加载全量数据
+            async fallbackLoadAll() {
+                console.log('🔄 使用降级方案：加载全量数据...');
+                this.updatePreloadStatus('正在从数据库获取全部数据...', 'loading');
+
+                const allData = await this.fetchAllDataFromAPI();
+
+                if (allData && allData.length > 0) {
+                    console.log(`📥 成功获取 ${allData.length} 条数据`);
+                    this.updatePreloadStatus(`正在缓存 ${allData.length} 条数据...`, 'loading');
+
+                    const storedCount = await cacheManager.storeAllData(allData);
+
+                    this.updatePreloadStatus(`✅ 成功加载 ${storedCount} 条数据`, 'success');
+                    return { success: true, totalCount: storedCount };
+                } else {
+                    throw new Error('无法获取数据');
                 }
             }
 
@@ -1282,7 +1452,7 @@
                 try {
                     console.log('🔄 后台静默更新缓存...');
                     const allData = await this.fetchAllDataFromAPI();
-                    
+
                     if (allData && allData.length > 0) {
                         await cacheManager.storeAllData(allData);
                         console.log(`✅ 后台缓存更新完成，更新了 ${allData.length} 条数据`);
@@ -1392,7 +1562,7 @@
                             cleanParams[key] = value;
                         }
                     }
-                    
+
                     const qs = new URLSearchParams(cleanParams).toString();
                     const url = getApiUrl('records');
                     const response = await fetch(`${url}?${qs}`, {
@@ -1400,6 +1570,8 @@
                         mode: 'cors',
                         credentials: 'omit',
                         headers: {
+                            'Accept': 'application/json',
+                            'Accept-Encoding': 'gzip, deflate, br',
                             'Content-Type': 'application/json'
                         }
                     });
