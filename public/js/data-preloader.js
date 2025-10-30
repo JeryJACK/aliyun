@@ -139,30 +139,33 @@ class DataPreloader {
                 return { success: true, totalCount: 0 };
             }
 
-            // 🔥 存储队列模式：解决IndexedDB事务互斥
+            // 🔥 存储队列模式：多Worker并行存储
             const CONCURRENT_LIMIT = this.calculateOptimalConcurrency(shards.length);
             let totalLoaded = 0;
             let completedShards = 0;
             let index = 0;
 
             const storageQueue = [];
+            let downloadComplete = false; // ✅ 标记下载是否完成
+            const STORAGE_WORKERS = 3; // 🔥 3个存储Worker并行
 
-            // 存储Worker：串行存储，避免事务冲突
-            const storageWorker = async () => {
-                while (storageQueue.length > 0 || index < shards.length) {
+            // 存储Worker：多Worker并行存储（IndexedDB内部处理并发）
+            const storageWorker = async (workerId) => {
+                while (!downloadComplete || storageQueue.length > 0) {
                     if (storageQueue.length === 0) {
                         await new Promise(resolve => setTimeout(resolve, 10));
                         continue;
                     }
 
                     const { records, shard, downloadTime } = storageQueue.shift();
+                    if (!records) continue; // 防止空数据
 
                     try {
                         const storeStart = performance.now();
                         await cacheManager.appendData(records);
                         const storeTime = performance.now() - storeStart;
 
-                        console.log(`  💾 追加 ${shard.label}: ${records.length.toLocaleString()} 条 (下载${downloadTime.toFixed(0)}ms + 存储${storeTime.toFixed(0)}ms)`);
+                        console.log(`  💾 StorageWorker${workerId} 追加 ${shard.label}: ${records.length.toLocaleString()} 条 (下载${downloadTime.toFixed(0)}ms + 存储${storeTime.toFixed(0)}ms)`);
 
                         totalLoaded += records.length;
                         completedShards++;
@@ -172,9 +175,10 @@ class DataPreloader {
                             onProgress(progress, totalLoaded, totalLoaded);
                         }
                     } catch (error) {
-                        console.error(`❌ 存储分片 ${shard.label} 失败:`, error);
+                        console.error(`❌ StorageWorker${workerId} 存储分片 ${shard.label} 失败:`, error);
                     }
                 }
+                console.log(`✅ StorageWorker${workerId} 完成`);
             };
 
             // 下载Worker：并发下载+解析
@@ -199,15 +203,27 @@ class DataPreloader {
                 }
             };
 
-            // 启动workers
-            const storageTask = storageWorker();
+            // 🔥 启动多个存储Workers（并行存储）
+            const storageWorkers = Array.from(
+                { length: STORAGE_WORKERS },
+                (_, i) => storageWorker(i + 1)
+            );
+
+            // 启动下载Workers
             const downloadWorkers = Array.from(
                 { length: Math.min(CONCURRENT_LIMIT, shards.length) },
                 (_, i) => downloadWorker(i + 1)
             );
 
+            // 等待所有下载完成
             await Promise.all(downloadWorkers);
-            await storageTask;
+            console.log(`✅ 增量下载完成，等待 ${STORAGE_WORKERS} 个存储Worker清空队列...`);
+
+            // ✅ 标记下载完成，存储Worker将处理完剩余队列后退出
+            downloadComplete = true;
+
+            // 等待所有存储Worker完成
+            await Promise.all(storageWorkers);
 
             const perfTime = performance.now() - perfStart;
             console.log(`✅ 增量并发加载完成: ${totalLoaded.toLocaleString()} 条新增数据 (${(perfTime / 1000).toFixed(1)}秒)`);
@@ -247,27 +263,31 @@ class DataPreloader {
             console.log(`📥 启动 ${CONCURRENT_LIMIT} 个并发worker处理 ${shards.length} 个分片`);
             console.log(`⚡ 并发策略：${CONCURRENT_LIMIT} workers × ${Math.ceil(shards.length / CONCURRENT_LIMIT)} 轮 = 最大化吞吐量`);
 
-            // 🔥 存储队列：解决IndexedDB事务互斥问题
+            // 🔥 存储队列：多Worker并行存储
             const storageQueue = [];
-            let storageWorkerRunning = false;
+            let downloadComplete = false; // ✅ 标记下载是否完成
+            const STORAGE_WORKERS = 3; // 🔥 3个存储Worker并行
 
-            // 存储Worker：专门负责存储，避免事务冲突
-            const storageWorker = async () => {
-                while (storageQueue.length > 0 || index < shards.length) {
+            // 存储Worker：多Worker并行存储（IndexedDB内部处理并发）
+            const storageWorker = async (storageWorkerId) => {
+                let workerStored = 0;
+                while (!downloadComplete || storageQueue.length > 0) {
                     if (storageQueue.length === 0) {
                         await new Promise(resolve => setTimeout(resolve, 10));
                         continue;
                     }
 
                     const { records, shard, workerId, downloadTime } = storageQueue.shift();
+                    if (!records) continue; // 防止空数据
 
                     try {
                         const storeStart = performance.now();
                         await cacheManager.storeBatch(records, {});
                         const storeTime = performance.now() - storeStart;
 
-                        console.log(`  💾 存储 ${shard.label}: ${records.length.toLocaleString()} 条 (下载${downloadTime.toFixed(0)}ms + 存储${storeTime.toFixed(0)}ms)`);
+                        console.log(`  💾 StorageWorker${storageWorkerId} 存储 ${shard.label}: ${records.length.toLocaleString()} 条 (下载${downloadTime.toFixed(0)}ms + 存储${storeTime.toFixed(0)}ms)`);
 
+                        workerStored += records.length;
                         totalLoaded += records.length;
                         completedShards++;
 
@@ -276,10 +296,10 @@ class DataPreloader {
                             onProgress(progress, totalLoaded, totalLoaded);
                         }
                     } catch (error) {
-                        console.error(`❌ 存储分片 ${shard.label} 失败:`, error);
+                        console.error(`❌ StorageWorker${storageWorkerId} 存储分片 ${shard.label} 失败:`, error);
                     }
                 }
-                storageWorkerRunning = false;
+                console.log(`✅ StorageWorker${storageWorkerId} 完成，存储 ${workerStored.toLocaleString()} 条数据`);
             };
 
             // 下载Worker：专门负责下载+解析，完成后放入存储队列
@@ -309,9 +329,12 @@ class DataPreloader {
                 }
             };
 
-            // 启动存储Worker
-            storageWorkerRunning = true;
-            const storageTask = storageWorker();
+            // 🔥 启动多个存储Workers（并行存储）
+            const storageWorkers = Array.from(
+                { length: STORAGE_WORKERS },
+                (_, i) => storageWorker(i + 1)
+            );
+            console.log(`💾 启动 ${STORAGE_WORKERS} 个存储Worker并行处理`);
 
             // 启动下载Workers
             const downloadWorkers = Array.from(
@@ -321,9 +344,13 @@ class DataPreloader {
 
             // 等待所有下载完成
             await Promise.all(downloadWorkers);
+            console.log(`✅ 所有下载Worker完成，等待 ${STORAGE_WORKERS} 个存储Worker清空队列...`);
 
-            // 等待存储完成
-            await storageTask;
+            // ✅ 标记下载完成，存储Worker将处理完剩余队列后退出
+            downloadComplete = true;
+
+            // 等待所有存储Worker完成
+            await Promise.all(storageWorkers);
 
             // 4. 保存元数据和分片索引
             console.log('📊 保存元数据和索引...');
