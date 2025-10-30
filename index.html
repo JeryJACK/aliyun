@@ -2940,7 +2940,7 @@
                     const group = groupedData.get(groupKey);
                     group.records.push(record);
                     group.recordKeys.add(recordKey);
-                    globalExistingKeys.add(recordKey); // 更新全局去重集合
+                    globalExistingKeys.set(recordKey, groupKey); // 【修复】Map使用set而不是add
                 }
 
                 // 🚀 优化5：批量创建桶并添加记录（最小化Map操作）
