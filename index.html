@@ -1857,7 +1857,7 @@
             }
 
             // 页面加载时自动预载所有数据（优化版本 - 懒加载）
-            async autoPreloadAllData() {
+            async autoPreloadAllData(forceReload = false) {
                 try {
                     console.log('🚀 页面加载：开始智能预载数据...');
                     this.isPreloading = true;
@@ -1867,9 +1867,15 @@
                     const cacheInfo = await cacheManager.checkAllDataCache();
                     const cacheAge = cacheInfo ? Date.now() - cacheInfo.lastUpdated : Infinity;
 
-                    // 如果缓存新鲜（<30分钟），直接使用
-                    if (cacheAge < 30 * 60 * 1000) {
-                        console.log(`✅ 使用缓存数据（${Math.round(cacheAge / 1000)}秒前）`);
+                    // 🆕 如果被强制刷新（手动刷新缓存按钮），跳过缓存检查
+                    if (forceReload) {
+                        console.log('🔄 强制刷新模式，跳过缓存检查...');
+                        // 跳过缓存检查，直接重新从API加载
+                    }
+                    // 🆕 缓存有效期1分钟（不是轮询！只在页面加载时检查一次）
+                    // 注意：补同步会更新lastUpdated，所以补同步后cacheAge几乎为0，会直接使用IndexedDB
+                    else if (cacheAge < 1 * 60 * 1000) {
+                        console.log(`✅ 使用IndexedDB缓存（${Math.round(cacheAge / 1000)}秒前更新）`);
                         this.updatePreloadStatus(`✅ 从本地缓存加载 ${cacheInfo.totalCount} 条数据（秒速加载）`, 'success');
                         this.isPreloading = false;
 
@@ -2408,7 +2414,7 @@
                     const leaveTime = localStorage.getItem('satellitePageLeaveTime');
                     if (!leaveTime) {
                         console.log('ℹ️ 无页面离开时间记录');
-                        return;
+                        return { hasNewData: false, count: 0 };
                     }
 
                     const leaveTimestamp = parseInt(leaveTime);
@@ -2418,12 +2424,15 @@
                     // 如果离开超过30秒，触发补同步
                     if (awayDuration > 30000) {
                         console.log(`🔄 页面离开 ${Math.round(awayDuration / 1000)} 秒，触发补同步`);
-                        await this.performCatchupSync();
+                        const result = await this.performCatchupSync();
+                        return result || { hasNewData: false, count: 0 };
                     } else {
                         console.log(`ℹ️ 页面离开时间短 (${Math.round(awayDuration / 1000)}秒)，无需补同步`);
+                        return { hasNewData: false, count: 0 };
                     }
                 } catch (error) {
                     console.error('❌ 检查补同步失败:', error);
+                    return { hasNewData: false, count: 0 };
                 }
             }
 
@@ -2661,7 +2670,7 @@
                     if (!response.ok) {
                         console.warn(`⚠️ 补同步请求失败 (${response.status}): ${response.statusText}`);
                         console.warn('💡 提示：补同步功能可选，不影响页面正常使用');
-                        return;
+                        return { hasNewData: false, count: 0 };
                     }
 
                     const result = await response.json();
@@ -2674,17 +2683,19 @@
                             // 批量更新
                             await this.cacheManager.batchUpdateRecords(changes);
 
-                            // 触发更新回调
-                            if (this.onSyncUpdate) {
-                                this.onSyncUpdate({ operation: 'catchup_sync', count: changes.length });
-                            }
+                            // 🆕 返回有新数据的标志
+                            return { hasNewData: true, count: changes.length };
                         } else {
                             console.log('✅ 无需补同步，数据已是最新');
+                            return { hasNewData: false, count: 0 };
                         }
                     }
 
+                    return { hasNewData: false, count: 0 };
+
                 } catch (error) {
                     console.error('❌ 断线补同步失败:', error);
+                    return { hasNewData: false, count: 0 };
                 }
             }
 
@@ -5961,6 +5972,20 @@
 
                 // 分组逻辑已验证正确，移除测试代码
 
+                // ==================== 🆕 修复：先执行补同步，再加载数据 ====================
+
+                // 🆕 页面打开时先检查是否需要补同步（在加载数据之前）
+                console.log('🔍 检查是否需要补同步（页面打开时）...');
+                const catchupResult = await wsSyncManager.checkAndPerformCatchup();
+
+                // 🆕 优化：补同步已经更新了IndexedDB，不需要重新下载全量数据！
+                if (catchupResult.hasNewData) {
+                    console.log(`✅ 补同步已更新 ${catchupResult.count} 条数据到IndexedDB`);
+                    // 清除DataStore桶缓存，因为统计数据可能变化
+                    await cacheManager.clearDataStoreBucketsCache();
+                }
+
+                // 开始加载数据（不需要forceReload，直接使用IndexedDB）
                 await dataPreloader.autoPreloadAllData();
 
                 // 初始化应用
@@ -5970,10 +5995,6 @@
 
                 // ==================== WebSocket 实时同步初始化 ====================
 
-                // 🆕 页面打开时先检查是否需要补同步
-                console.log('🔍 检查是否需要补同步（页面打开时）...');
-                await wsSyncManager.checkAndPerformCatchup();
-
                 // 启动 WebSocket 实时同步
                 console.log('🔌 启动 WebSocket 实时同步...');
                 wsSyncManager.connect();
@@ -5982,19 +6003,26 @@
                 wsSyncManager.onSyncUpdate = (update) => {
                     const { operation, record, count } = update;
 
-                    // 🆕 处理补同步完成事件
+                    // 🆕 处理补同步完成事件（现在补同步已在数据加载前完成，这里主要处理WebSocket连接后的补同步）
                     if (operation === 'catchup_sync') {
-                        console.log(`✅ 补同步完成: ${count} 条变更`);
+                        console.log(`✅ WebSocket补同步完成: ${count} 条变更`);
 
+                        // 🆕 优化：增量更新，不重新init整个应用（更快！）
                         if (count > 0 && window.app) {
-                            // 触发页面重新加载数据
-                            console.log('🔄 补同步后重新加载数据...');
-                            showInfo(`已同步 ${count} 条新数据，正在刷新...`);
+                            console.log('🔄 增量更新UI...');
+                            showInfo(`已同步 ${count} 条新数据`);
 
-                            // 延迟刷新，让用户看到提示
-                            setTimeout(() => {
-                                window.location.reload();
-                            }, 1500);
+                            // 1. 清除DataStore桶缓存（因为分组统计可能变了）
+                            cacheManager.clearDataStoreBucketsCache();
+
+                            // 2. 如果有图表显示，智能刷新图表（带节流，避免频繁刷新）
+                            if (window.app.chart) {
+                                window.app.refreshChartIfNeeded();
+                                console.log('📊 图表已增量刷新');
+                            }
+
+                            // 3. 更新统计卡片（无需重新加载数据）
+                            window.app.updateCacheStatus();
                         }
                         return;
                     }
