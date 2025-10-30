@@ -343,6 +343,8 @@ class WebSocketSyncManager {
 
         } catch (error) {
             console.error('❌ 断线补同步失败:', error);
+            console.error('💡 错误详情:', error.message);
+            console.warn('💡 补同步失败不影响页面使用，数据将依赖增量并发加载');
             return { hasNewData: false, count: 0 };
         }
     }

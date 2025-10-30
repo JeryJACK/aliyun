@@ -311,58 +311,50 @@ class SatelliteApp {
                 this.needFullDataStoreConstruction = false;
 
             } else {
-                // ❌ 缓存未命中，使用快速初始化 + 后台构建DataStore
-                console.log('⚠️ DataStore缓存未命中，使用快速初始化策略');
-                this.updateSkeletonProgress(40, '正在快速初始化...');
+                // ❌ 缓存未命中，直接加载全量数据（利用高性能queryAllDataFast）
+                console.log('⚠️ DataStore缓存未命中，开始加载全量数据...');
+                this.updateSkeletonProgress(40, '正在加载数据...');
 
                 const quickStart = performance.now();
 
-                // 🚀 性能优化：只加载最近1周数据用于快速初始化
-                // 大幅减少冷启动时间（从10-20秒降至1-3秒）
+                // ✅ 直接加载全量数据（已优化为高速加载）
                 this.data = [];
                 let loadedCount = 0;
+
+                // 获取总数（用于进度计算）
+                const metadata = await cacheManager.getMetadataFast();
+                const totalCount = metadata?.totalCount || 0;
+                console.log(`📊 准备加载 ${totalCount.toLocaleString()} 条数据`);
 
                 // ⚠️ 清空DataStore，避免残留数据影响实时更新
                 this.dataStore.clear();
 
-                // ⚡ 使用分片查询只加载最近1周（极速冷启动）
-                const oneWeekAgo = new Date();
-                oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
-
-                await cacheManager.queryDateRangeFromShards(
-                    oneWeekAgo,
-                    new Date(),
-                    (batch) => {
-                        loadedCount += batch.length;
+                // 🔥 使用queryAllDataFast加载全量数据（已优化为分批加载）
+                await cacheManager.queryAllDataFast(
+                    (batch, totalLoaded) => {
+                        loadedCount = totalLoaded;
                         this.data.push(...batch);
 
-                        // 🆕 【极速】批量构建DataStore（10-50倍性能提升）
+                        // 批量构建DataStore
                         this.dataStore.addRecordsToBucketBatch(batch, this.cycleEngine, groupType);
 
-                        // 🆕 动态更新进度（40% - 80%）
-                        const progress = 40 + Math.min(40, Math.floor(loadedCount / 50)); // 每50条增加1%
-                        this.updateSkeletonProgress(progress, `正在初始化... ${loadedCount} 条`);
+                        // 动态更新进度（40% - 85%）
+                        const progress = 40 + Math.floor((loadedCount / totalCount) * 45);
+                        this.updateSkeletonProgress(progress, `正在加载... ${loadedCount.toLocaleString()}/${totalCount.toLocaleString()} 条`);
                     },
                     5000
                 );
 
                 const quickTime = performance.now() - quickStart;
-                console.log(`✅ 快速初始化完成: ${loadedCount} 条（最近1周） (${quickTime.toFixed(0)}ms)`);
-                this.updateSkeletonProgress(85, '快速初始化完成');
+                console.log(`✅ 全量数据加载完成: ${loadedCount.toLocaleString()} 条 (${(quickTime / 1000).toFixed(1)}秒)`);
+                this.updateSkeletonProgress(85, '数据加载完成');
 
-                // DataStore包含部分数据，标记为部分就绪
-                this.dataStoreReady = false; // 未完全就绪
-                this.dataLoadingStrategy = 'quick'; // 快速初始化模式
+                // DataStore已包含全量数据，标记为完全就绪
+                this.dataStoreReady = true;
+                this.dataLoadingStrategy = 'full'; // 全量加载模式
 
-                // 🔥 记录已加载的数据范围（用于判断是否需要按需加载）
-                this.loadedDataRange = {
-                    start: oneWeekAgo,
-                    end: new Date()
-                };
-                console.log(`📅 已加载数据范围: ${oneWeekAgo.toLocaleDateString()} - ${new Date().toLocaleDateString()}`);
-
-                // 🆕 标记需要加载全部数据来构建完整DataStore
-                this.needFullDataStoreConstruction = true;
+                // 无需后台加载
+                this.needFullDataStoreConstruction = false;
             }
 
             // 🔥 修复：延迟加载模式下，this.data为空是正常的
