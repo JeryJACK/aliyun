@@ -1461,12 +1461,18 @@
 
             setOptions(options) {
                 this.allOptions = [...options];
+                console.warn(`📝 [MultiSelect] setOptions 被调用，选项ID: ${this.optionsId}, 选项数量: ${options.length}`);
                 this.renderOptions();
             }
 
             renderOptions(filter = '') {
                 const optionsContainer = document.getElementById(this.optionsId);
-                if (!optionsContainer) return;
+                if (!optionsContainer) {
+                    console.error(`❌ [MultiSelect] 找不到选项容器: ${this.optionsId}`);
+                    return;
+                }
+
+                console.warn(`🎨 [MultiSelect] renderOptions 开始，选项ID: ${this.optionsId}, 全部选项数: ${this.allOptions.length}, 过滤器: "${filter}"`);
 
                 while (optionsContainer.children.length > 2) {
                     optionsContainer.removeChild(optionsContainer.lastChild);
@@ -1475,6 +1481,8 @@
                 const filteredOptions = this.allOptions.filter(option =>
                     option.label.toLowerCase().includes(filter.toLowerCase())
                 );
+
+                console.warn(`🎨 [MultiSelect] 过滤后选项数: ${filteredOptions.length}`);
 
                 filteredOptions.forEach(option => {
                     const optionEl = document.createElement('div');
@@ -1822,8 +1830,11 @@
                     'stationDropdown', 'stationOptions', 'stationDisplay',
                     'stationValue', 'stationTags', 'stationSearch', 'selectAllStations',
                     (values) => {
+                        console.warn(`🚨🚨🚨 测站选择器回调被触发！选择的测站: [${values.join(', ')}]`);
+                        console.warn(`🚨 isSyncingFilters = ${this.isSyncingFilters}`);
                         // 【性能优化】仅在非同步状态下执行更新
                         if (!this.isSyncingFilters) {
+                            console.warn(`🚨 开始执行级联更新...`);
                             // 测站选择 → 影响客户、卫星、任务类型、状态
                             this.updateCustomerOptions();
                             this.updateSatelliteOptions();
@@ -2577,7 +2588,11 @@
 
             // 客户选项更新 - 受测站影响
             updateCustomerOptions() {
-                if (!this.data || !this.data.length) return;
+                console.warn('🚨 updateCustomerOptions() 被调用了！');
+                if (!this.data || !this.data.length) {
+                    console.warn('⚠️ 数据为空，退出 updateCustomerOptions');
+                    return;
+                }
 
                 const stationValues = this.stationSelect.getSelectedValues();
 
@@ -2618,7 +2633,9 @@
                 const currentSelection = this.customerSelect.getSelectedValues();
                 const validSelection = currentSelection.filter(value => filteredCustomers.includes(value));
 
+                console.warn(`🚨 即将调用 setOptions，设置 ${customerOptions.length} 个客户选项`);
                 this.customerSelect.setOptions(customerOptions);
+                console.warn(`🚨 setOptions 调用完成！当前 allOptions 数量: ${this.customerSelect.allOptions.length}`);
 
                 // 【级联优化】始终设置有效选择（清除不在测站内的客户）
                 this.customerSelect.setSelectedValues(validSelection);
