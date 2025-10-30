@@ -292,14 +292,15 @@ class DataPreloader {
             console.log(`📥 成功获取 ${allData.length.toLocaleString()} 条数据`);
             this.updatePreloadStatus(`正在缓存 ${allData.length.toLocaleString()} 条数据...`, 'loading');
 
-            const storedCount = await cacheManager.storeAllData(allData, (progress, stored, total) => {
+            // 🚀 使用新的预计算方法
+            const storedCount = await cacheManager.storeAllDataWithPrecompute(allData, (progress, stored, total) => {
                 this.updatePreloadStatus(
                     `正在缓存数据... ${stored.toLocaleString()}/${total.toLocaleString()} (${progress}%)`,
                     'loading'
                 );
             });
 
-            this.updatePreloadStatus(`✅ 成功加载 ${storedCount.toLocaleString()} 条数据`, 'success');
+            this.updatePreloadStatus(`✅ 成功加载 ${storedCount.toLocaleString()} 条数据（已预计算统计）`, 'success');
             return { success: true, totalCount: storedCount };
         } else {
             throw new Error('无法获取数据');
@@ -313,8 +314,9 @@ class DataPreloader {
             const allData = await this.fetchAllDataFromAPI();
 
             if (allData && allData.length > 0) {
-                await cacheManager.storeAllData(allData);
-                console.log(`✅ 后台缓存更新完成，更新了 ${allData.length} 条数据`);
+                // 🚀 使用新的预计算方法
+                await cacheManager.storeAllDataWithPrecompute(allData);
+                console.log(`✅ 后台缓存更新完成，更新了 ${allData.length} 条数据（已预计算统计）`);
             }
         } catch (error) {
             console.warn('⚠️ 后台缓存更新失败:', error);
