@@ -2088,6 +2088,12 @@
                     }
                 };
 
+                // 🆕 监听实时数据更新（从index页面推送）
+                window.sharedDataManager.onDataUpdate = (operation, record) => {
+                    console.log(`📡 收到数据更新: ${operation}`, record?.id || record?.plan_id);
+                    this.handleRealtimeUpdate(operation, record);
+                };
+
                 // 监听数据重载事件
                 window.sharedDataManager.onDataReload = async () => {
                     console.log('📡 其他页面重载了数据，本页面也需要重载');
@@ -2101,7 +2107,125 @@
                     // 只有当本页面的 this.data 已加载时，SharedDataManager 才会响应
                 };
 
-                console.log('✅ 跨页面广播监听器已设置');
+                console.log('✅ 跨页面广播监听器已设置（包含实时更新）');
+            }
+
+            // 🆕 处理实时数据更新（参考index.html实现）
+            handleRealtimeUpdate(operation, record) {
+                if (!this.data || this.data.length === 0) {
+                    console.log('⚠️ 本地数据未加载，跳过实时更新');
+                    return;
+                }
+
+                try {
+                    const recordId = record.plan_id || record['计划ID'] || record.id;
+
+                    if (operation === 'insert' || operation === 'update') {
+                        // 查找现有记录
+                        const existingIndex = this.data.findIndex(r =>
+                            (r.plan_id || r['计划ID'] || r.id) === recordId
+                        );
+
+                        if (existingIndex >= 0) {
+                            // 更新现有记录
+                            this.data[existingIndex] = record;
+                            console.log(`✅ 更新记录: ${recordId}`);
+                        } else {
+                            // 新增记录
+                            this.data.push(record);
+                            console.log(`➕ 新增记录: ${recordId}`);
+                        }
+
+                        // 增量刷新图表
+                        this.refreshChartsIncremental(record);
+
+                    } else if (operation === 'delete') {
+                        // 删除记录
+                        const deleteIndex = this.data.findIndex(r =>
+                            (r.plan_id || r['计划ID'] || r.id) === recordId
+                        );
+
+                        if (deleteIndex >= 0) {
+                            this.data.splice(deleteIndex, 1);
+                            console.log(`🗑️ 删除记录: ${recordId}`);
+
+                            // 删除操作需要重新生成图表
+                            this.refreshAllCharts();
+                        }
+                    }
+
+                } catch (error) {
+                    console.error('❌ 处理实时更新失败:', error);
+                }
+            }
+
+            // 🆕 增量刷新图表（只刷新受影响的图表）
+            refreshChartsIncremental(record) {
+                // 使用节流，避免频繁刷新
+                if (this._lastChartRefresh && Date.now() - this._lastChartRefresh < 2000) {
+                    console.log('⏱️ 刷新节流中，跳过本次刷新');
+                    return;
+                }
+
+                this._lastChartRefresh = Date.now();
+
+                // 检查记录是否在当前筛选范围内
+                const recordTime = new Date(record.start_time || record['开始时间']);
+                const startDate = new Date(document.getElementById('startDate').value);
+                const endDate = new Date(document.getElementById('endDate').value);
+
+                if (recordTime < startDate || recordTime > endDate) {
+                    console.log('📅 记录不在当前时间范围内，跳过刷新');
+                    return;
+                }
+
+                // 检查是否符合当前筛选条件
+                if (!this.matchesCurrentFilters(record)) {
+                    console.log('🔍 记录不符合当前筛选条件，跳过刷新');
+                    return;
+                }
+
+                console.log('🔄 增量刷新图表');
+                this.refreshAllCharts();
+            }
+
+            // 🆕 检查记录是否匹配当前筛选条件
+            matchesCurrentFilters(record) {
+                // 获取当前筛选条件
+                const filters = {
+                    station: this.stationSelect.getSelectedValues(),
+                    customer: this.customerSelect.getSelectedValues(),
+                    satellite: this.satelliteSelect.getSelectedValues(),
+                    type: this.typeSelect.getSelectedValues(),
+                    status: this.statusSelect.getSelectedValues()
+                };
+
+                // 检查各个筛选条件
+                if (filters.station.length > 0 && !filters.station.includes(record.station || record['测站'])) {
+                    return false;
+                }
+                if (filters.customer.length > 0 && !filters.customer.includes(record.customer || record['所属客户'])) {
+                    return false;
+                }
+                if (filters.satellite.length > 0 && !filters.satellite.includes(record.satellite_name || record['卫星名称'])) {
+                    return false;
+                }
+                if (filters.type.length > 0 && !filters.type.includes(record.task_type || record['任务类型'])) {
+                    return false;
+                }
+                if (filters.status.length > 0 && !filters.status.includes(record.task_result || record['任务结果状态'])) {
+                    return false;
+                }
+
+                return true;
+            }
+
+            // 🆕 刷新所有图表
+            refreshAllCharts() {
+                console.log('🔄 刷新所有图表');
+
+                // 重新应用筛选并生成图表
+                this.applyFilters();
             }
 
             setupEventListeners() {
@@ -2496,10 +2620,12 @@
 
                 this.customerSelect.setOptions(customerOptions);
 
-                // 如果有有效的选择，保留它们
+                // 【级联优化】始终设置有效选择（清除不在测站内的客户）
+                this.customerSelect.setSelectedValues(validSelection);
                 if (validSelection.length > 0) {
-                    this.customerSelect.setSelectedValues(validSelection);
                     console.log(`✅ [顶部级联] 保留了 ${validSelection.length} 个有效的客户选择`);
+                } else if (currentSelection.length > 0) {
+                    console.log(`🗑️ [顶部级联] 清除了 ${currentSelection.length} 个不在当前测站的客户选择`);
                 }
             }
 
@@ -2535,9 +2661,12 @@
 
                 this.satelliteSelect.setOptions(satelliteOptions);
 
-                // 如果有有效的选择，保留它们
+                // 【级联优化】始终设置有效选择（清除不在测站/客户内的卫星）
+                this.satelliteSelect.setSelectedValues(validSelection);
                 if (validSelection.length > 0) {
-                    this.satelliteSelect.setSelectedValues(validSelection);
+                    console.log(`✅ [顶部级联] 保留了 ${validSelection.length} 个有效的卫星选择`);
+                } else if (currentSelection.length > 0) {
+                    console.log(`🗑️ [顶部级联] 清除了 ${currentSelection.length} 个无效的卫星选择`);
                 }
             }
 
@@ -2578,9 +2707,12 @@
 
                 this.typeSelect.setOptions(typeOptions);
 
-                // 如果有有效的选择，保留它们
+                // 【级联优化】始终设置有效选择（清除无效的任务类型）
+                this.typeSelect.setSelectedValues(validSelection);
                 if (validSelection.length > 0) {
-                    this.typeSelect.setSelectedValues(validSelection);
+                    console.log(`✅ [顶部级联] 保留了 ${validSelection.length} 个有效的任务类型选择`);
+                } else if (currentSelection.length > 0) {
+                    console.log(`🗑️ [顶部级联] 清除了 ${currentSelection.length} 个无效的任务类型选择`);
                 }
             }
 
@@ -2625,9 +2757,12 @@
 
                 this.statusSelect.setOptions(statusOptions);
 
-                // 如果有有效的选择，保留它们
+                // 【级联优化】始终设置有效选择（清除无效的状态）
+                this.statusSelect.setSelectedValues(validSelection);
                 if (validSelection.length > 0) {
-                    this.statusSelect.setSelectedValues(validSelection);
+                    console.log(`✅ [顶部级联] 保留了 ${validSelection.length} 个有效的状态选择`);
+                } else if (currentSelection.length > 0) {
+                    console.log(`🗑️ [顶部级联] 清除了 ${currentSelection.length} 个无效的状态选择`);
                 }
             }
 
@@ -3487,10 +3622,12 @@
 
                 this.customerChartSelect.setOptions(customerOptions);
 
-                // 如果有有效的选择，保留它们
+                // 【级联优化】始终设置有效选择（清除不在测站内的客户）
+                this.customerChartSelect.setSelectedValues(validSelection);
                 if (validSelection.length > 0) {
-                    this.customerChartSelect.setSelectedValues(validSelection);
                     console.log(`✅ [底部级联] 保留了 ${validSelection.length} 个有效的客户选择`);
+                } else if (currentSelection.length > 0) {
+                    console.log(`🗑️ [底部级联] 清除了 ${currentSelection.length} 个不在当前测站的客户选择`);
                 }
             }
 
@@ -3539,9 +3676,12 @@
 
                 this.satelliteChartSelect.setOptions(satelliteOptions);
 
-                // 如果有有效的选择，保留它们
+                // 【级联优化】始终设置有效选择（清除无效的卫星）
+                this.satelliteChartSelect.setSelectedValues(validSelection);
                 if (validSelection.length > 0) {
-                    this.satelliteChartSelect.setSelectedValues(validSelection);
+                    console.log(`✅ [底部级联] 保留了 ${validSelection.length} 个有效的卫星选择`);
+                } else if (currentSelection.length > 0) {
+                    console.log(`🗑️ [底部级联] 清除了 ${currentSelection.length} 个无效的卫星选择`);
                 }
 
                 console.log(`✅ 卫星选项已更新: ${availableSatellites.length} 个可选项`);
@@ -3600,9 +3740,12 @@
 
                 this.typeChartSelect.setOptions(typeOptions);
 
-                // 如果有有效的选择，保留它们
+                // 【级联优化】始终设置有效选择（清除无效的任务类型）
+                this.typeChartSelect.setSelectedValues(validSelection);
                 if (validSelection.length > 0) {
-                    this.typeChartSelect.setSelectedValues(validSelection);
+                    console.log(`✅ [底部级联] 保留了 ${validSelection.length} 个有效的类型选择`);
+                } else if (currentSelection.length > 0) {
+                    console.log(`🗑️ [底部级联] 清除了 ${currentSelection.length} 个无效的类型选择`);
                 }
 
                 console.log(`✅ 类型选项已更新: ${availableTypes.length} 个可选项`);
@@ -3671,9 +3814,12 @@
 
                 this.statusChartSelect.setOptions(statusOptions);
 
-                // 如果有有效的选择，保留它们
+                // 【级联优化】始终设置有效选择（清除无效的状态）
+                this.statusChartSelect.setSelectedValues(validSelection);
                 if (validSelection.length > 0) {
-                    this.statusChartSelect.setSelectedValues(validSelection);
+                    console.log(`✅ [底部级联] 保留了 ${validSelection.length} 个有效的状态选择`);
+                } else if (currentSelection.length > 0) {
+                    console.log(`🗑️ [底部级联] 清除了 ${currentSelection.length} 个无效的状态选择`);
                 }
 
                 console.log(`✅ 状态选项已更新: ${availableStatuses.length} 个可选项`);
