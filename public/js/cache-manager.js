@@ -406,14 +406,13 @@ class CacheManager {
                 const [, year, month, day, hour = 0, minute = 0, second = 0] = match;
                 // 直接构造文件时间，不经过UTC转换
                 const result = new Date(
-                    parseInt(year), 
-                    parseInt(month) - 1, 
-                    parseInt(day), 
-                    parseInt(hour), 
-                    parseInt(minute), 
+                    parseInt(year),
+                    parseInt(month) - 1,
+                    parseInt(day),
+                    parseInt(hour),
+                    parseInt(minute),
                     parseInt(second)
                 );
-                console.log(`🔧 CacheManager解析: ${timeStr} -> ${result.toLocaleString()}`);
                 return result;
             }
             
@@ -423,24 +422,21 @@ class CacheManager {
             if (isoMatch) {
                 const [, year, month, day, hour, minute, second] = isoMatch;
                 const result = new Date(
-                    parseInt(year), 
-                    parseInt(month) - 1, 
-                    parseInt(day), 
-                    parseInt(hour), 
-                    parseInt(minute), 
+                    parseInt(year),
+                    parseInt(month) - 1,
+                    parseInt(day),
+                    parseInt(hour),
+                    parseInt(minute),
                     parseInt(second)
                 );
-                console.log(`🔧 CacheManager解析ISO: ${timeStr} -> ${result.toLocaleString()}`);
                 return result;
             }
-            
+
             // 最后回退：构造一个0点时间（避免时区问题）
-            console.warn('CacheManager时间解析使用默认0点时间:', timeStr);
             const dateOnly = timeStr.split(' ')[0]; // 只取日期部分
             const dateParts = dateOnly.split('-').map(Number);
             if (dateParts.length >= 3) {
                 const result = new Date(dateParts[0], dateParts[1] - 1, dateParts[2], 0, 0, 0);
-                console.log(`🔧 CacheManager回退解析: ${timeStr} -> ${result.toLocaleString()}`);
                 return result;
             }
             
@@ -1555,34 +1551,72 @@ class CacheManager {
      * @param {Array} allData - 所有数据
      * @param {Function} onProgress - 进度回调
      */
-    async storeAllDataWithPrecompute(allData, onProgress) {
+    async storeAllDataWithPrecompute(allData, onProgress, runInBackground = false) {
         const perfStart = performance.now();
         console.log(`🚀 开始存储数据并预计算统计: ${allData.length.toLocaleString()} 条...`);
 
-        // 1. 存储原始数据
+        // 1. 存储原始数据（必须同步完成）
         await this.storeAllData(allData, onProgress);
+        const storeTime = performance.now() - perfStart;
+        console.log(`✅ 数据存储完成: ${storeTime.toFixed(0)}ms`);
 
-        // 2. 预计算所有统计
-        console.log('📊 开始预计算统计...');
-        const computeStart = performance.now();
+        // 2. 预计算统计 - 根据参数决定前台还是后台执行
+        if (runInBackground) {
+            // 🚀 后台执行：立即返回，不阻塞UI初始化
+            console.log('📊 预计算将在后台执行，不阻塞UI初始化...');
 
-        // 并行计算桶统计和客户统计
-        const [bucketStats, customerStats] = await Promise.all([
-            Promise.resolve(this.computeBucketStatistics(allData)),
-            Promise.resolve(this.computeCustomerStatistics(allData))
-        ]);
+            // 异步执行预计算（不等待）
+            setTimeout(async () => {
+                try {
+                    const computeStart = performance.now();
+                    console.log('🔄 后台开始预计算统计...');
 
-        // 保存统计结果
-        await Promise.all([
-            this.saveStatistics('bucket', bucketStats),
-            this.saveStatistics('customer', customerStats)
-        ]);
+                    // 并行计算桶统计和客户统计
+                    const [bucketStats, customerStats] = await Promise.all([
+                        Promise.resolve(this.computeBucketStatistics(allData)),
+                        Promise.resolve(this.computeCustomerStatistics(allData))
+                    ]);
 
-        const computeTime = performance.now() - computeStart;
-        const totalTime = performance.now() - perfStart;
+                    // 保存统计结果
+                    await Promise.all([
+                        this.saveStatistics('bucket', bucketStats),
+                        this.saveStatistics('customer', customerStats)
+                    ]);
 
-        console.log(`✅ 数据存储+预计算完成: 总耗时 ${totalTime.toFixed(0)}ms (预计算 ${computeTime.toFixed(0)}ms)`);
-        console.log(`💡 下次图表渲染将使用预计算结果，速度提升99%！`);
+                    const computeTime = performance.now() - computeStart;
+                    console.log(`✅ 后台预计算完成: ${computeTime.toFixed(0)}ms`);
+                    console.log(`💡 下次图表渲染将使用预计算结果，速度提升99%！`);
+                } catch (error) {
+                    console.error('❌ 后台预计算失败:', error);
+                }
+            }, 100); // 100ms延迟，让UI先初始化
+
+            return allData.length;
+        } else {
+            // 前台执行：同步等待完成
+            console.log('📊 开始预计算统计...');
+            const computeStart = performance.now();
+
+            // 并行计算桶统计和客户统计
+            const [bucketStats, customerStats] = await Promise.all([
+                Promise.resolve(this.computeBucketStatistics(allData)),
+                Promise.resolve(this.computeCustomerStatistics(allData))
+            ]);
+
+            // 保存统计结果
+            await Promise.all([
+                this.saveStatistics('bucket', bucketStats),
+                this.saveStatistics('customer', customerStats)
+            ]);
+
+            const computeTime = performance.now() - computeStart;
+            const totalTime = performance.now() - perfStart;
+
+            console.log(`✅ 数据存储+预计算完成: 总耗时 ${totalTime.toFixed(0)}ms (预计算 ${computeTime.toFixed(0)}ms)`);
+            console.log(`💡 下次图表渲染将使用预计算结果，速度提升99%！`);
+
+            return allData.length;
+        }
     }
 }
 

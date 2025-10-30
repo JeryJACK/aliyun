@@ -292,15 +292,15 @@ class DataPreloader {
             console.log(`📥 成功获取 ${allData.length.toLocaleString()} 条数据`);
             this.updatePreloadStatus(`正在缓存 ${allData.length.toLocaleString()} 条数据...`, 'loading');
 
-            // 🚀 使用新的预计算方法
+            // 🚀 使用后台预计算方法：立即返回，不阻塞UI初始化
             const storedCount = await cacheManager.storeAllDataWithPrecompute(allData, (progress, stored, total) => {
                 this.updatePreloadStatus(
                     `正在缓存数据... ${stored.toLocaleString()}/${total.toLocaleString()} (${progress}%)`,
                     'loading'
                 );
-            });
+            }, true); // 👈 启用后台预计算
 
-            this.updatePreloadStatus(`✅ 成功加载 ${storedCount.toLocaleString()} 条数据（已预计算统计）`, 'success');
+            this.updatePreloadStatus(`✅ 成功加载 ${storedCount.toLocaleString()} 条数据（预计算在后台执行）`, 'success');
             return { success: true, totalCount: storedCount };
         } else {
             throw new Error('无法获取数据');
@@ -314,9 +314,9 @@ class DataPreloader {
             const allData = await this.fetchAllDataFromAPI();
 
             if (allData && allData.length > 0) {
-                // 🚀 使用新的预计算方法
-                await cacheManager.storeAllDataWithPrecompute(allData);
-                console.log(`✅ 后台缓存更新完成，更新了 ${allData.length} 条数据（已预计算统计）`);
+                // 🚀 使用后台预计算方法（已经是后台更新，所以不阻塞）
+                await cacheManager.storeAllDataWithPrecompute(allData, null, true);
+                console.log(`✅ 后台缓存更新完成，更新了 ${allData.length} 条数据（预计算在后台执行）`);
             }
         } catch (error) {
             console.warn('⚠️ 后台缓存更新失败:', error);
