@@ -13,6 +13,7 @@
     <!-- 配置文件 -->
     <script src="./public/js/config.js?v=4"></script>
     <script src="./public/js/shared-data-manager.js"></script>
+    <script src="./public/js/cache-manager.js" defer></script>
 
     <!-- Tailwind 配置 -->
     <script>
@@ -733,124 +734,58 @@
             return '';
         }
 
-        // 时间转换函数已删除，不再需要UTC与北京时间转换
-
-        // IndexedDB工具类（不变）
-        class SatelliteDB {
+        // ✅ 统一使用cache-manager.js（版本5），移除内嵌SatelliteDB类
+        // CacheManager适配器：兼容trend-analysis的调用方式
+        class SatelliteDBAdapter {
             constructor() {
-                this.dbName = 'SatelliteDataCache';
-                this.storeName = 'allDataCache';
-                this.db = null;
+                this.cacheManager = window.cacheManager || new CacheManager();
                 this.initialized = false;
-                this.initPromise = null;
-                this.TIMEOUT_DURATION = 15000;
-                this.requiredIndex = 'byTimestamp';
             }
 
             async init() {
-                if (this.initialized) return Promise.resolve(this.db);
-                if (this.initPromise) return this.initPromise;
-
-                this.initPromise = Promise.race([
-                    new Promise((resolve, reject) => {
-                        const request = indexedDB.open(this.dbName, 4); // 🆕 升级到v4以匹配index.html
-
-                        request.onupgradeneeded = (event) => {
-                            this.db = event.target.result;
-                            const oldVersion = event.oldVersion;
-
-                            // 创建 allDataCache store（主数据存储）
-                            if (!this.db.objectStoreNames.contains(this.storeName)) {
-                                const store = this.db.createObjectStore(this.storeName, { keyPath: 'id' });
-                                store.createIndex(this.requiredIndex, 'timestamp', { unique: false });
-                                console.log('📦 创建 allDataCache 存储空间');
-                            }
-
-                            // 🆕 创建 metaData store（元数据存储，与 index.html 保持一致）
-                            if (!this.db.objectStoreNames.contains('metaData')) {
-                                this.db.createObjectStore('metaData', { keyPath: 'key' });
-                                console.log('📦 创建 metaData 存储空间');
-                            }
-
-                            // 🆕 v3->v4升级：向后兼容，不影响已有数据
-                            if (oldVersion > 0) {
-                                console.log(`🔧 数据库升级: v${oldVersion} -> v4`);
-                            }
-                        };
-
-                        request.onsuccess = (event) => {
-                            this.db = event.target.result;
-                            this.initialized = true;
-                            resolve(this.db);
-                        };
-
-                        request.onerror = (event) => {
-                            this.initialized = false;
-                            reject(event.target.error);
-                        };
-                    }),
-                    new Promise((_, reject) => {
-                        setTimeout(() => reject(new Error('数据库连接超时')), this.TIMEOUT_DURATION);
-                    })
-                ]);
-
-                return this.initPromise;
+                if (!this.initialized) {
+                    await this.cacheManager.init();
+                    this.initialized = true;
+                }
+                return this.cacheManager.db;
             }
 
             async ensureInitialized() {
-                if (!this.initialized) await this.init();
-                return this.db;
+                return this.init();
             }
 
+            // 适配getAllDataWithProgress → queryAllDataFast
             async getAllDataWithProgress(progressCallback) {
-                await this.ensureInitialized();
-                const transaction = this.db.transaction([this.storeName], 'readonly');
-                const store = transaction.objectStore(this.storeName);
-                const cursorRequest = store.openCursor(null, 'prev');
+                await this.init();
 
-                return new Promise((resolve, reject) => {
-                    const results = [];
-                    let count = 0;
+                // 先获取总数
+                const metadata = await this.cacheManager.getMetadataFast();
+                const totalCount = metadata?.totalCount || 0;
 
-                    cursorRequest.onsuccess = (event) => {
-                        const cursor = event.target.result;
-                        if (cursor) {
-                            results.push(cursor.value);
-                            count++;
-                            if (progressCallback) progressCallback(Math.min(100, count * 10), count, count);
-                            cursor.continue();
-                        } else {
-                            resolve(results);
-                        }
-                    };
-
-                    cursorRequest.onerror = (event) => reject(event.target.error);
+                const results = [];
+                await this.cacheManager.queryAllDataFast((batch, loaded) => {
+                    results.push(...batch);
+                    if (progressCallback) {
+                        const progress = Math.round((loaded / totalCount) * 100);
+                        progressCallback(progress, loaded, totalCount);
+                    }
                 });
+                return results;
             }
 
             async hasData() {
-                const count = await this.getTotalCount();
-                return count > 0;
+                const info = await this.cacheManager.checkAllDataCache();
+                return info && info.totalCount > 0;
             }
 
             async getTotalCount() {
-                await this.ensureInitialized();
-                const transaction = this.db.transaction([this.storeName], 'readonly');
-                const store = transaction.objectStore(this.storeName);
-                return new Promise((resolve) => {
-                    const countRequest = store.count();
-                    countRequest.onsuccess = () => resolve(countRequest.result);
-                });
+                const info = await this.cacheManager.checkAllDataCache();
+                return info?.totalCount || 0;
             }
 
             async clearData() {
-                await this.ensureInitialized();
-                const transaction = this.db.transaction([this.storeName], 'readwrite');
-                const store = transaction.objectStore(this.storeName);
-                return new Promise((resolve) => {
-                    const request = store.clear();
-                    request.onsuccess = () => resolve(true);
-                });
+                await this.cacheManager.clearAllDataCache();
+                return true;
             }
         }
 
@@ -1785,7 +1720,7 @@
                 sessionStorage.removeItem('trendAnalysisCharts');
                 console.log('🧹 已清除趋势分析页面的旧状态，从初始化状态开始');
 
-                this.db = new SatelliteDB();
+                this.db = new SatelliteDBAdapter();
                 this.cycleEngine = new CycleRuleEngine();
                 this.chartGenerator = new ChartGenerator();
 
