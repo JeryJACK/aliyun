@@ -307,6 +307,7 @@ class CacheManager {
                 key: 'allDataMeta',
                 totalCount: totalCount,
                 lastUpdated: Date.now(),
+                lastSyncTime: Date.now(), // ✅ 初始化lastSyncTime，用于WebSocket增量同步
                 dataVersion: 1,
                 sortedByTime: true,
                 minDate: minDate,

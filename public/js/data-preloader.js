@@ -13,27 +13,49 @@ class DataPreloader {
 
             // 1. 首先检查本地缓存
             const cacheInfo = await cacheManager.checkAllDataCache();
-            const cacheAge = cacheInfo ? Date.now() - cacheInfo.lastUpdated : Infinity;
 
             // 🆕 如果被强制刷新（手动刷新缓存按钮），跳过缓存检查
             if (forceReload) {
                 console.log('🔄 强制刷新模式，跳过缓存检查...');
                 // 跳过缓存检查，直接重新从API加载
             }
-            // 🆕 缓存有效期1分钟（不是轮询！只在页面加载时检查一次）
-            // 注意：补同步会更新lastUpdated，所以补同步后cacheAge几乎为0，会直接使用IndexedDB
-            else if (cacheAge < 1 * 60 * 1000) {
-                console.log(`✅ 使用IndexedDB缓存（${Math.round(cacheAge / 1000)}秒前更新）`);
+            // ✅ 只要有缓存就使用，后台并发加载增量数据
+            else if (cacheInfo && cacheInfo.totalCount > 0) {
+                const cacheAge = Date.now() - cacheInfo.lastUpdated;
+                const ageMinutes = Math.round(cacheAge / 60000);
+                const ageHours = Math.round(cacheAge / 3600000);
+
+                console.log(`✅ 使用IndexedDB缓存（${cacheInfo.totalCount} 条记录，${ageMinutes}分钟前更新）`);
                 this.updatePreloadStatus(`✅ 从本地缓存加载 ${cacheInfo.totalCount} 条数据（秒速加载）`, 'success');
                 this.isPreloading = false;
 
-                // 后台静默更新（不阻塞）
-                setTimeout(() => this.backgroundUpdate(), 5000);
+                // 🔥 智能增量更新策略
+                if (ageMinutes > 5) {
+                    // 缓存超过5分钟：立即后台并发加载增量数据
+                    console.log(`⏱️ 缓存已 ${ageMinutes} 分钟未更新，启动增量并发加载...`);
+                    setTimeout(async () => {
+                        try {
+                            const result = await this.incrementalParallelLoad(cacheInfo.lastUpdated);
+                            if (result.totalCount > 0) {
+                                console.log(`✅ 增量更新完成：新增 ${result.totalCount} 条数据`);
+                                // 通知页面刷新数据
+                                if (window.satelliteApp && window.satelliteApp.refreshData) {
+                                    window.satelliteApp.refreshData();
+                                }
+                            }
+                        } catch (error) {
+                            console.error('❌ 增量更新失败:', error);
+                        }
+                    }, 100); // 100ms后启动，不阻塞页面初始化
+                } else {
+                    console.log('💡 缓存很新，依赖WebSocket实时同步');
+                }
+
                 return { success: true, totalCount: cacheInfo.totalCount };
             }
 
-            // 2. 🚀 缓存过期或不存在，使用并行分片加载（最快！）
-            console.log('📡 缓存过期或不存在，使用并行分片加载全量数据...');
+            // 2. 🚀 缓存不存在，使用并行分片加载全量数据
+            console.log('📡 缓存不存在，使用并行分片加载全量数据...');
             this.updatePreloadStatus('正在并行获取数据...', 'loading');
 
             // 🔥 关键优化：使用并行分片加载
@@ -69,6 +91,135 @@ class DataPreloader {
         }
     }
 
+    // 🆕 【增量并发加载】二次打开页面时快速同步新增数据
+    async incrementalParallelLoad(lastUpdated, onProgress) {
+        const perfStart = performance.now();
+        console.log('🚀 启动增量并发加载（只获取新增数据）...');
+
+        try {
+            const startDate = new Date(lastUpdated);
+            const endDate = new Date();
+            const timeDiff = endDate - startDate;
+            const daysDiff = timeDiff / (1000 * 60 * 60 * 24);
+
+            console.log(`📊 增量时间范围: ${startDate.toLocaleString()} → ${endDate.toLocaleString()} (${daysDiff.toFixed(1)}天)`);
+
+            // 🔥 智能分片策略（精确增量，避免重复下载）
+            let shards;
+            const hoursDiff = timeDiff / (1000 * 60 * 60);
+
+            if (hoursDiff <= 3) {
+                // 3小时内：直接一次请求（数据量小，不需要分片）
+                shards = [{
+                    start: startDate.toISOString(),
+                    end: endDate.toISOString(),
+                    label: `${Math.round(hoursDiff * 60)}分钟`
+                }];
+            } else if (hoursDiff <= 24) {
+                // 24小时内：按3小时分片（最多8个分片，并发度高）
+                shards = this.generateHourlyShards(startDate, endDate, 3);
+            } else if (daysDiff <= 7) {
+                // 7天内：按6小时分片（高并发，避免按天分片的重复下载）
+                shards = this.generateHourlyShards(startDate, endDate, 6);
+            } else if (daysDiff <= 30) {
+                // 30天内：按天分片
+                shards = this.generateDailyShards(startDate, endDate);
+            } else if (daysDiff <= 90) {
+                // 90天内：按周分片
+                shards = this.generateWeeklyShards(startDate, endDate);
+            } else {
+                // 超过90天：按月分片
+                shards = this.generateMonthlyShards(startDate, endDate);
+            }
+
+            console.log(`📊 生成 ${shards.length} 个增量分片（并行加载）`);
+
+            if (shards.length === 0) {
+                console.log('✅ 无需增量更新');
+                return { success: true, totalCount: 0 };
+            }
+
+            // 🔥 存储队列模式：解决IndexedDB事务互斥
+            const CONCURRENT_LIMIT = this.calculateOptimalConcurrency(shards.length);
+            let totalLoaded = 0;
+            let completedShards = 0;
+            let index = 0;
+
+            const storageQueue = [];
+
+            // 存储Worker：串行存储，避免事务冲突
+            const storageWorker = async () => {
+                while (storageQueue.length > 0 || index < shards.length) {
+                    if (storageQueue.length === 0) {
+                        await new Promise(resolve => setTimeout(resolve, 10));
+                        continue;
+                    }
+
+                    const { records, shard, downloadTime } = storageQueue.shift();
+
+                    try {
+                        const storeStart = performance.now();
+                        await cacheManager.appendData(records);
+                        const storeTime = performance.now() - storeStart;
+
+                        console.log(`  💾 追加 ${shard.label}: ${records.length.toLocaleString()} 条 (下载${downloadTime.toFixed(0)}ms + 存储${storeTime.toFixed(0)}ms)`);
+
+                        totalLoaded += records.length;
+                        completedShards++;
+
+                        const progress = Math.round((completedShards / shards.length) * 100);
+                        if (onProgress) {
+                            onProgress(progress, totalLoaded, totalLoaded);
+                        }
+                    } catch (error) {
+                        console.error(`❌ 存储分片 ${shard.label} 失败:`, error);
+                    }
+                }
+            };
+
+            // 下载Worker：并发下载+解析
+            const downloadWorker = async (workerId) => {
+                while (index < shards.length) {
+                    const shard = shards[index++];
+
+                    try {
+                        const downloadStart = performance.now();
+                        const records = await this.fetchShardData(shard);
+                        const downloadTime = performance.now() - downloadStart;
+
+                        if (records && records.length > 0) {
+                            console.log(`  ✓ Worker${workerId} 下载+解析 ${shard.label}: ${records.length.toLocaleString()} 条 (${downloadTime.toFixed(0)}ms)`);
+                            storageQueue.push({ records, shard, downloadTime });
+                        }
+                    } catch (error) {
+                        console.error(`❌ 增量分片 ${shard.label} 失败:`, error);
+                    }
+
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }
+            };
+
+            // 启动workers
+            const storageTask = storageWorker();
+            const downloadWorkers = Array.from(
+                { length: Math.min(CONCURRENT_LIMIT, shards.length) },
+                (_, i) => downloadWorker(i + 1)
+            );
+
+            await Promise.all(downloadWorkers);
+            await storageTask;
+
+            const perfTime = performance.now() - perfStart;
+            console.log(`✅ 增量并发加载完成: ${totalLoaded.toLocaleString()} 条新增数据 (${(perfTime / 1000).toFixed(1)}秒)`);
+
+            return { success: true, totalCount: totalLoaded };
+
+        } catch (error) {
+            console.error('❌ 增量并发加载失败:', error);
+            throw error;
+        }
+    }
+
     // 🚀 【超高性能】流水线并行加载（边下载边解析边存储）
     async parallelShardedLoad(onProgress) {
         const perfStart = performance.now();
@@ -80,68 +231,99 @@ class DataPreloader {
             const startDate = new Date();
             startDate.setFullYear(startDate.getFullYear() - 2);
 
-            // 2. 按季度分片（8个季度）
-            const shards = this.generateQuarterlyShards(startDate, endDate);
-            console.log(`📊 生成 ${shards.length} 个季度分片（流水线并行）`);
+            // 2. 🔥 动态分片策略：根据时间跨度估算数据量，智能选择分片粒度
+            const shards = this.generateAdaptiveShards(startDate, endDate);
+            console.log(`📊 生成 ${shards.length} 个分片（动态优化策略）`);
 
-            // 3. 🔥 流水线并行：边下载边存储
-            const CONCURRENT_LIMIT = 4;
+            // 3. 🔥 动态并发数：根据分片数量和浏览器限制自动调整
+            const CONCURRENT_LIMIT = this.calculateOptimalConcurrency(shards.length);
             let totalLoaded = 0;
             let completedShards = 0;
+            let index = 0;
 
             // 先清空现有数据
             await cacheManager.clearAllData();
 
-            // 创建流水线任务队列
-            const pipeline = [];
+            console.log(`📥 启动 ${CONCURRENT_LIMIT} 个并发worker处理 ${shards.length} 个分片`);
+            console.log(`⚡ 并发策略：${CONCURRENT_LIMIT} workers × ${Math.ceil(shards.length / CONCURRENT_LIMIT)} 轮 = 最大化吞吐量`);
 
-            for (let i = 0; i < shards.length; i += CONCURRENT_LIMIT) {
-                const batch = shards.slice(i, i + CONCURRENT_LIMIT);
-                console.log(`📥 流水线批次 ${Math.floor(i / CONCURRENT_LIMIT) + 1}: 并行下载+存储 ${batch.length} 个分片`);
+            // 🔥 存储队列：解决IndexedDB事务互斥问题
+            const storageQueue = [];
+            let storageWorkerRunning = false;
 
-                // 🔥 关键优化：每个分片独立的"下载→存储"流水线
-                const batchPipelines = batch.map(async (shard, idx) => {
+            // 存储Worker：专门负责存储，避免事务冲突
+            const storageWorker = async () => {
+                while (storageQueue.length > 0 || index < shards.length) {
+                    if (storageQueue.length === 0) {
+                        await new Promise(resolve => setTimeout(resolve, 10));
+                        continue;
+                    }
+
+                    const { records, shard, workerId, downloadTime } = storageQueue.shift();
+
                     try {
-                        // 阶段1：下载并解析（浏览器自动gzip解压）
+                        const storeStart = performance.now();
+                        await cacheManager.storeBatch(records, {});
+                        const storeTime = performance.now() - storeStart;
+
+                        console.log(`  💾 存储 ${shard.label}: ${records.length.toLocaleString()} 条 (下载${downloadTime.toFixed(0)}ms + 存储${storeTime.toFixed(0)}ms)`);
+
+                        totalLoaded += records.length;
+                        completedShards++;
+
+                        const progress = Math.round((completedShards / shards.length) * 100);
+                        if (onProgress) {
+                            onProgress(progress, totalLoaded, totalLoaded);
+                        }
+                    } catch (error) {
+                        console.error(`❌ 存储分片 ${shard.label} 失败:`, error);
+                    }
+                }
+                storageWorkerRunning = false;
+            };
+
+            // 下载Worker：专门负责下载+解析，完成后放入存储队列
+            const downloadWorker = async (workerId) => {
+                while (index < shards.length) {
+                    const currentIndex = index++;
+                    const shard = shards[currentIndex];
+
+                    try {
+                        // 阶段1：下载+解析（浏览器自动gzip解压+JSON解析）
                         const downloadStart = performance.now();
                         const records = await this.fetchShardData(shard);
                         const downloadTime = performance.now() - downloadStart;
 
                         if (records && records.length > 0) {
-                            console.log(`  ✓ 下载 ${shard.label}: ${records.length.toLocaleString()} 条 (${downloadTime.toFixed(0)}ms)`);
+                            console.log(`  ✓ Worker${workerId} 下载+解析 ${shard.label}: ${records.length.toLocaleString()} 条 (${downloadTime.toFixed(0)}ms)`);
 
-                            // 阶段2：立即存储（不等待其他分片）
-                            const storeStart = performance.now();
-                            await cacheManager.storeBatch(records, {});
-                            const storeTime = performance.now() - storeStart;
-
-                            console.log(`  💾 存储 ${shard.label}: ${records.length.toLocaleString()} 条 (${storeTime.toFixed(0)}ms)`);
-
-                            // 更新计数和进度
-                            totalLoaded += records.length;
-                            completedShards++;
-
-                            const progress = Math.round((completedShards / shards.length) * 100);
-                            if (onProgress) {
-                                onProgress(progress, totalLoaded, totalLoaded);
-                            }
-
-                            return records.length;
+                            // 阶段2：放入存储队列（不阻塞）
+                            storageQueue.push({ records, shard, workerId, downloadTime });
                         }
-                        return 0;
-
                     } catch (error) {
-                        console.error(`❌ 分片 ${shard.label} 流水线失败:`, error);
-                        return 0;
+                        console.error(`❌ Worker${workerId} 下载分片 ${shard.label} 失败:`, error);
                     }
-                });
 
-                // 等待这一批流水线全部完成
-                await Promise.all(batchPipelines);
+                    // 让出主线程
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }
+            };
 
-                // 让出主线程
-                await new Promise(resolve => setTimeout(resolve, 0));
-            }
+            // 启动存储Worker
+            storageWorkerRunning = true;
+            const storageTask = storageWorker();
+
+            // 启动下载Workers
+            const downloadWorkers = Array.from(
+                { length: Math.min(CONCURRENT_LIMIT, shards.length) },
+                (_, i) => downloadWorker(i + 1)
+            );
+
+            // 等待所有下载完成
+            await Promise.all(downloadWorkers);
+
+            // 等待存储完成
+            await storageTask;
 
             // 4. 保存元数据和分片索引
             console.log('📊 保存元数据和索引...');
@@ -157,6 +339,221 @@ class DataPreloader {
             console.error('❌ 流水线并行加载失败:', error);
             throw error;
         }
+    }
+
+    // 🔥 动态自适应分片生成器（根据时间跨度智能选择粒度）
+    generateAdaptiveShards(startDate, endDate) {
+        const timeDiff = endDate - startDate;
+        const daysDiff = timeDiff / (1000 * 60 * 60 * 24);
+        const monthsDiff = daysDiff / 30;
+
+        // 🎯 目标：每个分片包含 15K-40K 条数据（压缩后 500KB-2MB）
+        // 假设：平均每天 500-2000 条数据（根据实际情况调整）
+
+        let shards;
+        let strategy;
+
+        if (monthsDiff <= 3) {
+            // 3个月内：按周分片（12-15个分片）
+            shards = this.generateWeeklyShards(startDate, endDate);
+            strategy = '按周分片';
+        } else if (monthsDiff <= 12) {
+            // 1年内：按2周分片（24-26个分片）
+            shards = this.generateBiWeeklyShards(startDate, endDate);
+            strategy = '按2周分片';
+        } else if (monthsDiff <= 24) {
+            // 2年内：按月分片（24个分片）
+            shards = this.generateMonthlyShards(startDate, endDate);
+            strategy = '按月分片';
+        } else {
+            // 超过2年：按2个月分片
+            shards = this.generateBiMonthlyShards(startDate, endDate);
+            strategy = '按2月分片';
+        }
+
+        console.log(`💡 数据范围 ${daysDiff.toFixed(0)} 天，采用${strategy}，生成 ${shards.length} 个分片`);
+        console.log(`📊 预估：每分片约 ${Math.round(daysDiff * 1000 / shards.length).toLocaleString()} 条数据（假设日均1000条）`);
+
+        return shards;
+    }
+
+    // 🔥 动态计算最优并发数
+    calculateOptimalConcurrency(shardCount) {
+        // 浏览器HTTP/1.1限制：每域名6个并发连接
+        // HTTP/2可以更多，但IndexedDB写入也是瓶颈
+        const MAX_BROWSER_CONCURRENT = 6;
+
+        if (shardCount <= 2) {
+            return shardCount; // 分片很少，全并发
+        } else if (shardCount <= 8) {
+            return 4; // 中等分片数，4并发（平衡）
+        } else if (shardCount <= 20) {
+            return 6; // 较多分片，6并发（充分利用）
+        } else {
+            return 8; // 大量分片，8并发（最大化，HTTP/2支持）
+        }
+    }
+
+    // 🆕 生成按2周分片
+    generateBiWeeklyShards(startDate, endDate) {
+        const shards = [];
+        const current = new Date(startDate);
+        current.setHours(0, 0, 0, 0);
+
+        while (current < endDate) {
+            const shardStart = new Date(current);
+            const shardEnd = new Date(current);
+            shardEnd.setDate(shardEnd.getDate() + 14); // 2周
+
+            if (shardEnd > endDate) {
+                shardEnd.setTime(endDate.getTime());
+            }
+
+            shards.push({
+                start: shardStart.toISOString(),
+                end: shardEnd.toISOString(),
+                label: `${shardStart.getFullYear()}/${shardStart.getMonth() + 1}/${shardStart.getDate()}-${shardEnd.getMonth() + 1}/${shardEnd.getDate()}`
+            });
+
+            current.setDate(current.getDate() + 14);
+        }
+
+        return shards;
+    }
+
+    // 🆕 生成按2个月分片
+    generateBiMonthlyShards(startDate, endDate) {
+        const shards = [];
+        const current = new Date(startDate);
+        current.setHours(0, 0, 0, 0);
+
+        while (current < endDate) {
+            const shardStart = new Date(current);
+            const shardEnd = new Date(current);
+            shardEnd.setMonth(shardEnd.getMonth() + 2); // 2个月
+
+            if (shardEnd > endDate) {
+                shardEnd.setTime(endDate.getTime());
+            }
+
+            shards.push({
+                start: shardStart.toISOString(),
+                end: shardEnd.toISOString(),
+                label: `${shardStart.getFullYear()}/${shardStart.getMonth() + 1}-${shardEnd.getFullYear()}/${shardEnd.getMonth() + 1}`
+            });
+
+            current.setMonth(current.getMonth() + 2);
+        }
+
+        return shards;
+    }
+
+    // 🆕 生成按小时分片（精确增量加载）
+    generateHourlyShards(startDate, endDate, hoursPerShard = 3) {
+        const shards = [];
+        const current = new Date(startDate);
+
+        while (current < endDate) {
+            const shardStart = new Date(current);
+            const shardEnd = new Date(current);
+            shardEnd.setHours(shardEnd.getHours() + hoursPerShard);
+
+            if (shardEnd > endDate) {
+                shardEnd.setTime(endDate.getTime());
+            }
+
+            const hours = Math.round((shardEnd - shardStart) / (1000 * 60 * 60));
+            shards.push({
+                start: shardStart.toISOString(),
+                end: shardEnd.toISOString(),
+                label: `${shardStart.getMonth() + 1}/${shardStart.getDate()} ${shardStart.getHours()}:00 (${hours}h)`
+            });
+
+            current.setHours(current.getHours() + hoursPerShard);
+        }
+
+        return shards;
+    }
+
+    // 🆕 生成按天分片
+    generateDailyShards(startDate, endDate) {
+        const shards = [];
+        const current = new Date(startDate);
+        current.setHours(0, 0, 0, 0);
+
+        while (current < endDate) {
+            const shardStart = new Date(current);
+            const shardEnd = new Date(current);
+            shardEnd.setDate(shardEnd.getDate() + 1);
+
+            if (shardEnd > endDate) {
+                shardEnd.setTime(endDate.getTime());
+            }
+
+            shards.push({
+                start: shardStart.toISOString(),
+                end: shardEnd.toISOString(),
+                label: `${shardStart.getMonth() + 1}/${shardStart.getDate()}`
+            });
+
+            current.setDate(current.getDate() + 1);
+        }
+
+        return shards;
+    }
+
+    // 🆕 生成按周分片
+    generateWeeklyShards(startDate, endDate) {
+        const shards = [];
+        const current = new Date(startDate);
+        current.setHours(0, 0, 0, 0);
+
+        while (current < endDate) {
+            const shardStart = new Date(current);
+            const shardEnd = new Date(current);
+            shardEnd.setDate(shardEnd.getDate() + 7);
+
+            if (shardEnd > endDate) {
+                shardEnd.setTime(endDate.getTime());
+            }
+
+            shards.push({
+                start: shardStart.toISOString(),
+                end: shardEnd.toISOString(),
+                label: `${shardStart.getMonth() + 1}/${shardStart.getDate()}-${shardEnd.getMonth() + 1}/${shardEnd.getDate()}`
+            });
+
+            current.setDate(current.getDate() + 7);
+        }
+
+        return shards;
+    }
+
+    // 🆕 生成按月分片
+    generateMonthlyShards(startDate, endDate) {
+        const shards = [];
+        const current = new Date(startDate);
+        current.setHours(0, 0, 0, 0);
+
+        while (current < endDate) {
+            const shardStart = new Date(current);
+            const shardEnd = new Date(current);
+            shardEnd.setMonth(shardEnd.getMonth() + 1);
+
+            if (shardEnd > endDate) {
+                shardEnd.setTime(endDate.getTime());
+            }
+
+            shards.push({
+                start: shardStart.toISOString(),
+                end: shardEnd.toISOString(),
+                label: `${shardStart.getFullYear()}/${shardStart.getMonth() + 1}`
+            });
+
+            current.setMonth(current.getMonth() + 1);
+        }
+
+        return shards;
     }
 
     // 🆕 生成季度分片
