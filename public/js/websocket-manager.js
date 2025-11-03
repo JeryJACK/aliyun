@@ -59,25 +59,51 @@ class WebSocketSyncManager {
     // 🆕 检查并执行补同步
     async checkAndPerformCatchup(onProgress) {
         try {
+            // 🔥 策略1：检查页面离开时间
             const leaveTime = localStorage.getItem('satellitePageLeaveTime');
-            if (!leaveTime) {
-                console.log('ℹ️ 无页面离开时间记录');
-                return { hasNewData: false, count: 0 };
+            let shouldSync = false;
+            let syncReason = '';
+
+            if (leaveTime) {
+                const leaveTimestamp = parseInt(leaveTime);
+                const now = Date.now();
+                const awayDuration = now - leaveTimestamp;
+                const awaySeconds = Math.round(awayDuration / 1000);
+
+                // 降低阈值：离开超过5秒就触发补同步
+                if (awayDuration > 5000) {
+                    shouldSync = true;
+                    syncReason = `页面离开 ${awaySeconds} 秒`;
+                } else {
+                    console.log(`ℹ️ 页面离开时间短 (${awaySeconds}秒)，检查缓存更新时间...`);
+                }
             }
 
-            const leaveTimestamp = parseInt(leaveTime);
-            const now = Date.now();
-            const awayDuration = now - leaveTimestamp;
+            // 🔥 策略2：检查缓存更新时间（即使页面离开时间短）
+            if (!shouldSync) {
+                const lastSyncTime = await this.cacheManager.getLastSyncTime();
+                const cacheAge = Date.now() - lastSyncTime;
+                const cacheAgeMinutes = Math.round(cacheAge / 60000);
 
-            // 如果离开超过30秒，触发补同步
-            if (awayDuration > 30000) {
-                console.log(`🔄 页面离开 ${Math.round(awayDuration / 1000)} 秒，触发补同步`);
+                // 如果缓存超过10分钟未更新，强制触发补同步
+                if (cacheAge > 600000) {
+                    shouldSync = true;
+                    syncReason = `缓存已 ${cacheAgeMinutes} 分钟未更新`;
+                    console.log(`⚠️ ${syncReason}，强制触发补同步`);
+                } else {
+                    console.log(`✅ 缓存很新 (${cacheAgeMinutes}分钟前更新)，无需补同步`);
+                }
+            }
+
+            // 执行补同步
+            if (shouldSync) {
+                console.log(`🔄 触发补同步（原因: ${syncReason}）`);
                 const result = await this.performCatchupSync(onProgress);
                 return result || { hasNewData: false, count: 0 };
-            } else {
-                console.log(`ℹ️ 页面离开时间短 (${Math.round(awayDuration / 1000)}秒)，无需补同步`);
-                return { hasNewData: false, count: 0 };
             }
+
+            return { hasNewData: false, count: 0 };
+
         } catch (error) {
             console.error('❌ 检查补同步失败:', error);
             return { hasNewData: false, count: 0 };
@@ -578,6 +604,10 @@ class WebSocketSyncManager {
             const url = getApiUrl('records') +
                 `?startDate=${shard.start}&endDate=${shard.end}&no_limit=true`;
 
+            console.log(`  🔍 补同步请求: ${shard.label}`);
+            console.log(`     URL: ${url}`);
+            console.log(`     时间范围: ${new Date(shard.start).toLocaleString()} ~ ${new Date(shard.end).toLocaleString()}`);
+
             const response = await fetch(url, {
                 method: 'GET',
                 headers: {
@@ -594,9 +624,17 @@ class WebSocketSyncManager {
             const data = await response.json();
 
             if (data.success && data.data.records) {
+                console.log(`  ✓ 补同步响应: ${shard.label} = ${data.data.records.length} 条`);
+                if (data.data.records.length > 0) {
+                    // 显示前几条数据的时间范围
+                    const first = data.data.records[0];
+                    const last = data.data.records[data.data.records.length - 1];
+                    console.log(`     数据时间范围: ${first.start_time} ~ ${last.start_time}`);
+                }
                 return data.data.records;
             }
 
+            console.log(`  ⚠️ 补同步响应格式异常: ${shard.label}`, data);
             return [];
 
         } catch (error) {
