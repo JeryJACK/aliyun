@@ -13,19 +13,24 @@ document.addEventListener('DOMContentLoaded', async () => {
         // ⚡ 性能优化：使用 requestIdleCallback 延迟非关键任务
         // 优先级：快速显示界面 > 加载数据 > WebSocket连接
 
-        // ==================== 阶段1：快速检查缓存（<50ms） ====================
+        // ==================== 阶段1：快速检查缓存并补同步（优先执行） ====================
         if (progressPercent) progressPercent.textContent = '5%';
         if (progressText) progressText.textContent = '正在检查本地缓存...';
 
-        // ⚡ 优化：将补同步检查延迟到数据加载后（非阻塞）
-        // const catchupResult = await wsSyncManager.checkAndPerformCatchup();
-        let catchupResult = { hasNewData: false, count: 0 };
+        // 🔥 关键优化：页面打开时先执行补同步，确保数据最新
+        const catchupResult = await wsSyncManager.checkAndPerformCatchup((progress, loaded, total) => {
+            // 显示补同步进度
+            if (progressPercent) progressPercent.textContent = `${Math.max(5, Math.min(40, 5 + progress * 0.35))}%`;
+            if (progressText) progressText.textContent = `正在同步新数据 ${loaded.toLocaleString()}/${total.toLocaleString()}...`;
+        });
 
-        // 🆕 优化：补同步已经更新了IndexedDB，不需要重新下载全量数据！
+        // 🆕 补同步完成后，清除缓存确保使用最新数据
         if (catchupResult.hasNewData) {
             console.log(`✅ 补同步已更新 ${catchupResult.count} 条数据到IndexedDB`);
             // 清除DataStore桶缓存，因为统计数据可能变化
             await cacheManager.clearDataStoreBucketsCache();
+            if (progressPercent) progressPercent.textContent = '45%';
+            if (progressText) progressText.textContent = `同步完成，已更新 ${catchupResult.count} 条数据`;
         }
 
         // ==================== 阶段2：加载数据和初始化应用 ====================
@@ -42,17 +47,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         // ⚡ 性能优化：使用 requestIdleCallback 延迟WebSocket连接（非阻塞）
         const initWebSocket = () => {
             console.log('🔌 延迟启动 WebSocket 实时同步...');
-
-            // 先执行补同步，再连接WebSocket
-            wsSyncManager.checkAndPerformCatchup().then((result) => {
-                catchupResult = result;
-                if (catchupResult.hasNewData) {
-                    console.log(`✅ 后台补同步完成: ${catchupResult.count} 条数据`);
-                    cacheManager.clearDataStoreBucketsCache();
-                }
-                // 启动 WebSocket 连接
-                wsSyncManager.connect();
-            });
+            // 直接连接 WebSocket（补同步已在阶段1完成，无需重复执行��
+            wsSyncManager.connect();
         };
 
         // 使用 requestIdleCallback 或 setTimeout 延迟执行
