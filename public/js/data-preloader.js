@@ -615,6 +615,11 @@ class DataPreloader {
             const url = getApiUrl('records') +
                 `?startDate=${shard.start}&endDate=${shard.end}&no_limit=true`;
 
+            // 🔍 增加详细日志
+            console.log(`  🔍 增量请求: ${shard.label}`);
+            console.log(`     URL: ${url}`);
+            console.log(`     时间范围: ${new Date(shard.start).toLocaleString()} ~ ${new Date(shard.end).toLocaleString()}`);
+
             const response = await fetch(url, {
                 method: 'GET',
                 headers: {
@@ -631,10 +636,16 @@ class DataPreloader {
             const data = await response.json();
 
             if (data.success && data.data.records) {
-                console.log(`✓ 分片 ${shard.label}: ${data.data.records.length.toLocaleString()} 条`);
+                console.log(`  ✓ 增量响应: ${shard.label} = ${data.data.records.length.toLocaleString()} 条`);
+                if (data.data.records.length > 0) {
+                    const first = data.data.records[0];
+                    const last = data.data.records[data.data.records.length - 1];
+                    console.log(`     数据时间范围: ${first.start_time} ~ ${last.start_time}`);
+                }
                 return data.data.records;
             }
 
+            console.log(`  ⚠️ 增量响应格式异常: ${shard.label}`, data);
             return [];
 
         } catch (error) {
