@@ -56,53 +56,17 @@ class WebSocketSyncManager {
         }
     }
 
-    // 🆕 检查并执行补同步
+    // 🆕 检查并执行补同步（基于changeLogId + start_time智能过滤）
     async checkAndPerformCatchup(onProgress) {
         try {
-            // 🔥 策略1：检查页面离开时间
-            const leaveTime = localStorage.getItem('satellitePageLeaveTime');
-            let shouldSync = false;
-            let syncReason = '';
+            // 获取lastChangeLogId
+            const lastChangeLogId = await this.cacheManager.getLastChangeLogId();
 
-            if (leaveTime) {
-                const leaveTimestamp = parseInt(leaveTime);
-                const now = Date.now();
-                const awayDuration = now - leaveTimestamp;
-                const awaySeconds = Math.round(awayDuration / 1000);
+            console.log(`🔍 当前lastChangeLogId: ${lastChangeLogId}`);
 
-                // 降低阈值：离开超过5秒就触发补同步
-                if (awayDuration > 5000) {
-                    shouldSync = true;
-                    syncReason = `页面离开 ${awaySeconds} 秒`;
-                } else {
-                    console.log(`ℹ️ 页面离开时间短 (${awaySeconds}秒)，检查缓存更新时间...`);
-                }
-            }
-
-            // 🔥 策略2：检查缓存更新时间（即使页面离开时间短）
-            if (!shouldSync) {
-                const lastSyncTime = await this.cacheManager.getLastSyncTime();
-                const cacheAge = Date.now() - lastSyncTime;
-                const cacheAgeMinutes = Math.round(cacheAge / 60000);
-
-                // 如果缓存超过10分钟未更新，强制触发补同步
-                if (cacheAge > 600000) {
-                    shouldSync = true;
-                    syncReason = `缓存已 ${cacheAgeMinutes} 分钟未更新`;
-                    console.log(`⚠️ ${syncReason}，强制触发补同步`);
-                } else {
-                    console.log(`✅ 缓存很新 (${cacheAgeMinutes}分钟前更新)，无需补同步`);
-                }
-            }
-
-            // 执行补同步
-            if (shouldSync) {
-                console.log(`🔄 触发补同步（原因: ${syncReason}）`);
-                const result = await this.performCatchupSync(onProgress);
-                return result || { hasNewData: false, count: 0 };
-            }
-
-            return { hasNewData: false, count: 0 };
+            // 🔥 始终执行基于changeLogId的补同步（轻量级，只查询变更）
+            const result = await this.performCatchupSyncByChangeLogId(lastChangeLogId, onProgress);
+            return result || { hasNewData: false, count: 0 };
 
         } catch (error) {
             console.error('❌ 检查补同步失败:', error);
@@ -324,7 +288,72 @@ class WebSocketSyncManager {
         }
     }
 
-    // 断线补同步（获取断线期间的变更）- 🔥 使用分片并行加载
+    // 🆕 基于changeLogId的补同步（更可靠）+ start_time智能过滤
+    async performCatchupSyncByChangeLogId(lastChangeLogId, onProgress) {
+        const perfStart = performance.now();
+
+        try {
+            console.log(`🔄 开始基于ChangeLog的补同步，lastChangeLogId: ${lastChangeLogId}`);
+
+            // 构建API URL
+            const apiUrl = CONFIG.isGitHubPages
+                ? CONFIG.API_ENDPOINTS.records
+                : `${CONFIG.API_BASE_URL}/satellite`;
+
+            // 🔥 智能策略：只获取最近30天的数据（基于start_time过滤）
+            const recentDays = 30;
+            const url = `${apiUrl}?sinceChangeLogId=${lastChangeLogId}&recentDays=${recentDays}`;
+
+            console.log(`📡 请求URL: ${url}`);
+
+            const response = await fetch(url, {
+                method: 'GET',
+                headers: { 'Content-Type': 'application/json' }
+            });
+
+            if (!response.ok) {
+                console.warn(`⚠️ 补同步请求失败 (${response.status}): ${response.statusText}`);
+                return { hasNewData: false, count: 0 };
+            }
+
+            const result = await response.json();
+
+            if (!result.success || !result.data) {
+                console.warn('⚠️ 补同步响应格式错误');
+                return { hasNewData: false, count: 0 };
+            }
+
+            const { records, maxChangeLogId, filteredCount } = result.data;
+
+            if (records.length === 0) {
+                console.log('✅ 无需补同步，数据已是最新');
+                return { hasNewData: false, count: 0 };
+            }
+
+            console.log(`📦 收到 ${records.length} 条补同步数据 (过滤掉 ${filteredCount || 0} 条旧数据)`);
+
+            // 批量更新到IndexedDB
+            await this.cacheManager.batchUpdateRecords(records);
+
+            // 🔥 保存maxChangeLogId
+            await this.cacheManager.saveLastChangeLogId(maxChangeLogId);
+
+            const perfTime = performance.now() - perfStart;
+            console.log(`✅ 基于ChangeLog的补同步完成: ${records.length} 条数据 (${(perfTime / 1000).toFixed(1)}秒), maxChangeLogId=${maxChangeLogId}`);
+
+            return {
+                hasNewData: true,
+                count: records.length,
+                maxChangeLogId: maxChangeLogId
+            };
+
+        } catch (error) {
+            console.error('❌ 基于ChangeLog的补同步失败:', error);
+            return { hasNewData: false, count: 0 };
+        }
+    }
+
+    // 断线补同步（获取断线期间的变更）- 🔥 使用分片并行加载（兼容旧版本）
     async performCatchupSync(onProgress) {
         const perfStart = performance.now();
 

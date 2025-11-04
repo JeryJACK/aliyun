@@ -1140,6 +1140,58 @@ class CacheManager {
         });
     }
 
+    // 🆕 获取最后的ChangeLogId（基于ID的补同步）
+    async getLastChangeLogId() {
+        if (!this.db) await this.init();
+
+        return new Promise((resolve) => {
+            const transaction = this.db.transaction([this.metaStoreName], 'readonly');
+            const store = transaction.objectStore(this.metaStoreName);
+            const request = store.get('allDataMeta');
+
+            request.onsuccess = () => {
+                const meta = request.result;
+                resolve(meta?.lastChangeLogId || 0);
+            };
+
+            request.onerror = () => resolve(0);
+        });
+    }
+
+    // 🆕 保存最后的ChangeLogId
+    async saveLastChangeLogId(changeLogId) {
+        if (!this.db) await this.init();
+
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction([this.metaStoreName], 'readwrite');
+            const store = transaction.objectStore(this.metaStoreName);
+            const request = store.get('allDataMeta');
+
+            request.onsuccess = () => {
+                const meta = request.result || {
+                    key: 'allDataMeta',
+                    totalCount: 0,
+                    lastUpdated: Date.now(),
+                    lastSyncTime: Date.now(),
+                    lastChangeLogId: 0
+                };
+
+                meta.lastChangeLogId = changeLogId;
+                meta.lastUpdated = Date.now();
+                meta.lastSyncTime = Date.now();
+
+                const updateRequest = store.put(meta);
+                updateRequest.onsuccess = () => {
+                    console.log(`💾 已保存lastChangeLogId: ${changeLogId}`);
+                    resolve();
+                };
+                updateRequest.onerror = () => reject(updateRequest.error);
+            };
+
+            request.onerror = () => reject(request.error);
+        });
+    }
+
     // 🆕 ==================== DataStore桶缓存功能 ====================
 
     /**
@@ -1620,4 +1672,3 @@ class CacheManager {
         }
     }
 }
-
