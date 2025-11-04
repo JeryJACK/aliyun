@@ -30,8 +30,8 @@ class DataPreloader {
                 this.isPreloading = false;
 
                 // 🔥 智能增量更新策略
-                if (ageMinutes > 5) {
-                    // 缓存超过5分钟：立即后台并发加载增量数据
+                if (ageMinutes > 30) {
+                    // ✅ 优化阈值：缓存超过30分钟才启动增量加载（避免频繁刷新）
                     console.log(`⏱️ 缓存已 ${ageMinutes} 分钟未更新，启动增量并发加载...`);
                     setTimeout(async () => {
                         try {
@@ -48,7 +48,7 @@ class DataPreloader {
                         }
                     }, 100); // 100ms后启动，不阻塞页面初始化
                 } else {
-                    console.log('💡 缓存很新，依赖WebSocket实时同步');
+                    console.log(`💡 缓存很新 (${ageMinutes}分钟前更新)，依赖WebSocket实时同步`);
                 }
 
                 return { success: true, totalCount: cacheInfo.totalCount };
@@ -108,19 +108,20 @@ class DataPreloader {
             let shards;
             const hoursDiff = timeDiff / (1000 * 60 * 60);
 
-            if (hoursDiff <= 3) {
-                // 3小时内：直接一次请求（数据量小，不需要分片）
+            if (hoursDiff <= 12) {
+                // ✅ 优化：12小时内直接一次请求（减少HTTP请求数量）
                 shards = [{
                     start: startDate.toISOString(),
                     end: endDate.toISOString(),
                     label: `${Math.round(hoursDiff * 60)}分钟`
                 }];
+                console.log(`📊 时间范围 ${hoursDiff.toFixed(1)} 小时，使用单次请求（避免过度分片）`);
             } else if (hoursDiff <= 24) {
-                // 24小时内：按3小时分片（最多8个分片，并发度高）
-                shards = this.generateHourlyShards(startDate, endDate, 3);
-            } else if (daysDiff <= 7) {
-                // 7天内：按6小时分片（高并发，避免按天分片的重复下载）
+                // 24小时内：按6小时分片（最多4个分片）
                 shards = this.generateHourlyShards(startDate, endDate, 6);
+            } else if (daysDiff <= 7) {
+                // 7天内：按12小时分片（减少请求数量）
+                shards = this.generateHourlyShards(startDate, endDate, 12);
             } else if (daysDiff <= 30) {
                 // 30天内：按天分片
                 shards = this.generateDailyShards(startDate, endDate);

@@ -347,21 +347,22 @@ class WebSocketSyncManager {
                 return { hasNewData: false, count: 0 };
             }
 
-            // 🔥 智能分片策略（使用与 incrementalParallelLoad 相同的逻辑）
+            // 🔥 智能分片策略（与 data-preloader 保持一致）
             let shards;
-            if (hoursDiff <= 3) {
-                // 3小时内：直接一次请求
+            if (hoursDiff <= 12) {
+                // ✅ 优化：12小时内直接一次请求（减少HTTP请求数量）
                 shards = [{
                     start: startDate.toISOString(),
                     end: endDate.toISOString(),
                     label: `${Math.round(hoursDiff * 60)}分钟`
                 }];
+                console.log(`📊 时间范围 ${hoursDiff.toFixed(1)} 小时，使用单次请求（避免过度分片）`);
             } else if (hoursDiff <= 24) {
-                // 24小时内：按3小时分片
-                shards = this.generateHourlyShards(startDate, endDate, 3);
-            } else if (daysDiff <= 7) {
-                // 7天内：按6小时分片
+                // 24小时内：按6小时分片（最多4个分片）
                 shards = this.generateHourlyShards(startDate, endDate, 6);
+            } else if (daysDiff <= 7) {
+                // 7天内：按12小时分片（减少请求数量）
+                shards = this.generateHourlyShards(startDate, endDate, 12);
             } else if (daysDiff <= 30) {
                 // 30天内：按天分片
                 shards = this.generateDailyShards(startDate, endDate);
