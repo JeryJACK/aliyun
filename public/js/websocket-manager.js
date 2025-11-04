@@ -332,8 +332,14 @@ class WebSocketSyncManager {
 
             console.log(`📦 收到 ${records.length} 条补同步数据 (过滤掉 ${filteredCount || 0} 条旧数据)`);
 
+            // 🔥 数据转换：将 plan_id 映射为 id（IndexedDB需要）
+            const convertedRecords = records.map(record => ({
+                ...record,
+                id: record.plan_id  // 添加id字段
+            }));
+
             // 批量更新到IndexedDB
-            await this.cacheManager.batchUpdateRecords(records);
+            await this.cacheManager.batchUpdateRecords(convertedRecords);
 
             // 🔥 保存maxChangeLogId
             await this.cacheManager.saveLastChangeLogId(maxChangeLogId);
