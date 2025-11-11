@@ -903,6 +903,72 @@ class CacheManager {
         });
     }
 
+    /**
+     * 🆕 修复元数据不一致问题
+     * 用于修复元数据中的totalCount与实际数据量不一致的情况
+     */
+    async fixMetadata() {
+        if (!this.db) await this.init();
+
+        console.log('🔧 开始修复元数据...');
+
+        return new Promise((resolve, reject) => {
+            const tx = this.db.transaction(
+                [this.allDataStoreName, this.metaStoreName],
+                'readwrite'
+            );
+            const dataStore = tx.objectStore(this.allDataStoreName);
+            const metaStore = tx.objectStore(this.metaStoreName);
+
+            // 1. 获取实际记录数
+            const countRequest = dataStore.count();
+
+            countRequest.onsuccess = () => {
+                const actualCount = countRequest.result;
+                console.log(`📊 实际记录数: ${actualCount.toLocaleString()}`);
+
+                // 2. 获取现有元数据
+                const metaRequest = metaStore.get('allDataMeta');
+
+                metaRequest.onsuccess = () => {
+                    const meta = metaRequest.result || {};
+                    const oldCount = meta.totalCount || 0;
+
+                    // 3. 更新元数据
+                    meta.key = 'allDataMeta';
+                    meta.totalCount = actualCount;
+                    meta.actualCount = actualCount;
+                    meta.lastUpdated = meta.lastUpdated || Date.now();
+                    meta.fixedAt = Date.now();
+
+                    metaStore.put(meta);
+
+                    console.log(`✅ 元数据已修复: ${oldCount.toLocaleString()} → ${actualCount.toLocaleString()}`);
+                    resolve({
+                        oldCount,
+                        newCount: actualCount,
+                        fixed: oldCount !== actualCount
+                    });
+                };
+
+                metaRequest.onerror = () => {
+                    console.error('❌ 获取元数据失败:', metaRequest.error);
+                    reject(metaRequest.error);
+                };
+            };
+
+            countRequest.onerror = () => {
+                console.error('❌ 统计记录数失败:', countRequest.error);
+                reject(countRequest.error);
+            };
+
+            tx.onerror = () => {
+                console.error('❌ 事务失败:', tx.error);
+                reject(tx.error);
+            };
+        });
+    }
+
     // 清空全数据缓存
     async clearAllDataCache() {
         if (!this.db) await this.init();

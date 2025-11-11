@@ -38,11 +38,21 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         // ==================== 阶段2：加载数据和初始化应用 ====================
+        if (progressPercent) progressPercent.textContent = '50%';
+        if (progressText) progressText.textContent = '正在初始化应用...';
+
         // 开始加载数据（不需要forceReload，直接使用IndexedDB）
         await dataPreloader.autoPreloadAllData();
 
-        // 初始化应用
+        if (progressPercent) progressPercent.textContent = '70%';
+        if (progressText) progressText.textContent = '正在构建应用...';
+
+        // 🔥 修复：正确等待应用初始化完成
         window.app = new SatelliteApp();
+        await window.app.waitForInit(); // 等待init()完成
+
+        if (progressPercent) progressPercent.textContent = '100%';
+        if (progressText) progressText.textContent = '初始化完成！';
 
         const perfTime = performance.now() - perfStart;
         console.log(`✅ 应用初始化完成，耗时 ${perfTime.toFixed(0)}ms`);
@@ -121,32 +131,22 @@ document.addEventListener('DOMContentLoaded', async () => {
             window.sharedDataManager.onDataRequest = async (requestId, source) => {
                 console.log(`📨 收到来自 ${source} 的数据请求: ${requestId}`);
 
-                // 如果 this.data 为空（延迟加载模式），快速从 IndexedDB 加载
-                if (window.app && (!window.app.data || window.app.data.length === 0)) {
-                    console.log('⚡ this.data 为空，快速加载数据以响应请求...');
-
+                if (window.app) {
                     try {
-                        // 快速加载所有数据（使用游标，比查询快）
-                        const loadStart = performance.now();
-                        const allData = await cacheManager.getAllDataFast();
-                        window.app.data = allData;
+                        // 🔥 使用getData()确保数据已加载
+                        const data = await window.app.getData();
 
-                        const loadTime = performance.now() - loadStart;
-                        console.log(`✅ 数据加载完成: ${allData.length.toLocaleString()} 条 (${loadTime.toFixed(0)}ms)`);
-
-                        // 响应数据请求
-                        window.sharedDataManager.data = allData;
+                        window.sharedDataManager.data = data;
                         window.sharedDataManager.broadcast({
                             type: 'data_response',
                             requestId: requestId,
-                            data: allData,
+                            data: data,
                             metadata: window.sharedDataManager.metadata,
                             timestamp: Date.now()
                         });
-                        console.log(`✅ 已响应数据请求 ${requestId}: ${allData.length} 条记录（按需加载）`);
-
+                        console.log(`✅ 已响应数据请求 ${requestId}: ${data.length.toLocaleString()} 条记录`);
                     } catch (error) {
-                        console.error('❌ 按需加载数据失败:', error);
+                        console.error('❌ 响应数据请求失败:', error);
                     }
                 }
             };

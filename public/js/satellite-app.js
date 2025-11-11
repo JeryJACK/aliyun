@@ -39,7 +39,19 @@ class SatelliteApp {
         this.dataLoadingStrategy = 'initial'; // 🆕 数据加载策略：initial/lazy/quick/loaded
         this.loadedDataRange = null; // 🆕 已加载的数据范围 {start: Date, end: Date}
 
-        this.init();
+        // 🆕 暴露初始化状态（用于外部等待初始化完成）
+        this.initComplete = false;
+        this.initPromise = null;
+
+        // 启动异步初始化
+        this.initPromise = this.init().then(() => {
+            this.initComplete = true;
+            return this;
+        }).catch(error => {
+            console.error('❌ 应用初始化失败:', error);
+            this.initComplete = false;
+            throw error;
+        });
     }
 
     bindElements() {
@@ -217,6 +229,7 @@ class SatelliteApp {
 
     async init() {
         console.log('🚀 应用初始化开始...');
+        const perfStart = performance.now();
 
         // 1. 立即显示骨架屏（已在HTML中渲染，无需额外操作）
         const skeleton = document.getElementById('skeleton-screen');
@@ -415,7 +428,8 @@ class SatelliteApp {
             // 数据加载完成后折叠系统说明（视觉反馈）
             this.collapseInstructionsAfterLoad();
 
-            console.log('✅ 应用初始化完成');
+            const initTime = performance.now() - perfStart;
+            console.log(`✅ 应用init()完成，耗时 ${initTime.toFixed(0)}ms`);
 
             // 🆕 通知 SharedDataManager 数据已加载（用于跨页面共享）
             // 🔥 延迟加载模式下，先从IndexedDB快速加载数据再通知
@@ -460,6 +474,53 @@ class SatelliteApp {
             showError('数据加载失败: ' + (error.message || error));
             this.isInitializing = false;
         }
+    }
+
+    /**
+     * 🆕 等待初始化完成
+     * 供外部调用，确保应用完全就绪后再继续
+     */
+    async waitForInit() {
+        if (this.initComplete) {
+            return this;
+        }
+        await this.initPromise;
+        return this;
+    }
+
+    /**
+     * 🆕 智能数据访问器（懒加载）
+     * 确保在需要时自动加载数据
+     */
+    async getData() {
+        // 如果数据已加载，直接返回
+        if (this.data && this.data.length > 0) {
+            return this.data;
+        }
+
+        // 如果是延迟加载模式，从IndexedDB快速加载
+        if (this.dataLoadingStrategy === 'lazy' && !this._isLoadingData) {
+            this._isLoadingData = true;
+
+            try {
+                console.log('⚡ 按需加载数据（延迟加载模式）...');
+                const loadStart = performance.now();
+
+                this.data = await cacheManager.getAllDataFast();
+
+                const loadTime = performance.now() - loadStart;
+                console.log(`✅ 按需加载完成: ${this.data.length.toLocaleString()} 条 (${loadTime.toFixed(0)}ms)`);
+
+                this.dataLoadingStrategy = 'loaded'; // 标记为已加载
+            } catch (error) {
+                console.error('❌ 按需加载数据失败:', error);
+                this.data = [];
+            } finally {
+                this._isLoadingData = false;
+            }
+        }
+
+        return this.data || [];
     }
 
     // 🆕 【极速】追加数据批次到 DataStore
@@ -842,13 +903,99 @@ class SatelliteApp {
 
     // 🆕 新增：后台预加载（不阻塞主流程）
     async backgroundPreload() {
-        try {
-            console.log('🔄 后台预加载数据...');
-            // 可以在这里执行一些后台任务，比如预加载其他页面需要的数据
-            // 目前先留空，保持与原有逻辑一致
-        } catch (error) {
-            console.warn('⚠️ 后台预加载失败（非致命）:', error);
+        console.log('🔄 后台预加载数据...');
+
+        // 检查本地缓存状态
+        const cacheInfo = await cacheManager.checkAllDataCache();
+
+        if (cacheInfo && cacheInfo.totalCount > 0) {
+            console.log('📊 本地缓存统计信息:', cacheInfo);
+            this.updateCacheInfo(cacheInfo);
         }
+
+        // 🆕 缓存预热机制
+        await this.warmupCache();
+    }
+
+    /**
+     * 🆕 缓存预热：保存预计算统计和DataStore缓存
+     * 在数据加载完成后自动调用，加速下次打开页面
+     */
+    async warmupCache() {
+        try {
+            console.log('🔥 开始缓存预热...');
+
+            // 1. 生成并保存预计算统计（卫星和客户统计）
+            const stats = this.generateStatisticsSync();
+            if (stats && stats.satelliteStats) {
+                await cacheManager.saveStatistics('bucket', stats.satelliteStats);
+                console.log('✅ 卫星统计已缓存');
+            }
+            if (stats && stats.customerStats) {
+                await cacheManager.saveStatistics('customer', stats.customerStats);
+                console.log('✅ 客户统计已缓存');
+            }
+
+            // 2. 保存当前周期的DataStore缓存
+            if (this.dataStore && this.dataStoreReady) {
+                const currentGroupType = this.groupBy ? this.groupBy.value : 'day';
+                const timestamp = Date.now();
+
+                await cacheManager.saveDataStoreBuckets(
+                    currentGroupType,
+                    this.dataStore.buckets,
+                    timestamp
+                );
+                console.log(`✅ DataStore缓存已保存 (${currentGroupType})`);
+
+                // 3. 🔥 可选：预先缓存其他常用周期（异步，不阻塞）
+                const otherTypes = ['week', 'month'].filter(t => t !== currentGroupType);
+                for (const type of otherTypes) {
+                    setTimeout(async () => {
+                        try {
+                            // 临时构建DataStore
+                            const tempDataStore = new DataStore(this.fieldMappingValues);
+
+                            // 如果this.data为空（延迟加载模式），从缓存加载数据
+                            let dataForPrewarm = this.data;
+                            if (!dataForPrewarm || dataForPrewarm.length === 0) {
+                                console.log(`⚡ 预热${type}缓存：从IndexedDB加载数据...`);
+                                dataForPrewarm = await cacheManager.getAllDataFast();
+                            }
+
+                            if (dataForPrewarm && dataForPrewarm.length > 0) {
+                                tempDataStore.addRecordsToBucketBatch(dataForPrewarm, this.cycleEngine, type);
+
+                                await cacheManager.saveDataStoreBuckets(type, tempDataStore.buckets, timestamp);
+                                console.log(`✅ 预热缓存完成: ${type}`);
+                            }
+                        } catch (error) {
+                            console.error(`❌ 预热缓存失败 (${type}):`, error);
+                        }
+                    }, 3000); // 延迟3秒，不影响用户操作
+                }
+            }
+
+            console.log('✅ 缓存预热完成');
+        } catch (error) {
+            console.error('❌ 缓存预热失败:', error);
+        }
+    }
+
+    /**
+     * 🆕 获取当前统计结果（不重新计算）
+     */
+    generateStatisticsSync() {
+        // 如果sessionStorage有保存的统计结果，直接返回
+        const saved = sessionStorage.getItem('satelliteStatistics');
+        if (saved) {
+            try {
+                return JSON.parse(saved);
+            } catch (error) {
+                console.error('解析统计结果失败:', error);
+            }
+        }
+        return null;
     }
 
     // 数据加载完成后折叠系统说明（视觉反馈）
@@ -867,19 +1014,12 @@ class SatelliteApp {
             return;
         }
 
-        if (!this.data) {
-            console.warn('⚠️ 应用未初始化，忽略实时更新');
-            return;
-        }
+        // 🔥 确保数据已加载（使用智能数据访问器）
+        const data = await this.getData();
 
-        // 🔥 延迟加载模式：首次实时更新时按需加载this.data
-        if (this.dataLoadingStrategy === 'lazy' && this.data.length === 0) {
-            console.log('🔄 首次实时更新，触发按需加载 this.data...');
-            try {
-                await this.ensureDataLoaded(3); // 加载最近3个月
-            } catch (error) {
-                console.error('❌ 按需加载失败，实时更新将仅更新DataStore');
-            }
+        if (!data || data.length === 0) {
+            console.warn('⚠️ 数据未加载，无法处理实时更新');
+            return;
         }
 
         const perfStart = performance.now();
