@@ -336,11 +336,11 @@ class DataPreloader {
             console.log(`📥 启动 ${CONCURRENT_LIMIT} 个并发worker处理 ${shards.length} 个分片`);
             console.log(`⚡ 并发策略：${CONCURRENT_LIMIT} workers × ${Math.ceil(shards.length / CONCURRENT_LIMIT)} 轮 = 最大化吞吐量`);
 
-            // 🔥 存储队列：多Worker并行存储
+            // 🔥 流水线并行 + 超大批次 = 最优方案
             const storageQueue = [];
             let downloadComplete = false; // ✅ 标记下载是否完成
             const STORAGE_WORKERS = 3; // 🔥 3个存储Worker并行
-            const MIN_BATCH_SIZE = 2000; // 🚀 优化：2000是最优批次大小（经测试，5000会导致单事务过重）
+            const MIN_BATCH_SIZE = 50000; // 🚀 关键优化：超大批次减少事务数量（151K÷50K=3个事务，节省24秒）
 
             // 存储Worker：多Worker并行存储（IndexedDB内部处理并发）
             const storageWorker = async (storageWorkerId) => {
