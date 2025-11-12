@@ -149,37 +149,72 @@ class DataPreloader {
             const storageQueue = [];
             let downloadComplete = false; // ✅ 标记下载是否完成
             const STORAGE_WORKERS = 3; // 🔥 3个存储Worker并行
+            const MIN_BATCH_SIZE = 1000; // 🚀 方案3：最小批次大小，合并小批次
 
             // 存储Worker：多Worker并行存储（IndexedDB内部处理并发）
             const storageWorker = async (workerId) => {
-                while (!downloadComplete || storageQueue.length > 0) {
-                    if (storageQueue.length === 0) {
+                let workerStored = 0;
+                let pendingBatch = []; // 🚀 方案3：待合并的小批次缓冲区
+                let pendingShards = []; // 记录合并的分片
+
+                while (!downloadComplete || storageQueue.length > 0 || pendingBatch.length > 0) {
+                    if (storageQueue.length === 0 && pendingBatch.length < MIN_BATCH_SIZE && !downloadComplete) {
                         await new Promise(resolve => setTimeout(resolve, 10));
                         continue;
                     }
 
-                    const { records, shard, downloadTime } = storageQueue.shift();
-                    if (!records) continue; // 防止空数据
-
-                    try {
-                        const storeStart = performance.now();
-                        await cacheManager.appendData(records);
-                        const storeTime = performance.now() - storeStart;
-
-                        console.log(`  💾 StorageWorker${workerId} 追加 ${shard.label}: ${records.length.toLocaleString()} 条 (下载${downloadTime.toFixed(0)}ms + 存储${storeTime.toFixed(0)}ms)`);
-
-                        totalLoaded += records.length;
-                        completedShards++;
-
-                        const progress = Math.round((completedShards / shards.length) * 100);
-                        if (onProgress) {
-                            onProgress(progress, totalLoaded, totalLoaded);
+                    // 🚀 方案3：从队列中取出数据，如果是小批次则累积
+                    if (storageQueue.length > 0) {
+                        const { records, shard, downloadTime } = storageQueue.shift();
+                        if (records && records.length > 0) {
+                            pendingBatch.push(...records);
+                            pendingShards.push({ shard, downloadTime, count: records.length });
+                            completedShards++;
                         }
-                    } catch (error) {
-                        console.error(`❌ StorageWorker${workerId} 存储分片 ${shard.label} 失败:`, error);
+                    }
+
+                    // 🚀 方案3：判断是否需要提交批次
+                    const shouldFlush = pendingBatch.length >= MIN_BATCH_SIZE ||
+                                       (downloadComplete && storageQueue.length === 0);
+
+                    if (shouldFlush && pendingBatch.length > 0) {
+                        try {
+                            const storeStart = performance.now();
+                            await cacheManager.appendData(pendingBatch);
+                            const storeTime = performance.now() - storeStart;
+
+                            // 计算合并的分片信息
+                            const mergedCount = pendingShards.length;
+                            const totalRecords = pendingBatch.length;
+                            const avgDownloadTime = pendingShards.reduce((sum, s) => sum + s.downloadTime, 0) / mergedCount;
+
+                            if (mergedCount > 1) {
+                                console.log(`  💾 StorageWorker${workerId} 合并追加 ${mergedCount} 个分片: ${totalRecords.toLocaleString()} 条 (平均下载${avgDownloadTime.toFixed(0)}ms + 存储${storeTime.toFixed(0)}ms)`);
+                                console.log(`     📦 合并明细: ${pendingShards.map(s => `${s.shard.label}(${s.count})`).join(', ')}`);
+                            } else {
+                                const s = pendingShards[0];
+                                console.log(`  💾 StorageWorker${workerId} 追加 ${s.shard.label}: ${totalRecords.toLocaleString()} 条 (下载${s.downloadTime.toFixed(0)}ms + 存储${storeTime.toFixed(0)}ms)`);
+                            }
+
+                            workerStored += totalRecords;
+                            totalLoaded += totalRecords;
+
+                            const progress = Math.round((completedShards / shards.length) * 100);
+                            if (onProgress) {
+                                onProgress(progress, totalLoaded, totalLoaded);
+                            }
+
+                            // 清空缓冲区
+                            pendingBatch = [];
+                            pendingShards = [];
+                        } catch (error) {
+                            console.error(`❌ StorageWorker${workerId} 存储批次失败:`, error);
+                            pendingBatch = [];
+                            pendingShards = [];
+                        }
                     }
                 }
-                console.log(`✅ StorageWorker${workerId} 完成`);
+                console.log(`✅ StorageWorker${workerId} 完成，追加 ${workerStored.toLocaleString()} 条数据`);
             };
 
             // 下载Worker：并发下载+解析
@@ -268,36 +303,69 @@ class DataPreloader {
             const storageQueue = [];
             let downloadComplete = false; // ✅ 标记下载是否完成
             const STORAGE_WORKERS = 3; // 🔥 3个存储Worker并行
+            const MIN_BATCH_SIZE = 1000; // 🚀 方案3：最小批次大小，合并小批次
 
             // 存储Worker：多Worker并行存储（IndexedDB内部处理并发）
             const storageWorker = async (storageWorkerId) => {
                 let workerStored = 0;
-                while (!downloadComplete || storageQueue.length > 0) {
-                    if (storageQueue.length === 0) {
+                let pendingBatch = []; // 🚀 方案3：待合并的小批次缓冲区
+                let pendingShards = []; // 记录合并的分片
+
+                while (!downloadComplete || storageQueue.length > 0 || pendingBatch.length > 0) {
+                    if (storageQueue.length === 0 && pendingBatch.length < MIN_BATCH_SIZE && !downloadComplete) {
                         await new Promise(resolve => setTimeout(resolve, 10));
                         continue;
                     }
 
-                    const { records, shard, workerId, downloadTime } = storageQueue.shift();
-                    if (!records) continue; // 防止空数据
-
-                    try {
-                        const storeStart = performance.now();
-                        await cacheManager.storeBatch(records, {});
-                        const storeTime = performance.now() - storeStart;
-
-                        console.log(`  💾 StorageWorker${storageWorkerId} 存储 ${shard.label}: ${records.length.toLocaleString()} 条 (下载${downloadTime.toFixed(0)}ms + 存储${storeTime.toFixed(0)}ms)`);
-
-                        workerStored += records.length;
-                        totalLoaded += records.length;
-                        completedShards++;
-
-                        const progress = Math.round((completedShards / shards.length) * 100);
-                        if (onProgress) {
-                            onProgress(progress, totalLoaded, totalLoaded);
+                    // 🚀 方案3：从队列中取出数据，如果是小批次则累积
+                    if (storageQueue.length > 0) {
+                        const { records, shard, workerId, downloadTime } = storageQueue.shift();
+                        if (records && records.length > 0) {
+                            pendingBatch.push(...records);
+                            pendingShards.push({ shard, downloadTime, count: records.length });
+                            completedShards++;
                         }
-                    } catch (error) {
-                        console.error(`❌ StorageWorker${storageWorkerId} 存储分片 ${shard.label} 失败:`, error);
+                    }
+
+                    // 🚀 方案3：判断是否需要提交批次
+                    const shouldFlush = pendingBatch.length >= MIN_BATCH_SIZE ||
+                                       (downloadComplete && storageQueue.length === 0);
+
+                    if (shouldFlush && pendingBatch.length > 0) {
+                        try {
+                            const storeStart = performance.now();
+                            await cacheManager.storeBatch(pendingBatch, {});
+                            const storeTime = performance.now() - storeStart;
+
+                            // 计算合并的分片信息
+                            const mergedCount = pendingShards.length;
+                            const totalRecords = pendingBatch.length;
+                            const avgDownloadTime = pendingShards.reduce((sum, s) => sum + s.downloadTime, 0) / mergedCount;
+
+                            if (mergedCount > 1) {
+                                console.log(`  💾 StorageWorker${storageWorkerId} 合并存储 ${mergedCount} 个分片: ${totalRecords.toLocaleString()} 条 (平均下载${avgDownloadTime.toFixed(0)}ms + 存储${storeTime.toFixed(0)}ms)`);
+                                console.log(`     📦 合并明细: ${pendingShards.map(s => `${s.shard.label}(${s.count})`).join(', ')}`);
+                            } else {
+                                const s = pendingShards[0];
+                                console.log(`  💾 StorageWorker${storageWorkerId} 存储 ${s.shard.label}: ${totalRecords.toLocaleString()} 条 (下载${s.downloadTime.toFixed(0)}ms + 存储${storeTime.toFixed(0)}ms)`);
+                            }
+
+                            workerStored += totalRecords;
+                            totalLoaded += totalRecords;
+
+                            const progress = Math.round((completedShards / shards.length) * 100);
+                            if (onProgress) {
+                                onProgress(progress, totalLoaded, totalLoaded);
+                            }
+
+                            // 清空缓冲区
+                            pendingBatch = [];
+                            pendingShards = [];
+                        } catch (error) {
+                            console.error(`❌ StorageWorker${storageWorkerId} 存储批次失败:`, error);
+                            pendingBatch = [];
+                            pendingShards = [];
+                        }
                     }
                 }
                 console.log(`✅ StorageWorker${storageWorkerId} 完成，存储 ${workerStored.toLocaleString()} 条数据`);

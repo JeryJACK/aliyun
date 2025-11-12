@@ -161,8 +161,9 @@ class CacheManager {
             // 2. 按时间排序（如果后端未排序）
             const sortedData = this.sortDataByTime(allData);
 
-            // 3. 🚀 分批存储（每批10000条，避免长事务）
-            const BATCH_SIZE = 10000;
+            // 3. 🚀 分批存储（每批20000条，避免长事务）
+            // 🚀 方案4优化：增大批次大小，减少事务开销（10000 → 20000）
+            const BATCH_SIZE = 20000;
             const totalBatches = Math.ceil(sortedData.length / BATCH_SIZE);
             let storedCount = 0;
             const monthStats = {};
