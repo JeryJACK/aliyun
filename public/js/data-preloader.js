@@ -53,26 +53,13 @@ class DataPreloader {
 
                 return { success: true, totalCount: cacheInfo.totalCount };
             }
-            // 🚀 优化：如果有缓存但totalCount为0，说明数据已部分加载，执行修复而不是全量重新加载
-            else if (cacheInfo && cacheInfo.totalCount === 0) {
-                console.warn('⚠️ 检测到元数据异常（totalCount=0），执行修复...');
-                try {
-                    const fixResult = await cacheManager.fixMetadata();
-                    if (fixResult && fixResult.newCount > 0) {
-                        console.log(`✅ 元数据已修复: ${fixResult.oldCount} → ${fixResult.newCount} 条`);
-                        this.updatePreloadStatus(`✅ 已修复元数据，实际有 ${fixResult.newCount.toLocaleString()} 条数据`, 'success');
-                        this.isPreloading = false;
-                        return { success: true, totalCount: fixResult.newCount };
-                    }
-                } catch (error) {
-                    console.error('❌ 元数据修复失败:', error);
-                }
-                // 如果修复失败，继续执行全量加载
-                console.log('📡 元数据修复失败，执行全量加载...');
+            // 2. 🚀 缓存不存在或为空，使用并行分片加载全量数据
+            if (cacheInfo && cacheInfo.totalCount === 0) {
+                console.log('⚠️ 缓存元数据显示0条记录，可能是新建数据库或数据已清空');
+                console.log('📡 执行全量数据加载...');
+            } else {
+                console.log('📡 缓存不存在，使用并行分片加载全量数据...');
             }
-
-            // 2. 🚀 缓存不存在，使用并行分片加载全量数据
-            console.log('📡 缓存不存在，使用并行分片加载全量数据...');
             this.updatePreloadStatus('正在并行获取数据...', 'loading');
 
             // 🔥 关键优化：使用并行分片加载
