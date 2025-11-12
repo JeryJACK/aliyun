@@ -304,7 +304,11 @@ class DataPreloader {
                     const daysDiff = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
                     console.log(`✅ 数据统计: ${totalRecords.toLocaleString()} 条记录`);
                     console.log(`✅ 时间范围: ${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()} (${daysDiff}天)`);
-                    console.log(`⚡ 统计查询耗时: ${queryTime.toFixed(0)}ms (SQL聚合查询)`);
+
+                    // 🚀 显示缓存状态
+                    const cacheStatus = stats.cached ? '缓存' : 'SQL聚合查询';
+                    const speedIcon = stats.cached ? '⚡⚡' : '⚡';
+                    console.log(`${speedIcon} 统计查询耗时: ${queryTime.toFixed(0)}ms (${cacheStatus})`);
                 } else {
                     throw new Error('统计数据格式错误');
                 }
