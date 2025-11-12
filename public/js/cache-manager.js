@@ -347,6 +347,57 @@ class CacheManager {
         });
     }
 
+    // 🚀 修复元数据（当totalCount不一致时）
+    async fixMetadata() {
+        if (!this.db) await this.init();
+
+        console.log('🔧 开始修复元数据...');
+
+        return new Promise(async (resolve, reject) => {
+            try {
+                // 1. 统计实际数据条数
+                const transaction = this.db.transaction([this.allDataStoreName], 'readonly');
+                const store = transaction.objectStore(this.allDataStoreName);
+                const countRequest = store.count();
+
+                countRequest.onsuccess = async () => {
+                    const actualCount = countRequest.result;
+                    console.log(`📊 实际数据量: ${actualCount.toLocaleString()} 条`);
+
+                    if (actualCount === 0) {
+                        console.warn('⚠️ 数据库为空，无法修复');
+                        resolve({ oldCount: 0, newCount: 0 });
+                        return;
+                    }
+
+                    // 2. 获取时间范围
+                    let minDate, maxDate;
+                    try {
+                        const timeRange = await this.getTimeRangeQuick();
+                        minDate = timeRange.minDate;
+                        maxDate = timeRange.maxDate;
+                    } catch (error) {
+                        console.warn('⚠️ 无法获取时间范围:', error);
+                    }
+
+                    // 3. 更新元数据
+                    await this.saveMetadataAndShardIndex(actualCount, {}, minDate, maxDate);
+
+                    console.log(`✅ 元数据修复完成: ${actualCount.toLocaleString()} 条`);
+                    resolve({ oldCount: 0, newCount: actualCount });
+                };
+
+                countRequest.onerror = () => {
+                    console.error('❌ 统计数据失败:', countRequest.error);
+                    reject(countRequest.error);
+                };
+            } catch (error) {
+                console.error('❌ 修复元数据失败:', error);
+                reject(error);
+            }
+        });
+    }
+
     // 按时间对数据进行升序排列
     sortDataByTime(data) {
         if (!data || !Array.isArray(data)) return [];

@@ -25,8 +25,8 @@ class DataPreloader {
                 const ageMinutes = Math.round(cacheAge / 60000);
                 const ageHours = Math.round(cacheAge / 3600000);
 
-                console.log(`✅ 使用IndexedDB缓存（${cacheInfo.totalCount} 条记录，${ageMinutes}分钟前更新）`);
-                this.updatePreloadStatus(`✅ 从本地缓存加载 ${cacheInfo.totalCount} 条数据（秒速加载）`, 'success');
+                console.log(`✅ 使用IndexedDB缓存（${cacheInfo.totalCount.toLocaleString()} 条记录，${ageMinutes}分钟前更新）`);
+                this.updatePreloadStatus(`✅ 从本地缓存加载 ${cacheInfo.totalCount.toLocaleString()} 条数据（秒速加载）`, 'success');
                 this.isPreloading = false;
 
                 // 🔥 智能增量更新策略
@@ -52,6 +52,23 @@ class DataPreloader {
                 }
 
                 return { success: true, totalCount: cacheInfo.totalCount };
+            }
+            // 🚀 优化：如果有缓存但totalCount为0，说明数据已部分加载，执行修复而不是全量重新加载
+            else if (cacheInfo && cacheInfo.totalCount === 0) {
+                console.warn('⚠️ 检测到元数据异常（totalCount=0），执行修复...');
+                try {
+                    const fixResult = await cacheManager.fixMetadata();
+                    if (fixResult && fixResult.newCount > 0) {
+                        console.log(`✅ 元数据已修复: ${fixResult.oldCount} → ${fixResult.newCount} 条`);
+                        this.updatePreloadStatus(`✅ 已修复元数据，实际有 ${fixResult.newCount.toLocaleString()} 条数据`, 'success');
+                        this.isPreloading = false;
+                        return { success: true, totalCount: fixResult.newCount };
+                    }
+                } catch (error) {
+                    console.error('❌ 元数据修复失败:', error);
+                }
+                // 如果修复失败，继续执行全量加载
+                console.log('📡 元数据修复失败，执行全量加载...');
             }
 
             // 2. 🚀 缓存不存在，使用并行分片加载全量数据
@@ -278,14 +295,34 @@ class DataPreloader {
         console.log('🚀 启动流水线并行加载（边下边存）...');
 
         try {
-            // 1. 计算需要加载的时间范围（过去2年）
-            const endDate = new Date();
-            const startDate = new Date();
-            startDate.setFullYear(startDate.getFullYear() - 2);
+            // 1. 🚀 智能优化：从API获取实际数据时间范围，避免空请求
+            let startDate, endDate;
+            try {
+                console.log('📡 查询实际数据时间范围...');
+                const rangeResponse = await fetch(getApiUrl('records') + '?limit=1&order_by=start_time&sort=ASC');
+                const rangeData = await rangeResponse.json();
+
+                if (rangeData.success && rangeData.data.records && rangeData.data.records.length > 0) {
+                    const firstRecord = rangeData.data.records[0];
+                    startDate = new Date(firstRecord.start_time || firstRecord['开始时间']);
+                    console.log(`✅ 实际数据开始时间: ${startDate.toLocaleDateString()}`);
+                } else {
+                    // 降级：使用默认2年
+                    startDate = new Date();
+                    startDate.setFullYear(startDate.getFullYear() - 2);
+                    console.log('⚠️ 无法获取实际数据范围，使用默认2年');
+                }
+            } catch (error) {
+                console.warn('⚠️ 查询数据范围失败，使用默认2年:', error);
+                startDate = new Date();
+                startDate.setFullYear(startDate.getFullYear() - 2);
+            }
+
+            endDate = new Date();
 
             // 2. 🔥 动态分片策略：根据时间跨度估算数据量，智能选择分片粒度
             const shards = this.generateAdaptiveShards(startDate, endDate);
-            console.log(`📊 生成 ${shards.length} 个分片（动态优化策略）`);
+            console.log(`📊 生成 ${shards.length} 个分片（智能范围：${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()}）`);
 
             // 3. 🔥 动态并发数：根据分片数量和浏览器限制自动调整
             const CONCURRENT_LIMIT = this.calculateOptimalConcurrency(shards.length);
@@ -423,11 +460,39 @@ class DataPreloader {
 
             // 4. 保存元数据和分片索引
             console.log('📊 保存元数据和索引...');
-            await cacheManager.saveMetadataAndShardIndex(totalLoaded, {});
+
+            // 🚀 优化：正确获取时间范围并保存元数据
+            let minDate, maxDate;
+            try {
+                const timeRange = await cacheManager.getTimeRangeQuick();
+                minDate = timeRange.minDate;
+                maxDate = timeRange.maxDate;
+                console.log(`📅 数据时间范围: ${minDate?.toLocaleDateString()} - ${maxDate?.toLocaleDateString()}`);
+            } catch (error) {
+                console.warn('⚠️ 获取时间范围失败:', error);
+            }
+
+            await cacheManager.saveMetadataAndShardIndex(totalLoaded, {}, minDate, maxDate);
 
             const perfTime = performance.now() - perfStart;
-            console.log(`✅ 流水线并行加载完成: ${totalLoaded.toLocaleString()} 条 (${(perfTime / 1000).toFixed(1)}秒, ${(totalLoaded / (perfTime / 1000)).toFixed(0)} 条/秒)`);
+            const throughput = (totalLoaded / (perfTime / 1000)).toFixed(0);
+
+            console.log(`✅ 流水线并行加载完成: ${totalLoaded.toLocaleString()} 条 (${(perfTime / 1000).toFixed(1)}秒, ${throughput} 条/秒)`);
             console.log(`⚡ 性能提升：下载和存储完全并行，无等待时间`);
+            console.log(`💾 元数据已保存: totalCount=${totalLoaded}, minDate=${minDate?.toISOString()}, maxDate=${maxDate?.toISOString()}`);
+
+            // 🚀 性能分析
+            console.log(`📊 性能对比分析:`);
+            console.log(`   - 实际吞吐量: ${throughput} 条/秒`);
+            console.log(`   - 优化目标: 12,600 条/秒`);
+            console.log(`   - 达成率: ${((throughput / 12600) * 100).toFixed(1)}%`);
+            if (throughput < 8000) {
+                console.warn(`⚠️ 性能未达预期，可能瓶颈:`);
+                console.warn(`   1. 网络带宽限制（下载慢）`);
+                console.warn(`   2. CPU性能限制（预处理慢）`);
+                console.warn(`   3. IndexedDB写入限制（磁盘IO慢）`);
+                console.warn(`   4. 索引优化未生效（检查数据库版本）`);
+            }
 
             return { success: true, totalCount: totalLoaded };
 
