@@ -282,34 +282,43 @@ class DataPreloader {
         console.log('🚀 启动流水线并行加载（边下边存）...');
 
         try {
-            // 1. 🚀 智能优化：从API获取实际数据时间范围，避免空请求
-            let startDate, endDate;
-            try {
-                console.log('📡 查询实际数据时间范围...');
-                const rangeResponse = await fetch(getApiUrl('records') + '?limit=1&order_by=start_time&sort=ASC');
-                const rangeData = await rangeResponse.json();
+            // 1. 🚀 使用stats API获取完整统计信息（1个请求，极速）
+            let startDate, endDate, totalRecords;
 
-                if (rangeData.success && rangeData.data.records && rangeData.data.records.length > 0) {
-                    const firstRecord = rangeData.data.records[0];
-                    startDate = new Date(firstRecord.start_time || firstRecord['开始时间']);
-                    console.log(`✅ 实际数据开始时间: ${startDate.toLocaleDateString()}`);
+            try {
+                console.log('📡 正在查询数据统计信息...');
+                const queryStart = performance.now();
+
+                const statsUrl = getApiUrl('stats');
+                const response = await fetch(statsUrl);
+                const data = await response.json();
+
+                const queryTime = performance.now() - queryStart;
+
+                if (data.success && data.data) {
+                    const stats = data.data;
+                    totalRecords = stats.total_records;
+                    startDate = new Date(stats.earliest_time);
+                    endDate = new Date(stats.latest_time);
+
+                    const daysDiff = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
+                    console.log(`✅ 数据统计: ${totalRecords.toLocaleString()} 条记录`);
+                    console.log(`✅ 时间范围: ${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()} (${daysDiff}天)`);
+                    console.log(`⚡ 统计查询耗时: ${queryTime.toFixed(0)}ms (SQL聚合查询)`);
                 } else {
-                    // 降级：使用默认2年
-                    startDate = new Date();
-                    startDate.setFullYear(startDate.getFullYear() - 2);
-                    console.log('⚠️ 无法获取实际数据范围，使用默认2年');
+                    throw new Error('统计数据格式错误');
                 }
             } catch (error) {
-                console.warn('⚠️ 查询数据范围失败，使用默认2年:', error);
+                console.warn('⚠️ 查询统计失败，使用默认2年:', error.message);
+                endDate = new Date();
                 startDate = new Date();
                 startDate.setFullYear(startDate.getFullYear() - 2);
+                console.log(`📊 降级范围: ${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()} (2年)`);
             }
-
-            endDate = new Date();
 
             // 2. 🔥 动态分片策略：根据时间跨度估算数据量，智能选择分片粒度
             const shards = this.generateAdaptiveShards(startDate, endDate);
-            console.log(`📊 生成 ${shards.length} 个分片（智能范围：${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()}）`);
+            console.log(`📊 生成 ${shards.length} 个分片`);
 
             // 3. 🔥 动态并发数：根据分片数量和浏览器限制自动调整
             const CONCURRENT_LIMIT = this.calculateOptimalConcurrency(shards.length);
