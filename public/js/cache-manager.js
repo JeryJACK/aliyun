@@ -211,22 +211,28 @@ class CacheManager {
             const transaction = this.db.transaction([this.allDataStoreName], 'readwrite');
             const store = transaction.objectStore(this.allDataStoreName);
 
-            // 🚀 方案2：数据已预处理，直接写入（无需重复处理）
-            for (const record of batch) {
-                // 确保有timestamp字段（兼容旧数据）
-                if (!record.timestamp && record.start_time) {
-                    record.timestamp = this.parseTimeToTimestamp(record.start_time);
-                }
-
-                // 统计月份数据量（如果需要）
-                if (monthStats && record.start_time) {
-                    const month_key = this.getMonthKey(record.start_time);
-                    if (!monthStats[month_key]) {
-                        monthStats[month_key] = 0;
+            // 🔥 性能优化：预处理一次，减少循环内开销
+            // 1. 批量预处理timestamp（避免每条记录都判断）
+            if (batch.length > 0 && !batch[0].timestamp) {
+                for (const record of batch) {
+                    if (record.start_time) {
+                        record.timestamp = this.parseTimeToTimestamp(record.start_time);
                     }
-                    monthStats[month_key]++;
                 }
+            }
 
+            // 2. 如果需要统计，批量处理（避免重复判断monthStats）
+            if (monthStats) {
+                for (const record of batch) {
+                    if (record.start_time) {
+                        const month_key = this.getMonthKey(record.start_time);
+                        monthStats[month_key] = (monthStats[month_key] || 0) + 1;
+                    }
+                }
+            }
+
+            // 🚀 纯写入循环（无额外处理，最大化性能）
+            for (const record of batch) {
                 store.put(record);
             }
 
