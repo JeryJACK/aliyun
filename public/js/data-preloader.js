@@ -643,7 +643,10 @@ class DataPreloader {
                     const last = data.data.records[data.data.records.length - 1];
                     console.log(`     数据时间范围: ${first.start_time} ~ ${last.start_time}`);
                 }
-                return data.data.records;
+
+                // 🚀 方案2：在下载Worker中预处理数据（避免主线程阻塞）
+                const processedRecords = this.preprocessRecords(data.data.records);
+                return processedRecords;
             }
 
             console.log(`  ⚠️ 增量响应格式异常: ${shard.label}`, data);
@@ -652,6 +655,99 @@ class DataPreloader {
         } catch (error) {
             console.error(`❌ 分片 ${shard.label} 加载失败:`, error);
             return [];
+        }
+    }
+
+    // 🚀 方案2：预处理数据（在下载线程执行，不阻塞主线程）
+    preprocessRecords(records) {
+        const processed = [];
+
+        for (const record of records) {
+            // 标准化字段名称（一次性完成，避免主线程重复处理）
+            const standardRecord = {
+                id: record.plan_id || record['计划ID'] || record.id || `record_${Date.now()}_${Math.random()}`,
+                start_time: record.start_time || record['开始时间'],
+                task_result: record.task_result || record['任务结果状态'],
+                task_type: record.task_type || record['任务类型'],
+                customer: record.customer || record['所属客户'],
+                satellite_name: record.satellite_name || record['卫星名称'],
+                station_name: record.station_name || record['测站名称'],
+                station_id: record.station_id || record['测站ID'],
+                ...record
+            };
+
+            // 预计算 timestamp（避免主线程重复计算）
+            if (standardRecord.start_time) {
+                standardRecord.timestamp = this.parseTimeToTimestamp(standardRecord.start_time);
+            }
+
+            processed.push(standardRecord);
+        }
+
+        return processed;
+    }
+
+    // 🚀 解析时间为timestamp（从CacheManager复制的逻辑）
+    parseTimeToTimestamp(timeValue) {
+        if (typeof timeValue === 'number') {
+            return timeValue > 1000000000000 ? timeValue : timeValue * 1000;
+        }
+
+        if (typeof timeValue === 'string') {
+            const cleanTimeStr = timeValue.replace(/[TZ]/g, ' ').replace(/[+-]\d{2}:\d{2}$/, '').trim();
+            const date = this.parseLocalTime(cleanTimeStr);
+            return isNaN(date.getTime()) ? 0 : date.getTime();
+        }
+
+        if (timeValue instanceof Date) {
+            return timeValue.getTime();
+        }
+
+        return 0;
+    }
+
+    // 🚀 解析本地时间（从CacheManager复制的逻辑）
+    parseLocalTime(timeStr) {
+        if (!timeStr) return new Date(NaN);
+
+        try {
+            const match = timeStr.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2}):(\d{1,2}):(\d{1,2}))?/);
+            if (match) {
+                const [, year, month, day, hour = 0, minute = 0, second = 0] = match;
+                return new Date(
+                    parseInt(year),
+                    parseInt(month) - 1,
+                    parseInt(day),
+                    parseInt(hour),
+                    parseInt(minute),
+                    parseInt(second)
+                );
+            }
+
+            const cleanStr = timeStr.replace(/[TZ]/g, ' ').replace(/[+-]\d{2}:\d{2}$/, '').trim();
+            const isoMatch = cleanStr.match(/^(\d{4})-(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{1,2}):(\d{1,2})/);
+            if (isoMatch) {
+                const [, year, month, day, hour, minute, second] = isoMatch;
+                return new Date(
+                    parseInt(year),
+                    parseInt(month) - 1,
+                    parseInt(day),
+                    parseInt(hour),
+                    parseInt(minute),
+                    parseInt(second)
+                );
+            }
+
+            const dateOnly = timeStr.split(' ')[0];
+            const dateParts = dateOnly.split('-').map(Number);
+            if (dateParts.length >= 3) {
+                return new Date(dateParts[0], dateParts[1] - 1, dateParts[2], 0, 0, 0);
+            }
+
+            return new Date(NaN);
+        } catch (error) {
+            console.error('时间解析错误:', timeStr, error);
+            return new Date(NaN);
         }
     }
 

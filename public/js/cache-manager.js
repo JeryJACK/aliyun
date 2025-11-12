@@ -204,38 +204,29 @@ class CacheManager {
     }
 
     // 🆕 存储单个批次（独立事务）
+    // 🚀 方案2优化：数据已在Worker中预处理，直接存储（避免CPU密集型操作）
     async storeBatch(batch, monthStats) {
         return new Promise((resolve, reject) => {
             const transaction = this.db.transaction([this.allDataStoreName], 'readwrite');
             const store = transaction.objectStore(this.allDataStoreName);
 
+            // 🚀 方案2：数据已预处理，直接写入（无需重复处理）
             for (const record of batch) {
-                // 统一数据格式
-                const standardRecord = {
-                    id: record.plan_id || record['计划ID'] || record.id || `record_${Date.now()}_${Math.random()}`,
-                    start_time: record.start_time || record['开始时间'],
-                    task_result: record.task_result || record['任务结果状态'],
-                    task_type: record.task_type || record['任务类型'],
-                    customer: record.customer || record['所属客户'],
-                    satellite_name: record.satellite_name || record['卫星名称'],
-                    station_name: record.station_name || record['测站名称'],
-                    station_id: record.station_id || record['测站ID'],
-                    ...record
-                };
-
-                // 添加时间戳和月份key
-                if (standardRecord.start_time) {
-                    standardRecord.timestamp = this.parseTimeToTimestamp(standardRecord.start_time);
-                    standardRecord.month_key = this.getMonthKey(standardRecord.start_time);
-
-                    // 统计月份数据量
-                    if (!monthStats[standardRecord.month_key]) {
-                        monthStats[standardRecord.month_key] = 0;
-                    }
-                    monthStats[standardRecord.month_key]++;
+                // 确保有timestamp字段（兼容旧数据）
+                if (!record.timestamp && record.start_time) {
+                    record.timestamp = this.parseTimeToTimestamp(record.start_time);
                 }
 
-                store.put(standardRecord);
+                // 统计月份数据量（如果需要）
+                if (monthStats && record.start_time) {
+                    const month_key = this.getMonthKey(record.start_time);
+                    if (!monthStats[month_key]) {
+                        monthStats[month_key] = 0;
+                    }
+                    monthStats[month_key]++;
+                }
+
+                store.put(record);
             }
 
             transaction.oncomplete = () => resolve();
@@ -1001,6 +992,7 @@ class CacheManager {
     }
 
     // 🆕 追加数据（用于后台加载历史数据）
+    // 🚀 方案2优化：数据已在Worker中预处理，直接存储
     async appendData(newRecords) {
         if (!this.db) await this.init();
         if (!newRecords || newRecords.length === 0) return 0;
@@ -1012,25 +1004,14 @@ class CacheManager {
 
             let appendedCount = 0;
 
-            // 批量添加新记录
+            // 🚀 方案2：数据已预处理，直接写入
             for (const record of newRecords) {
-                const standardRecord = {
-                    id: record.plan_id || record['计划ID'] || record.id || `record_${Date.now()}_${appendedCount}`,
-                    start_time: record.start_time || record['开始时间'],
-                    task_result: record.task_result || record['任务结果状态'],
-                    task_type: record.task_type || record['任务类型'],
-                    customer: record.customer || record['所属客户'],
-                    satellite_name: record.satellite_name || record['卫星名称'],
-                    station_name: record.station_name || record['测站名称'],
-                    station_id: record.station_id || record['测站ID'],
-                    ...record
-                };
-
-                if (standardRecord.start_time) {
-                    standardRecord.timestamp = this.parseTimeToTimestamp(standardRecord.start_time);
+                // 确保有timestamp字段（兼容旧数据）
+                if (!record.timestamp && record.start_time) {
+                    record.timestamp = this.parseTimeToTimestamp(record.start_time);
                 }
 
-                const putRequest = allDataStore.put(standardRecord);
+                const putRequest = allDataStore.put(record);
                 putRequest.onsuccess = () => appendedCount++;
             }
 

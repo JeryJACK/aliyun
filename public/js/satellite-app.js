@@ -910,7 +910,7 @@ class SatelliteApp {
 
         if (cacheInfo && cacheInfo.totalCount > 0) {
             console.log('📊 本地缓存统计信息:', cacheInfo);
-            this.updateCacheInfo(cacheInfo);
+            // 缓存信息已在init()中通过updateCacheStatus()更新，无需重复调用
         }
 
         // 🆕 缓存预热机制
