@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- 背景 -->
+  <rect width="100" height="100" rx="15" fill="#165DFF"/>
+
+  <!-- 卫星图标 -->
+  <g transform="translate(50, 50)">
+    <!-- 卫星主体 -->
+    <rect x="-12" y="-8" width="24" height="16" rx="2" fill="#fff"/>
+
+    <!-- 太阳能板左 -->
+    <rect x="-30" y="-6" width="16" height="12" rx="1" fill="#36CFC9"/>
+
+    <!-- 太阳能板右 -->
+    <rect x="14" y="-6" width="16" height="12" rx="1" fill="#36CFC9"/>
+
+    <!-- 天线 -->
+    <line x1="0" y1="-8" x2="0" y2="-18" stroke="#fff" stroke-width="2"/>
+    <circle cx="0" cy="-18" r="3" fill="#FF7D00"/>
+
+    <!-- 信号波 -->
+    <path d="M -20,-20 Q -25,-25 -30,-30" stroke="#FFB800" stroke-width="2" fill="none" opacity="0.6"/>
+    <path d="M 20,-20 Q 25,-25 30,-30" stroke="#FFB800" stroke-width="2" fill="none" opacity="0.6"/>
+  </g>
+
+  <!-- 轨道线 -->
+  <circle cx="50" cy="50" r="35" stroke="#fff" stroke-width="1.5" fill="none" opacity="0.3" stroke-dasharray="5,3"/>
+</svg>
