@@ -1,0 +1,128 @@
+/* Tailwind CSS 源文件 */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 导入主题变量 */
+@import './themes.css';
+
+/* 自定义组件样式 */
+@layer components {
+  /* 卡片样式 */
+  .card-shadow {
+    box-shadow: var(--shadow-md);
+    border-radius: var(--radius-lg);
+    transition: all var(--transition-base);
+  }
+
+  .card-shadow:hover {
+    box-shadow: var(--shadow-lg);
+  }
+
+  /* 统计卡片 */
+  .stat-card {
+    background: rgb(var(--bg-base));
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md);
+    transition: transform var(--transition-base), box-shadow var(--transition-base);
+  }
+
+  .stat-card:hover {
+    transform: translateY(-5px);
+    box-shadow: var(--shadow-primary);
+  }
+
+  /* 按钮样式 */
+  .btn-primary {
+    background-color: rgb(var(--color-primary));
+    color: white;
+    padding: 0.5rem 1rem;
+    border-radius: var(--radius-md);
+    transition: all var(--transition-base);
+  }
+
+  .btn-primary:hover {
+    background-color: rgb(var(--color-primary-dark));
+    box-shadow: var(--shadow-primary);
+    transform: translateY(-2px);
+  }
+
+  /* 模态框背景 */
+  .modal-backdrop {
+    backdrop-filter: blur(4px);
+    background-color: rgba(0, 0, 0, 0.5);
+  }
+
+  /* 输入框样式 */
+  .input-field {
+    border: 1px solid rgb(var(--border-color));
+    background: rgb(var(--bg-base));
+    color: rgb(var(--text-primary));
+    border-radius: var(--radius-md);
+    padding: 0.5rem 0.75rem;
+    transition: all var(--transition-fast);
+  }
+
+  .input-field:focus {
+    outline: none;
+    border-color: rgb(var(--color-primary));
+    box-shadow: 0 0 0 3px rgba(var(--color-primary), 0.1);
+  }
+}
+
+/* 工具类扩展 */
+@layer utilities {
+  /* 内容可见性优化 */
+  .content-auto {
+    content-visibility: auto;
+  }
+
+  /* 主题色背景 */
+  .bg-theme-primary {
+    background-color: rgb(var(--color-primary));
+  }
+
+  .bg-theme-secondary {
+    background-color: rgb(var(--color-secondary));
+  }
+
+  .bg-theme-accent {
+    background-color: rgb(var(--color-accent));
+  }
+
+  /* 主题色文字 */
+  .text-theme-primary {
+    color: rgb(var(--color-primary));
+  }
+
+  .text-theme-secondary {
+    color: rgb(var(--color-secondary));
+  }
+
+  /* 功能色 */
+  .text-success { color: rgb(var(--color-success)); }
+  .text-warning { color: rgb(var(--color-warning)); }
+  .text-danger { color: rgb(var(--color-danger)); }
+  .text-info { color: rgb(var(--color-info)); }
+
+  .bg-success { background-color: rgb(var(--color-success)); }
+  .bg-warning { background-color: rgb(var(--color-warning)); }
+  .bg-danger { background-color: rgb(var(--color-danger)); }
+  .bg-info { background-color: rgb(var(--color-info)); }
+
+  /* 渐变背景 */
+  .bg-gradient-theme {
+    background: var(--gradient-primary);
+  }
+
+  /* 平滑滚动 */
+  .smooth-scroll {
+    scroll-behavior: smooth;
+  }
+
+  /* 禁用选择 */
+  .no-select {
+    user-select: none;
+    -webkit-user-select: none;
+  }
+}

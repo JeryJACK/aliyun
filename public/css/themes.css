@@ -1,0 +1,270 @@
+/* 🎨 多主题系统 - 支持浅色/深色模式 + 多彩主题切换 */
+
+/* ============================================
+   默认主题 - 科技蓝（浅色模式）
+   ============================================ */
+:root {
+  /* 🎯 主题色 */
+  --color-primary: 22, 93, 255;         /* #165DFF 科技蓝 */
+  --color-primary-light: 64, 125, 255;  /* 浅色变体 */
+  --color-primary-dark: 14, 76, 204;    /* 深色变体 */
+
+  --color-secondary: 54, 207, 201;      /* #36CFC9 青蓝 */
+  --color-accent: 114, 46, 209;         /* #722ED1 神秘紫 */
+
+  /* 🎨 功能色 */
+  --color-success: 0, 180, 42;          /* #00B42A 成功绿 */
+  --color-warning: 255, 125, 0;         /* #FF7D00 警告橙 */
+  --color-danger: 245, 63, 63;          /* #F53F3F 危险红 */
+  --color-info: 54, 207, 201;           /* #36CFC9 信息青 */
+
+  /* 🌈 渐变色 */
+  --gradient-primary: linear-gradient(135deg, rgb(22, 93, 255) 0%, rgb(114, 46, 209) 100%);
+  --gradient-success: linear-gradient(135deg, rgb(0, 180, 42) 0%, rgb(54, 207, 201) 100%);
+  --gradient-warm: linear-gradient(135deg, rgb(255, 125, 0) 0%, rgb(245, 63, 63) 100%);
+
+  /* 🏠 背景色 */
+  --bg-base: 255, 255, 255;             /* 基础背景 - 纯白 */
+  --bg-primary: 249, 250, 251;          /* 主背景 - 浅灰 */
+  --bg-secondary: 243, 244, 246;        /* 次背景 - 更浅灰 */
+  --bg-tertiary: 229, 231, 235;         /* 三级背景 */
+  --bg-hover: 243, 244, 246;            /* 悬停背景 */
+
+  /* 📝 文字色 */
+  --text-primary: 17, 24, 39;           /* 主文字 - 深灰黑 */
+  --text-secondary: 75, 85, 99;         /* 次文字 - 中灰 */
+  --text-tertiary: 156, 163, 175;       /* 三级文字 - 浅灰 */
+  --text-disabled: 209, 213, 219;       /* 禁用文字 */
+
+  /* 🎯 边框 & 分割线 */
+  --border-color: 229, 231, 235;        /* 边框色 */
+  --divider-color: 243, 244, 246;       /* 分割线 */
+
+  /* ✨ 阴影 */
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+  --shadow-primary: 0 8px 20px rgba(22, 93, 255, 0.3);
+
+  /* 🔲 圆角 */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 9999px;
+
+  /* ⚡ 过渡动画 */
+  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-base: 300ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: 500ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ============================================
+   🌙 深色模式
+   ============================================ */
+.theme-dark {
+  /* 主题色（深色模式下调亮以增强对比度） */
+  --color-primary: 64, 125, 255;
+  --color-primary-light: 96, 149, 255;
+  --color-primary-dark: 34, 107, 255;
+
+  --color-secondary: 64, 217, 211;
+  --color-accent: 145, 70, 255;
+
+  /* 渐变色 */
+  --gradient-primary: linear-gradient(135deg, rgb(64, 125, 255) 0%, rgb(145, 70, 255) 100%);
+  --gradient-success: linear-gradient(135deg, rgb(0, 200, 52) 0%, rgb(64, 217, 211) 100%);
+
+  /* 背景色 - 深色系 */
+  --bg-base: 17, 24, 39;                /* #111827 深灰黑 */
+  --bg-primary: 31, 41, 55;             /* #1F2937 中深灰 */
+  --bg-secondary: 55, 65, 81;           /* #374151 中灰 */
+  --bg-tertiary: 75, 85, 99;            /* #4B5563 浅中灰 */
+  --bg-hover: 55, 65, 81;
+
+  /* 文字色 - 浅色系 */
+  --text-primary: 249, 250, 251;        /* 主文字 - 近白 */
+  --text-secondary: 209, 213, 219;      /* 次文字 - 浅灰 */
+  --text-tertiary: 156, 163, 175;       /* 三级文字 */
+  --text-disabled: 107, 114, 128;
+
+  /* 边框 & 分割线 */
+  --border-color: 75, 85, 99;
+  --divider-color: 55, 65, 81;
+
+  /* 阴影（深色模式下更柔和） */
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.6);
+  --shadow-primary: 0 8px 20px rgba(64, 125, 255, 0.4);
+}
+
+/* ============================================
+   🎨 彩色主题系列（可叠加深色模式）
+   ============================================ */
+
+/* 🔶 落日橙主题 */
+.theme-orange {
+  --color-primary: 255, 125, 0;         /* #FF7D00 */
+  --color-primary-light: 255, 158, 51;
+  --color-primary-dark: 230, 104, 0;
+  --color-secondary: 255, 184, 0;       /* #FFB800 金橙 */
+  --color-accent: 255, 77, 79;          /* #FF4D4F 橙红 */
+  --gradient-primary: linear-gradient(135deg, rgb(255, 125, 0) 0%, rgb(255, 77, 79) 100%);
+  --shadow-primary: 0 8px 20px rgba(255, 125, 0, 0.35);
+}
+
+/* 🌲 森林绿主题 */
+.theme-green {
+  --color-primary: 0, 180, 42;          /* #00B42A */
+  --color-primary-light: 34, 197, 94;
+  --color-primary-dark: 0, 150, 35;
+  --color-secondary: 22, 193, 120;      /* #16C178 */
+  --color-accent: 0, 150, 136;          /* #009688 */
+  --gradient-primary: linear-gradient(135deg, rgb(0, 180, 42) 0%, rgb(0, 150, 136) 100%);
+  --shadow-primary: 0 8px 20px rgba(0, 180, 42, 0.35);
+}
+
+/* 🌊 海洋青主题 */
+.theme-cyan {
+  --color-primary: 54, 207, 201;        /* #36CFC9 */
+  --color-primary-light: 94, 234, 212;
+  --color-primary-dark: 20, 184, 166;
+  --color-secondary: 6, 182, 212;       /* #06B6D4 */
+  --color-accent: 14, 165, 233;         /* #0EA5E9 天蓝 */
+  --gradient-primary: linear-gradient(135deg, rgb(54, 207, 201) 0%, rgb(14, 165, 233) 100%);
+  --shadow-primary: 0 8px 20px rgba(54, 207, 201, 0.35);
+}
+
+/* 💜 极光紫主题 */
+.theme-purple {
+  --color-primary: 114, 46, 209;        /* #722ED1 */
+  --color-primary-light: 168, 85, 247;
+  --color-primary-dark: 91, 33, 182;
+  --color-secondary: 147, 51, 234;      /* #9333EA */
+  --color-accent: 217, 70, 239;         /* #D946EF 品红 */
+  --gradient-primary: linear-gradient(135deg, rgb(114, 46, 209) 0%, rgb(217, 70, 239) 100%);
+  --shadow-primary: 0 8px 20px rgba(114, 46, 209, 0.35);
+}
+
+/* 🌸 樱花粉主题 */
+.theme-pink {
+  --color-primary: 236, 72, 153;        /* #EC4899 */
+  --color-primary-light: 244, 114, 182;
+  --color-primary-dark: 219, 39, 119;
+  --color-secondary: 251, 113, 133;     /* #FB7185 */
+  --color-accent: 168, 85, 247;         /* #A855F7 紫粉 */
+  --gradient-primary: linear-gradient(135deg, rgb(236, 72, 153) 0%, rgb(168, 85, 247) 100%);
+  --shadow-primary: 0 8px 20px rgba(236, 72, 153, 0.35);
+}
+
+/* 🔴 热情红主题 */
+.theme-red {
+  --color-primary: 239, 68, 68;         /* #EF4444 */
+  --color-primary-light: 248, 113, 113;
+  --color-primary-dark: 220, 38, 38;
+  --color-secondary: 251, 113, 133;     /* #FB7185 */
+  --color-accent: 249, 115, 22;         /* #F97316 橙红 */
+  --gradient-primary: linear-gradient(135deg, rgb(239, 68, 68) 0%, rgb(249, 115, 22) 100%);
+  --shadow-primary: 0 8px 20px rgba(239, 68, 68, 0.35);
+}
+
+/* ☕ 咖啡棕主题 */
+.theme-brown {
+  --color-primary: 165, 84, 73;         /* #A55449 */
+  --color-primary-light: 194, 123, 95;
+  --color-primary-dark: 120, 53, 15;
+  --color-secondary: 180, 83, 9;        /* #B45309 */
+  --color-accent: 217, 119, 6;          /* #D97706 金棕 */
+  --gradient-primary: linear-gradient(135deg, rgb(165, 84, 73) 0%, rgb(217, 119, 6) 100%);
+  --shadow-primary: 0 8px 20px rgba(165, 84, 73, 0.35);
+}
+
+/* 🌅 黄昏金主题 */
+.theme-amber {
+  --color-primary: 245, 158, 11;        /* #F59E0B */
+  --color-primary-light: 251, 191, 36;
+  --color-primary-dark: 217, 119, 6;
+  --color-secondary: 251, 146, 60;      /* #FB923C */
+  --color-accent: 249, 115, 22;         /* #F97316 橙色 */
+  --gradient-primary: linear-gradient(135deg, rgb(245, 158, 11) 0%, rgb(249, 115, 22) 100%);
+  --shadow-primary: 0 8px 20px rgba(245, 158, 11, 0.35);
+}
+
+/* 🌈 彩虹渐变主题（特殊主题） */
+.theme-rainbow {
+  --color-primary: 99, 102, 241;        /* #6366F1 靛蓝 */
+  --color-primary-light: 129, 140, 248;
+  --color-primary-dark: 79, 70, 229;
+  --color-secondary: 168, 85, 247;      /* #A855F7 紫色 */
+  --color-accent: 236, 72, 153;         /* #EC4899 粉色 */
+  --gradient-primary: linear-gradient(135deg,
+    rgb(239, 68, 68) 0%,
+    rgb(249, 115, 22) 16.67%,
+    rgb(245, 158, 11) 33.33%,
+    rgb(34, 197, 94) 50%,
+    rgb(14, 165, 233) 66.67%,
+    rgb(99, 102, 241) 83.33%,
+    rgb(168, 85, 247) 100%
+  );
+  --shadow-primary: 0 8px 20px rgba(99, 102, 241, 0.35);
+}
+
+/* ============================================
+   🎭 工具类（使用CSS变量）
+   ============================================ */
+
+/* 主题色应用 */
+.bg-primary { background-color: rgb(var(--color-primary)); }
+.text-primary-color { color: rgb(var(--color-primary)); }
+.border-primary { border-color: rgb(var(--color-primary)); }
+
+/* 渐变背景 */
+.bg-gradient-primary { background: var(--gradient-primary); }
+.bg-gradient-success { background: var(--gradient-success); }
+.bg-gradient-warm { background: var(--gradient-warm); }
+
+/* 阴影效果 */
+.shadow-primary { box-shadow: var(--shadow-primary); }
+
+/* 玻璃态效果 */
+.glass-effect {
+  background: rgba(var(--bg-base), 0.7);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(var(--border-color), 0.2);
+}
+
+/* 悬停效果 */
+.hover-lift {
+  transition: transform var(--transition-base), box-shadow var(--transition-base);
+}
+.hover-lift:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-lg);
+}
+
+/* 平滑过渡 */
+.transition-all {
+  transition: all var(--transition-base);
+}
+
+/* 脉冲动画（用于加载状态） */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.animate-pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* 渐入动画 */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in {
+  animation: fadeIn var(--transition-base) ease-out;
+}
