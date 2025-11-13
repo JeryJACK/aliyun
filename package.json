@@ -1,0 +1,10 @@
+{
+  "name": "satellite-analysis",
+  "version": "1.0.0",
+  "scripts": {
+    "build:css": "tailwindcss -i ./public/css/tailwind-source.css -o ./public/css/styles.css --minify"
+  },
+  "devDependencies": {
+    "tailwindcss": "^4.1.16"
+  }
+}

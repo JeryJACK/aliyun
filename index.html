@@ -20,12 +20,41 @@
     <!-- 🎨 主题系统 - 支持深色/浅色模式 + 多彩主题切换 -->
     <link rel="stylesheet" href="./public/css/themes.css">
 
-    <!-- 外部资源 - 使用国内CDN -->
-    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 外部资源 - 使用CDN -->
+    <!-- Tailwind CSS Play CDN -->
+    <script src="https://cdn.tailwindcss.com?plugins=forms,typography,aspect-ratio"></script>
     <link href="https://cdn.bootcdn.net/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet">
-    <!-- 🔥 修复Chart.js链接 - 使用正确的CDN路径 -->
+    <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
+
+    <!-- Tailwind 配置 -->
+    <script>
+        // 配置Tailwind并禁用生产环境警告
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        primary: 'rgb(var(--color-primary))',
+                        secondary: 'rgb(var(--color-secondary))',
+                        accent: 'rgb(var(--color-accent))',
+                        success: 'rgb(var(--color-success))',
+                        warning: 'rgb(var(--color-warning))',
+                        danger: 'rgb(var(--color-danger))',
+                        info: 'rgb(var(--color-info))',
+                    },
+                }
+            },
+            corePlugins: {
+                preflight: true,
+            }
+        };
+        // 禁用生产环境警告
+        if (window.tailwind && window.tailwind.config) {
+            window.tailwind.config.devMode = false;
+        }
+    </script>
 
     <!-- 配置文件 -->
     <script src="./public/js/config.js?v=5"></script>
@@ -33,24 +62,6 @@
 
     <!-- ⚡ 性能监控工具（仅开发环境，生产环境可移除） -->
     <script src="./public/js/performance-monitor.js" defer></script>
-
-    <!-- Tailwind 配置 -->
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        primary: '#165DFF',
-                        secondary: '#36CFC9',
-                        accent: '#722ED1',
-                        warning: '#FF7D00',
-                        danger: '#F53F3F',
-                        success: '#00B42A',
-                    },
-                }
-            }
-        }
-    </script>
 
     <style type="text/tailwindcss">
         @layer utilities {
