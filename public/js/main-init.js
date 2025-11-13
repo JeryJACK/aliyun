@@ -13,6 +13,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         // ⚡ 性能优化：使用 requestIdleCallback 延迟非关键任务
         // 优先级：快速显示界面 > 加载数据 > WebSocket连接
 
+        // ==================== 阶段0：修复totalCount（一次性修复） ====================
+        // 🔧 修复之前错误累加的totalCount
+        await cacheManager.fixTotalCount();
+
         // ==================== 阶段1：执行轻量级补同步（基于changeLogId） ====================
         if (progressPercent) progressPercent.textContent = '5%';
         if (progressText) progressText.textContent = '正在检查新数据...';

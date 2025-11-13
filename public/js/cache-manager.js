@@ -1015,45 +1015,107 @@ class CacheManager {
             const metaStore = transaction.objectStore(this.metaStoreName);
 
             let successCount = 0;
+            let newInsertCount = 0; // 🔥 新增：跟踪真正的新增数量
 
-            // 批量更新
-            records.forEach(record => {
-                if (!record.timestamp) {
-                    record.timestamp = new Date(record.start_time).getTime();
-                }
-
-                const putRequest = allDataStore.put(record);
-                putRequest.onsuccess = () => successCount++;
+            // 🔥 第一步：检查哪些是新记录
+            const checkPromises = records.map(record => {
+                return new Promise((checkResolve) => {
+                    const getRequest = allDataStore.get(record.id);
+                    getRequest.onsuccess = () => {
+                        const exists = getRequest.result !== undefined;
+                        checkResolve({ record, exists });
+                    };
+                    getRequest.onerror = () => checkResolve({ record, exists: false });
+                });
             });
 
-            transaction.oncomplete = () => {
-                // 更新元数据
-                const metaTransaction = this.db.transaction([this.metaStoreName], 'readwrite');
-                const ms = metaTransaction.objectStore(this.metaStoreName);
-                const metaRequest = ms.get('allDataMeta');
+            Promise.all(checkPromises).then(results => {
+                // 🔥 第二步：批量写入并统计新增数量
+                const writeTransaction = this.db.transaction([this.allDataStoreName, this.metaStoreName], 'readwrite');
+                const writeStore = writeTransaction.objectStore(this.allDataStoreName);
 
+                results.forEach(({ record, exists }) => {
+                    if (!record.timestamp) {
+                        record.timestamp = new Date(record.start_time).getTime();
+                    }
+
+                    const putRequest = writeStore.put(record);
+                    putRequest.onsuccess = () => {
+                        successCount++;
+                        if (!exists) newInsertCount++; // 只有新插入才计数
+                    };
+                });
+
+                writeTransaction.oncomplete = () => {
+                    // 更新元数据
+                    const metaTransaction = this.db.transaction([this.metaStoreName], 'readwrite');
+                    const ms = metaTransaction.objectStore(this.metaStoreName);
+                    const metaRequest = ms.get('allDataMeta');
+
+                    metaRequest.onsuccess = () => {
+                        const meta = metaRequest.result || {
+                            key: 'allDataMeta',
+                            totalCount: 0,
+                            lastUpdated: Date.now(),
+                            lastSyncTime: Date.now()
+                        };
+
+                        // 🔥 修复：只累加真正的新增数量
+                        meta.totalCount = (meta.totalCount || 0) + newInsertCount;
+                        meta.lastUpdated = Date.now();
+                        meta.lastSyncTime = Date.now();
+                        ms.put(meta);
+                    };
+
+                    console.log(`✅ 批量增量更新完成: ${successCount}/${records.length} 条记录 (新增${newInsertCount}条, 更新${successCount - newInsertCount}条)`);
+                    resolve(successCount);
+                };
+
+                writeTransaction.onerror = () => {
+                    console.error('❌ 批量增量更新失败:', writeTransaction.error);
+                    reject(writeTransaction.error);
+                };
+            });
+        });
+    }
+
+    // 🔧 修复totalCount（重新统计实际数据量）
+    async fixTotalCount() {
+        if (!this.db) await this.init();
+
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction([this.allDataStoreName, this.metaStoreName], 'readwrite');
+            const allDataStore = transaction.objectStore(this.allDataStoreName);
+            const metaStore = transaction.objectStore(this.metaStoreName);
+
+            // 使用count()精确统计
+            const countRequest = allDataStore.count();
+
+            countRequest.onsuccess = () => {
+                const actualCount = countRequest.result;
+
+                // 更新元数据
+                const metaRequest = metaStore.get('allDataMeta');
                 metaRequest.onsuccess = () => {
                     const meta = metaRequest.result || {
                         key: 'allDataMeta',
                         totalCount: 0,
-                        lastUpdated: Date.now(),
-                        lastSyncTime: Date.now()
+                        lastUpdated: Date.now()
                     };
 
-                    // 🔥 修复：增量更新需要累加totalCount
-                    meta.totalCount = (meta.totalCount || 0) + successCount;
+                    const oldCount = meta.totalCount;
+                    meta.totalCount = actualCount;
                     meta.lastUpdated = Date.now();
-                    meta.lastSyncTime = Date.now();
-                    ms.put(meta);
-                };
+                    metaStore.put(meta);
 
-                console.log(`✅ 批量增量更新完成: ${successCount}/${records.length} 条记录`);
-                resolve(successCount);
+                    console.log(`🔧 totalCount已修复: ${oldCount} → ${actualCount} (差值: ${actualCount - oldCount})`);
+                    resolve(actualCount);
+                };
             };
 
-            transaction.onerror = () => {
-                console.error('❌ 批量增量更新失败:', transaction.error);
-                reject(transaction.error);
+            countRequest.onerror = () => {
+                console.error('❌ 修复totalCount失败:', countRequest.error);
+                reject(countRequest.error);
             };
         });
     }
