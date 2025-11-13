@@ -87,6 +87,8 @@ class ThemeManager {
   applyTheme() {
     const html = document.documentElement;
 
+    console.log(`🎨 应用主题: ${this.currentColorTheme} (${this.currentMode}模式)`);
+
     // 移除所有主题class
     this.themes.colors.forEach(theme => {
       if (theme.class) html.classList.remove(theme.class);
@@ -101,13 +103,25 @@ class ThemeManager {
 
     if (colorTheme && colorTheme.class) {
       html.classList.add(colorTheme.class);
+      console.log(`  ✅ 添加颜色主题类: ${colorTheme.class}`);
+    } else {
+      console.log(`  ℹ️ 使用默认颜色主题（无class）`);
     }
+
     if (modeTheme && modeTheme.class) {
       html.classList.add(modeTheme.class);
+      console.log(`  ✅ 添加模式类: ${modeTheme.class}`);
+    } else {
+      console.log(`  ℹ️ 使用浅色模式（无class）`);
     }
 
     // 保存到 localStorage
     this.saveThemeToStorage();
+
+    // 更新UI状态
+    if (this.updateUI) {
+      this.updateUI();
+    }
 
     // 触发自定义事件，通知其他组件主题已更改
     window.dispatchEvent(new CustomEvent('themeChanged', {
@@ -158,13 +172,16 @@ class ThemeManager {
     const switcher = document.createElement('div');
     switcher.id = 'theme-switcher';
     switcher.className = 'fixed bottom-6 right-6 z-50';
+    switcher.style.cssText = 'position: fixed; bottom: 24px; right: 24px; z-index: 9999;';
     switcher.innerHTML = `
       <!-- 主题切换按钮 -->
       <button id="theme-toggle-btn"
               class="bg-white dark:bg-gray-800 p-3 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-110"
-              style="box-shadow: var(--shadow-lg);"
-              title="主题设置">
-        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              style="background: rgb(var(--bg-base)); padding: 12px; border-radius: 50%; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); transition: all 0.3s; border: none; cursor: pointer;"
+              title="主题设置"
+              onmouseover="this.style.transform='scale(1.1)'"
+              onmouseout="this.style.transform='scale(1)'">
+        <svg style="width: 24px; height: 24px; color: rgb(var(--text-primary));" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                 d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" />
         </svg>
@@ -172,7 +189,7 @@ class ThemeManager {
 
       <!-- 主题选择面板 -->
       <div id="theme-panel" class="hidden absolute bottom-16 right-0 bg-white dark:bg-gray-800 rounded-lg shadow-2xl p-4 w-80 animate-fade-in"
-           style="box-shadow: var(--shadow-xl);">
+           style="display: none; position: absolute; bottom: 64px; right: 0; background: rgb(var(--bg-base)); border-radius: 12px; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1); padding: 16px; width: 320px; color: rgb(var(--text-primary));">
         <div class="mb-4">
           <h3 class="text-sm font-semibold mb-3 flex items-center">
             <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -235,12 +252,16 @@ class ThemeManager {
 
     toggleBtn?.addEventListener('click', (e) => {
       e.stopPropagation();
+      const isHidden = panel.style.display === 'none' || panel.classList.contains('hidden');
+      panel.style.display = isHidden ? 'block' : 'none';
       panel.classList.toggle('hidden');
+      console.log('🎨 主题面板', isHidden ? '打开' : '关闭');
     });
 
     // 点击外部关闭面板
     document.addEventListener('click', (e) => {
       if (!panel?.contains(e.target) && e.target !== toggleBtn) {
+        panel.style.display = 'none';
         panel?.classList.add('hidden');
       }
     });
@@ -313,11 +334,22 @@ class ThemeManager {
   }
 }
 
-// 页面加载完成后自动初始化
+// 页面加载完成后自动初始化（延迟确保Tailwind已加载）
 if (typeof window !== 'undefined') {
-  window.addEventListener('DOMContentLoaded', () => {
-    window.themeManager = new ThemeManager();
+  // 使用load事件而不是DOMContentLoaded，确保所有资源（包括Tailwind CDN）都已加载
+  window.addEventListener('load', () => {
+    setTimeout(() => {
+      window.themeManager = new ThemeManager();
+      console.log('✅ 主题管理器已加载');
+    }, 100);
   });
+
+  // 提供手动初始化方法
+  window.initThemeManager = function() {
+    if (!window.themeManager) {
+      window.themeManager = new ThemeManager();
+    }
+  };
 }
 
 // 导出（如果使用模块化）
