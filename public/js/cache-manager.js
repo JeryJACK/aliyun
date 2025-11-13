@@ -1,7 +1,7 @@
 class CacheManager {
     constructor() {
         this.dbName = 'SatelliteDataCache';
-        this.dbVersion = 5; // 🚀 升级到v5支持预计算统计缓存
+        this.dbVersion = 7; // 🚀 升级到v7修复版本冲突
         this.allDataStoreName = 'allDataCache';
         this.metaStoreName = 'metaData';
         this.shardIndexStoreName = 'shardIndex'; // 🆕 分片索引
@@ -98,14 +98,14 @@ class CacheManager {
                 }
 
                 // 🆕 v4: 分片索引存储（记录哪些月份有数据）
-                if (oldVersion < 4 && !this.db.objectStoreNames.contains(this.shardIndexStoreName)) {
+                if (!this.db.objectStoreNames.contains(this.shardIndexStoreName)) {
                     const shardIndexStore = this.db.createObjectStore(this.shardIndexStoreName, { keyPath: 'monthKey' });
                     shardIndexStore.createIndex('timestamp', 'timestamp', { unique: false });
                     console.log('📦 创建分片索引存储空间');
                 }
 
                 // 🆕 v4: DataStore桶缓存存储
-                if (oldVersion < 4 && !this.db.objectStoreNames.contains(this.dataStoreCacheStoreName)) {
+                if (!this.db.objectStoreNames.contains(this.dataStoreCacheStoreName)) {
                     const dataStoreCacheStore = this.db.createObjectStore(this.dataStoreCacheStoreName, { keyPath: 'key' });
                     dataStoreCacheStore.createIndex('groupType', 'groupType', { unique: false });
                     dataStoreCacheStore.createIndex('timestamp', 'timestamp', { unique: false });
@@ -113,7 +113,7 @@ class CacheManager {
                 }
 
                 // 🚀 v5: 预计算统计缓存存储（超高性能！）
-                if (oldVersion < 5 && !this.db.objectStoreNames.contains(this.statisticsCacheStoreName)) {
+                if (!this.db.objectStoreNames.contains(this.statisticsCacheStoreName)) {
                     const statisticsStore = this.db.createObjectStore(this.statisticsCacheStoreName, { keyPath: 'key' });
                     statisticsStore.createIndex('type', 'type', { unique: false });
                     statisticsStore.createIndex('timestamp', 'timestamp', { unique: false });
