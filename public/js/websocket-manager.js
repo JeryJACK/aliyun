@@ -64,7 +64,13 @@ class WebSocketSyncManager {
 
             console.log(`🔍 当前lastChangeLogId: ${lastChangeLogId}`);
 
-            // 🔥 始终执行基于changeLogId的补同步（轻量级，只查询变更）
+            // 🔥 首次加载（lastChangeLogId=0）：跳过补同步，让 data-preloader 处理全量加载
+            if (lastChangeLogId === 0) {
+                console.log('💡 首次加载检测，跳过补同步（交由 data-preloader 处理流水线并行加载）');
+                return { hasNewData: false, count: 0 };
+            }
+
+            // 增量补同步：只获取最近30天的变更数据
             const result = await this.performCatchupSyncByChangeLogId(lastChangeLogId, onProgress);
             return result || { hasNewData: false, count: 0 };
 
@@ -300,9 +306,9 @@ class WebSocketSyncManager {
                 ? CONFIG.API_ENDPOINTS.records
                 : `${CONFIG.API_BASE_URL}/satellite`;
 
-            // 🔥 智能策略：只获取最近30天的数据（基于start_time过滤）
+            // 🔥 增量补同步：只获取最近30天的数据
             const recentDays = 30;
-            const limit = 10000;  // ✅ 一次性获取最多10000条
+            const limit = 10000;  // 一次性获取最多10000条
             const url = `${apiUrl}?sinceChangeLogId=${lastChangeLogId}&recentDays=${recentDays}&limit=${limit}`;
 
             console.log(`📡 请求URL: ${url}`);
