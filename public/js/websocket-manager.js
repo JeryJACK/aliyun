@@ -150,17 +150,6 @@ class WebSocketSyncManager {
             console.log('📨 收到 WebSocket 消息:', message);
 
             switch (message.type) {
-                case 'welcome':
-                    // 欢迎消息（连接成功确认）
-                    console.log('✅ WebSocket 欢迎消息:', message.message);
-                    if (message.secure) {
-                        console.log('🔐 安全连接已建立 (WSS)');
-                    }
-                    if (message.binlog) {
-                        console.log('📡 Binlog 实时监听已启用');
-                    }
-                    break;
-
                 case 'heartbeat':
                     // 心跳响应
                     this.missedHeartbeats = 0;

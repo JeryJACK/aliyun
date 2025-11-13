@@ -13,10 +13,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         // ⚡ 性能优化：使用 requestIdleCallback 延迟非关键任务
         // 优先级：快速显示界面 > 加载数据 > WebSocket连接
 
-        // ==================== 阶段0：修复totalCount（一次性修复） ====================
-        // 🔧 修复之前错误累加的totalCount
-        await cacheManager.fixTotalCount();
-
         // ==================== 阶段1：执行轻量级补同步（基于changeLogId） ====================
         if (progressPercent) progressPercent.textContent = '5%';
         if (progressText) progressText.textContent = '正在检查新数据...';
@@ -42,26 +38,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         // ==================== 阶段2：加载数据和初始化应用 ====================
-        if (progressPercent) progressPercent.textContent = '50%';
-        if (progressText) progressText.textContent = '正在初始化应用...';
-
         // 开始加载数据（不需要forceReload，直接使用IndexedDB）
-        await dataPreloader.autoPreloadAllData(false, (progress, loaded, total) => {
-            // 🆕 更新骨架屏进度：50% + 进度的40%（50%-90%区间）
-            const adjustedProgress = 50 + Math.round(progress * 0.4);
-            if (progressPercent) progressPercent.textContent = `${adjustedProgress}%`;
-            if (progressText) progressText.textContent = `正在加载数据... ${loaded.toLocaleString()}/${total.toLocaleString()}`;
-        });
+        await dataPreloader.autoPreloadAllData();
 
-        if (progressPercent) progressPercent.textContent = '70%';
-        if (progressText) progressText.textContent = '正在构建应用...';
-
-        // 🔥 修复：正确等待应用初始化完成
+        // 初始化应用
         window.app = new SatelliteApp();
-        await window.app.waitForInit(); // 等待init()完成
-
-        if (progressPercent) progressPercent.textContent = '100%';
-        if (progressText) progressText.textContent = '初始化完成！';
 
         const perfTime = performance.now() - perfStart;
         console.log(`✅ 应用初始化完成，耗时 ${perfTime.toFixed(0)}ms`);
@@ -140,22 +121,32 @@ document.addEventListener('DOMContentLoaded', async () => {
             window.sharedDataManager.onDataRequest = async (requestId, source) => {
                 console.log(`📨 收到来自 ${source} 的数据请求: ${requestId}`);
 
-                if (window.app) {
-                    try {
-                        // 🔥 使用getData()确保数据已加载
-                        const data = await window.app.getData();
+                // 如果 this.data 为空（延迟加载模式），快速从 IndexedDB 加载
+                if (window.app && (!window.app.data || window.app.data.length === 0)) {
+                    console.log('⚡ this.data 为空，快速加载数据以响应请求...');
 
-                        window.sharedDataManager.data = data;
+                    try {
+                        // 快速加载所有数据（使用游标，比查询快）
+                        const loadStart = performance.now();
+                        const allData = await cacheManager.getAllDataFast();
+                        window.app.data = allData;
+
+                        const loadTime = performance.now() - loadStart;
+                        console.log(`✅ 数据加载完成: ${allData.length.toLocaleString()} 条 (${loadTime.toFixed(0)}ms)`);
+
+                        // 响应数据请求
+                        window.sharedDataManager.data = allData;
                         window.sharedDataManager.broadcast({
                             type: 'data_response',
                             requestId: requestId,
-                            data: data,
+                            data: allData,
                             metadata: window.sharedDataManager.metadata,
                             timestamp: Date.now()
                         });
-                        console.log(`✅ 已响应数据请求 ${requestId}: ${data.length.toLocaleString()} 条记录`);
+                        console.log(`✅ 已响应数据请求 ${requestId}: ${allData.length} 条记录（按需加载）`);
+
                     } catch (error) {
-                        console.error('❌ 响应数据请求失败:', error);
+                        console.error('❌ 按需加载数据失败:', error);
                     }
                 }
             };

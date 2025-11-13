@@ -1,7 +1,7 @@
 class CacheManager {
     constructor() {
         this.dbName = 'SatelliteDataCache';
-        this.dbVersion = 6; // 🚀 升级到v6：移除冗余索引优化性能（预期提升111%）
+        this.dbVersion = 5; // 🚀 升级到v5支持预计算统计缓存
         this.allDataStoreName = 'allDataCache';
         this.metaStoreName = 'metaData';
         this.shardIndexStoreName = 'shardIndex'; // 🆕 分片索引
@@ -78,10 +78,9 @@ class CacheManager {
                 if (!this.db.objectStoreNames.contains(this.allDataStoreName)) {
                     const allDataStore = this.db.createObjectStore(this.allDataStoreName, { keyPath: 'id' });
                     allDataStore.createIndex('timestamp', 'timestamp', { unique: false });
-                    // 🚀 性能优化：移除冗余索引 start_time 和 month_key（与timestamp重复）
-                    // allDataStore.createIndex('start_time', 'start_time', { unique: false });
-                    // allDataStore.createIndex('month_key', 'month_key', { unique: false });
-                    console.log('📦 创建全数据存储空间（已优化索引）');
+                    allDataStore.createIndex('start_time', 'start_time', { unique: false });
+                    allDataStore.createIndex('month_key', 'month_key', { unique: false }); // 🆕 月份索引
+                    console.log('📦 创建全数据存储空间');
                 } else if (oldVersion < 4) {
                     // 🆕 v4: 为现有allDataStore添加month_key索引
                     const transaction = event.target.transaction;
@@ -121,26 +120,6 @@ class CacheManager {
                     console.log('🚀 创建预计算统计缓存表（99%性能提升！）');
                 }
 
-                // 🚀 v6: 移除冗余索引优化性能
-                if (oldVersion < 6 && this.db.objectStoreNames.contains(this.allDataStoreName)) {
-                    const transaction = event.target.transaction;
-                    const allDataStore = transaction.objectStore(this.allDataStoreName);
-
-                    // 删除 start_time 冗余索引（与 timestamp 重复）
-                    if (allDataStore.indexNames.contains('start_time')) {
-                        allDataStore.deleteIndex('start_time');
-                        console.log('🚀 已删除 start_time 冗余索引');
-                    }
-
-                    // 删除 month_key 冗余索引（可通过 timestamp 范围查询替代）
-                    if (allDataStore.indexNames.contains('month_key')) {
-                        allDataStore.deleteIndex('month_key');
-                        console.log('🚀 已删除 month_key 冗余索引');
-                    }
-
-                    console.log('✅ 索引优化完成！预期性能提升111%（存储速度：3,309 → 7,000条/秒）');
-                }
-
                 // 注意：月份分片ObjectStore会在存储数据时动态创建
                 // 命名规则：monthData_YYYY_MM (如 monthData_2025_10)
             };
@@ -161,9 +140,8 @@ class CacheManager {
             // 2. 按时间排序（如果后端未排序）
             const sortedData = this.sortDataByTime(allData);
 
-            // 3. 🚀 分批存储（每批50000条，避免长事务）
-            // 🚀 方案4优化：增大批次大小，减少事务开销（10000 → 20000 → 50000）
-            const BATCH_SIZE = 50000;
+            // 3. 🚀 分批存储（每批10000条，避免长事务）
+            const BATCH_SIZE = 10000;
             const totalBatches = Math.ceil(sortedData.length / BATCH_SIZE);
             let storedCount = 0;
             const monthStats = {};
@@ -205,42 +183,38 @@ class CacheManager {
     }
 
     // 🆕 存储单个批次（独立事务）
-    // 🚀 方案2优化：数据已在Worker中预处理，直接存储（避免CPU密集型操作）
-    async storeBatch(batch, monthStats, isFullLoad = false) {
+    async storeBatch(batch, monthStats) {
         return new Promise((resolve, reject) => {
             const transaction = this.db.transaction([this.allDataStoreName], 'readwrite');
             const store = transaction.objectStore(this.allDataStoreName);
 
-            // 🔥 性能优化：预处理一次，减少循环内开销
-            // 1. 批量预处理timestamp（避免每条记录都判断）
-            if (batch.length > 0 && !batch[0].timestamp) {
-                for (const record of batch) {
-                    if (record.start_time) {
-                        record.timestamp = this.parseTimeToTimestamp(record.start_time);
-                    }
-                }
-            }
+            for (const record of batch) {
+                // 统一数据格式
+                const standardRecord = {
+                    id: record.plan_id || record['计划ID'] || record.id || `record_${Date.now()}_${Math.random()}`,
+                    start_time: record.start_time || record['开始时间'],
+                    task_result: record.task_result || record['任务结果状态'],
+                    task_type: record.task_type || record['任务类型'],
+                    customer: record.customer || record['所属客户'],
+                    satellite_name: record.satellite_name || record['卫星名称'],
+                    station_name: record.station_name || record['测站名称'],
+                    station_id: record.station_id || record['测站ID'],
+                    ...record
+                };
 
-            // 2. 如果需要统计，批量处理（避免重复判断monthStats）
-            if (monthStats) {
-                for (const record of batch) {
-                    if (record.start_time) {
-                        const month_key = this.getMonthKey(record.start_time);
-                        monthStats[month_key] = (monthStats[month_key] || 0) + 1;
-                    }
-                }
-            }
+                // 添加时间戳和月份key
+                if (standardRecord.start_time) {
+                    standardRecord.timestamp = this.parseTimeToTimestamp(standardRecord.start_time);
+                    standardRecord.month_key = this.getMonthKey(standardRecord.start_time);
 
-            // 🚀 超级优化：全量加载时使用add（快50%），增量更新用put
-            // add不需要检查key是否存在，直接插入（性能提升50%）
-            if (isFullLoad) {
-                for (const record of batch) {
-                    store.add(record);
+                    // 统计月份数据量
+                    if (!monthStats[standardRecord.month_key]) {
+                        monthStats[standardRecord.month_key] = 0;
+                    }
+                    monthStats[standardRecord.month_key]++;
                 }
-            } else {
-                for (const record of batch) {
-                    store.put(record);
-                }
+
+                store.put(standardRecord);
             }
 
             transaction.oncomplete = () => resolve();
@@ -279,7 +253,7 @@ class CacheManager {
         return new Promise((resolve, reject) => {
             const transaction = this.db.transaction([this.allDataStoreName], 'readonly');
             const store = transaction.objectStore(this.allDataStoreName);
-            const index = store.index('timestamp'); // 🚀 改用 timestamp 索引
+            const index = store.index('start_time');
 
             const timeRange = {};
 
@@ -357,57 +331,6 @@ class CacheManager {
 
             transaction.oncomplete = () => resolve();
             transaction.onerror = () => reject(transaction.error);
-        });
-    }
-
-    // 🚀 修复元数据（当totalCount不一致时）
-    async fixMetadata() {
-        if (!this.db) await this.init();
-
-        console.log('🔧 开始修复元数据...');
-
-        return new Promise(async (resolve, reject) => {
-            try {
-                // 1. 统计实际数据条数
-                const transaction = this.db.transaction([this.allDataStoreName], 'readonly');
-                const store = transaction.objectStore(this.allDataStoreName);
-                const countRequest = store.count();
-
-                countRequest.onsuccess = async () => {
-                    const actualCount = countRequest.result;
-                    console.log(`📊 实际数据量: ${actualCount.toLocaleString()} 条`);
-
-                    if (actualCount === 0) {
-                        console.warn('⚠️ 数据库为空，无法修复');
-                        resolve({ oldCount: 0, newCount: 0 });
-                        return;
-                    }
-
-                    // 2. 获取时间范围
-                    let minDate, maxDate;
-                    try {
-                        const timeRange = await this.getTimeRangeQuick();
-                        minDate = timeRange.minDate;
-                        maxDate = timeRange.maxDate;
-                    } catch (error) {
-                        console.warn('⚠️ 无法获取时间范围:', error);
-                    }
-
-                    // 3. 更新元数据
-                    await this.saveMetadataAndShardIndex(actualCount, {}, minDate, maxDate);
-
-                    console.log(`✅ 元数据修复完成: ${actualCount.toLocaleString()} 条`);
-                    resolve({ oldCount: 0, newCount: actualCount });
-                };
-
-                countRequest.onerror = () => {
-                    console.error('❌ 统计数据失败:', countRequest.error);
-                    reject(countRequest.error);
-                };
-            } catch (error) {
-                console.error('❌ 修复元数据失败:', error);
-                reject(error);
-            }
         });
     }
 
@@ -623,15 +546,81 @@ class CacheManager {
         });
     }
 
-    // ⚡⚡ 【分片优化】只加载最近N个月的分片数据（使用timestamp索引）
+    // ⚡⚡ 【分片优化】只加载最近N个月的分片数据（使用month_key索引，极速！）
     async queryRecentMonthsFromShards(months = 3, onBatch, batchSize = 5000) {
         if (!this.db) await this.init();
 
         const perfStart = performance.now();
-        console.log(`🔍 查询最近${months}个月数据...`);
+        const monthKeys = this.getRecentMonthKeys(months);
 
-        // 🚀 改用 timestamp 范围查询替代 month_key 索引
-        return this.queryRecentData(months, onBatch, batchSize);
+        console.log(`🔍 查询最近${months}个月分片数据: ${monthKeys.join(', ')}`);
+
+        return new Promise(async (resolve, reject) => {
+            try {
+                const transaction = this.db.transaction([this.allDataStoreName], 'readonly');
+                const store = transaction.objectStore(this.allDataStoreName);
+
+                // 检查是否有month_key索引
+                if (!store.indexNames.contains('month_key')) {
+                    console.warn('⚠️ month_key索引不存在，降级到start_time查询');
+                    // 降级到旧方法
+                    return this.queryRecentData(months, onBatch, batchSize);
+                }
+
+                const index = store.index('month_key');
+                const allRecentData = [];
+
+                // ⚡ 并行查询多个月份的数据
+                const promises = monthKeys.map(monthKey => {
+                    return new Promise((res, rej) => {
+                        const range = IDBKeyRange.only(monthKey);
+                        const request = index.getAll(range);
+
+                        request.onsuccess = (event) => {
+                            const monthData = event.target.result;
+                            console.log(`  ✓ ${monthKey}: ${monthData.length} 条`);
+                            res(monthData);
+                        };
+
+                        request.onerror = () => {
+                            console.error(`  ✗ ${monthKey}: 查询失败`);
+                            res([]); // 失败时返回空数组，不中断其他查询
+                        };
+                    });
+                });
+
+                // 等待所有月份数据加载完成
+                const results = await Promise.all(promises);
+
+                // 合并所有月份的数据
+                for (const monthData of results) {
+                    allRecentData.push(...monthData);
+                }
+
+                const totalLoaded = allRecentData.length;
+
+                // 按时间排序（确保数据有序）
+                allRecentData.sort((a, b) => {
+                    return (a.timestamp || 0) - (b.timestamp || 0);
+                });
+
+                // 分批触发回调（保持兼容性）
+                if (onBatch) {
+                    for (let i = 0; i < allRecentData.length; i += batchSize) {
+                        const batch = allRecentData.slice(i, i + batchSize);
+                        onBatch(batch, Math.min(i + batchSize, totalLoaded));
+                    }
+                }
+
+                const perfTime = performance.now() - perfStart;
+                console.log(`✅ 分片查询完成: ${totalLoaded.toLocaleString()} 条 (${perfTime.toFixed(0)}ms, ${(totalLoaded / (perfTime / 1000)).toFixed(0)} 条/秒)`);
+                resolve(totalLoaded);
+
+            } catch (error) {
+                console.error('❌ 分片查询失败:', error);
+                reject(error);
+            }
+        });
     }
 
     // 🆕 按日期范围查询数据（支持渐进式加载）
@@ -640,43 +629,89 @@ class CacheManager {
 
         const perfStart = performance.now();
 
+        // 计算需要查询的月份范围
+        const monthKeys = [];
+        const current = new Date(startDate);
+        current.setDate(1); // 设置为月初
+
+        const end = new Date(endDate);
+        end.setDate(1);
+
+        while (current <= end) {
+            const monthKey = this.getMonthKey(current);
+            monthKeys.push(monthKey);
+            current.setMonth(current.getMonth() + 1);
+        }
+
         console.log(`🔍 查询日期范围 ${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()}`);
+        console.log(`   需要查询的月份: ${monthKeys.join(', ')}`);
 
         return new Promise(async (resolve, reject) => {
             try {
                 const transaction = this.db.transaction([this.allDataStoreName], 'readonly');
                 const store = transaction.objectStore(this.allDataStoreName);
 
-                // 🚀 使用 timestamp 索引进行范围查询（替代 month_key）
-                const index = store.index('timestamp');
-                const startTime = startDate.getTime();
-                const endTime = endDate.getTime();
-                const range = IDBKeyRange.bound(startTime, endTime);
-                const request = index.getAll(range);
+                // 检查是否有month_key索引
+                if (!store.indexNames.contains('month_key')) {
+                    console.warn('⚠️ month_key索引不存在，降级到start_time查询');
+                    // 降级：使用start_time索引
+                    const index = store.index('start_time');
+                    const range = IDBKeyRange.bound(startDate, endDate);
+                    const request = index.getAll(range);
 
-                request.onsuccess = (event) => {
-                    const data = event.target.result;
-                    let totalLoaded = 0;
+                    request.onsuccess = (event) => {
+                        const data = event.target.result;
+                        if (onBatch) {
+                            for (let i = 0; i < data.length; i += batchSize) {
+                                const batch = data.slice(i, i + batchSize);
+                                onBatch(batch, Math.min(i + batchSize, data.length));
+                            }
+                        }
+                        resolve(data.length);
+                    };
 
-                    if (onBatch) {
-                        for (let i = 0; i < data.length; i += batchSize) {
-                            const batch = data.slice(i, i + batchSize);
+                    request.onerror = () => reject(request.error);
+                    return;
+                }
+
+                const index = store.index('month_key');
+                let totalLoaded = 0;
+
+                // 🎬 按月份顺序加载（从最新到最旧，让用户看到横轴从右向左扩展）
+                // monthKeys.reverse() 确保先加载最近的数据，再逐步加载更早的数据
+                for (const monthKey of monthKeys.reverse()) {
+                    const range = IDBKeyRange.only(monthKey);
+                    const monthData = await new Promise((res, rej) => {
+                        const request = index.getAll(range);
+                        request.onsuccess = (event) => {
+                            const data = event.target.result;
+                            // 过滤数据，只保留在日期范围内的
+                            const filtered = data.filter(record => {
+                                const recordDate = new Date(record.start_time || record['开始时间']);
+                                return recordDate >= startDate && recordDate <= endDate;
+                            });
+                            console.log(`  ✓ ${monthKey}: ${filtered.length} 条（过滤后）`);
+                            res(filtered);
+                        };
+                        request.onerror = () => {
+                            console.error(`  ✗ ${monthKey}: 查询失败`);
+                            res([]);
+                        };
+                    });
+
+                    // 立即触发回调（边加载边处理）
+                    if (monthData.length > 0 && onBatch) {
+                        for (let i = 0; i < monthData.length; i += batchSize) {
+                            const batch = monthData.slice(i, i + batchSize);
                             totalLoaded += batch.length;
                             onBatch(batch, totalLoaded);
                         }
-                    } else {
-                        totalLoaded = data.length;
                     }
+                }
 
-                    const perfTime = performance.now() - perfStart;
-                    console.log(`✅ 日期范围查询完成: ${totalLoaded.toLocaleString()} 条 (${perfTime.toFixed(0)}ms)`);
-                    resolve(totalLoaded);
-                };
-
-                request.onerror = () => {
-                    console.error('❌ 日期范围查询失败:', request.error);
-                    reject(request.error);
-                };
+                const perfTime = performance.now() - perfStart;
+                console.log(`✅ 日期范围查询完成: ${totalLoaded.toLocaleString()} 条 (${perfTime.toFixed(0)}ms)`);
+                resolve(totalLoaded);
 
             } catch (error) {
                 console.error('❌ 日期范围查询失败:', error);
@@ -685,7 +720,7 @@ class CacheManager {
         });
     }
 
-    // ⚡ 【冷启动优化】只加载最近N个月的数据（使用timestamp索引）
+    // ⚡ 【冷启动优化】只加载最近N个月的数据（使用start_time索引）- 降级方案
     async queryRecentData(months = 1, onBatch, batchSize = 5000) {
         if (!this.db) await this.init();
 
@@ -698,10 +733,10 @@ class CacheManager {
         return new Promise((resolve, reject) => {
             const transaction = this.db.transaction([this.allDataStoreName], 'readonly');
             const store = transaction.objectStore(this.allDataStoreName);
-            const index = store.index('timestamp'); // 🚀 改用 timestamp 索引
+            const index = store.index('start_time');
 
             // 使用索引范围查询（比全表扫描快得多）
-            const range = IDBKeyRange.lowerBound(cutoffDate.getTime());
+            const range = IDBKeyRange.lowerBound(cutoffDate);
             const request = index.getAll(range);
 
             request.onsuccess = (event) => {
@@ -868,72 +903,6 @@ class CacheManager {
         });
     }
 
-    /**
-     * 🆕 修复元数据不一致问题
-     * 用于修复元数据中的totalCount与实际数据量不一致的情况
-     */
-    async fixMetadata() {
-        if (!this.db) await this.init();
-
-        console.log('🔧 开始修复元数据...');
-
-        return new Promise((resolve, reject) => {
-            const tx = this.db.transaction(
-                [this.allDataStoreName, this.metaStoreName],
-                'readwrite'
-            );
-            const dataStore = tx.objectStore(this.allDataStoreName);
-            const metaStore = tx.objectStore(this.metaStoreName);
-
-            // 1. 获取实际记录数
-            const countRequest = dataStore.count();
-
-            countRequest.onsuccess = () => {
-                const actualCount = countRequest.result;
-                console.log(`📊 实际记录数: ${actualCount.toLocaleString()}`);
-
-                // 2. 获取现有元数据
-                const metaRequest = metaStore.get('allDataMeta');
-
-                metaRequest.onsuccess = () => {
-                    const meta = metaRequest.result || {};
-                    const oldCount = meta.totalCount || 0;
-
-                    // 3. 更新元数据
-                    meta.key = 'allDataMeta';
-                    meta.totalCount = actualCount;
-                    meta.actualCount = actualCount;
-                    meta.lastUpdated = meta.lastUpdated || Date.now();
-                    meta.fixedAt = Date.now();
-
-                    metaStore.put(meta);
-
-                    console.log(`✅ 元数据已修复: ${oldCount.toLocaleString()} → ${actualCount.toLocaleString()}`);
-                    resolve({
-                        oldCount,
-                        newCount: actualCount,
-                        fixed: oldCount !== actualCount
-                    });
-                };
-
-                metaRequest.onerror = () => {
-                    console.error('❌ 获取元数据失败:', metaRequest.error);
-                    reject(metaRequest.error);
-                };
-            };
-
-            countRequest.onerror = () => {
-                console.error('❌ 统计记录数失败:', countRequest.error);
-                reject(countRequest.error);
-            };
-
-            tx.onerror = () => {
-                console.error('❌ 事务失败:', tx.error);
-                reject(tx.error);
-            };
-        });
-    }
-
     // 清空全数据缓存
     async clearAllDataCache() {
         if (!this.db) await this.init();
@@ -1015,113 +984,48 @@ class CacheManager {
             const metaStore = transaction.objectStore(this.metaStoreName);
 
             let successCount = 0;
-            let newInsertCount = 0; // 🔥 新增：跟踪真正的新增数量
 
-            // 🔥 第一步：检查哪些是新记录
-            const checkPromises = records.map(record => {
-                return new Promise((checkResolve) => {
-                    const getRequest = allDataStore.get(record.id);
-                    getRequest.onsuccess = () => {
-                        const exists = getRequest.result !== undefined;
-                        checkResolve({ record, exists });
-                    };
-                    getRequest.onerror = () => checkResolve({ record, exists: false });
-                });
+            // 批量更新
+            records.forEach(record => {
+                if (!record.timestamp) {
+                    record.timestamp = new Date(record.start_time).getTime();
+                }
+
+                const putRequest = allDataStore.put(record);
+                putRequest.onsuccess = () => successCount++;
             });
 
-            Promise.all(checkPromises).then(results => {
-                // 🔥 第二步：批量写入并统计新增数量
-                const writeTransaction = this.db.transaction([this.allDataStoreName, this.metaStoreName], 'readwrite');
-                const writeStore = writeTransaction.objectStore(this.allDataStoreName);
-
-                results.forEach(({ record, exists }) => {
-                    if (!record.timestamp) {
-                        record.timestamp = new Date(record.start_time).getTime();
-                    }
-
-                    const putRequest = writeStore.put(record);
-                    putRequest.onsuccess = () => {
-                        successCount++;
-                        if (!exists) newInsertCount++; // 只有新插入才计数
-                    };
-                });
-
-                writeTransaction.oncomplete = () => {
-                    // 更新元数据
-                    const metaTransaction = this.db.transaction([this.metaStoreName], 'readwrite');
-                    const ms = metaTransaction.objectStore(this.metaStoreName);
-                    const metaRequest = ms.get('allDataMeta');
-
-                    metaRequest.onsuccess = () => {
-                        const meta = metaRequest.result || {
-                            key: 'allDataMeta',
-                            totalCount: 0,
-                            lastUpdated: Date.now(),
-                            lastSyncTime: Date.now()
-                        };
-
-                        // 🔥 修复：只累加真正的新增数量
-                        meta.totalCount = (meta.totalCount || 0) + newInsertCount;
-                        meta.lastUpdated = Date.now();
-                        meta.lastSyncTime = Date.now();
-                        ms.put(meta);
-                    };
-
-                    console.log(`✅ 批量增量更新完成: ${successCount}/${records.length} 条记录 (新增${newInsertCount}条, 更新${successCount - newInsertCount}条)`);
-                    resolve(successCount);
-                };
-
-                writeTransaction.onerror = () => {
-                    console.error('❌ 批量增量更新失败:', writeTransaction.error);
-                    reject(writeTransaction.error);
-                };
-            });
-        });
-    }
-
-    // 🔧 修复totalCount（重新统计实际数据量）
-    async fixTotalCount() {
-        if (!this.db) await this.init();
-
-        return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction([this.allDataStoreName, this.metaStoreName], 'readwrite');
-            const allDataStore = transaction.objectStore(this.allDataStoreName);
-            const metaStore = transaction.objectStore(this.metaStoreName);
-
-            // 使用count()精确统计
-            const countRequest = allDataStore.count();
-
-            countRequest.onsuccess = () => {
-                const actualCount = countRequest.result;
-
+            transaction.oncomplete = () => {
                 // 更新元数据
-                const metaRequest = metaStore.get('allDataMeta');
+                const metaTransaction = this.db.transaction([this.metaStoreName], 'readwrite');
+                const ms = metaTransaction.objectStore(this.metaStoreName);
+                const metaRequest = ms.get('allDataMeta');
+
                 metaRequest.onsuccess = () => {
                     const meta = metaRequest.result || {
                         key: 'allDataMeta',
                         totalCount: 0,
-                        lastUpdated: Date.now()
+                        lastUpdated: Date.now(),
+                        lastSyncTime: Date.now()
                     };
 
-                    const oldCount = meta.totalCount;
-                    meta.totalCount = actualCount;
                     meta.lastUpdated = Date.now();
-                    metaStore.put(meta);
-
-                    console.log(`🔧 totalCount已修复: ${oldCount} → ${actualCount} (差值: ${actualCount - oldCount})`);
-                    resolve(actualCount);
+                    meta.lastSyncTime = Date.now();
+                    ms.put(meta);
                 };
+
+                console.log(`✅ 批量增量更新完成: ${successCount}/${records.length} 条记录`);
+                resolve(successCount);
             };
 
-            countRequest.onerror = () => {
-                console.error('❌ 修复totalCount失败:', countRequest.error);
-                reject(countRequest.error);
+            transaction.onerror = () => {
+                console.error('❌ 批量增量更新失败:', transaction.error);
+                reject(transaction.error);
             };
         });
     }
 
     // 🆕 追加数据（用于后台加载历史数据）
-    // 🚀 方案2优化：数据已在Worker中预处理，直接存储
     async appendData(newRecords) {
         if (!this.db) await this.init();
         if (!newRecords || newRecords.length === 0) return 0;
@@ -1133,14 +1037,25 @@ class CacheManager {
 
             let appendedCount = 0;
 
-            // 🚀 方案2：数据已预处理，直接写入
+            // 批量添加新记录
             for (const record of newRecords) {
-                // 确保有timestamp字段（兼容旧数据）
-                if (!record.timestamp && record.start_time) {
-                    record.timestamp = this.parseTimeToTimestamp(record.start_time);
+                const standardRecord = {
+                    id: record.plan_id || record['计划ID'] || record.id || `record_${Date.now()}_${appendedCount}`,
+                    start_time: record.start_time || record['开始时间'],
+                    task_result: record.task_result || record['任务结果状态'],
+                    task_type: record.task_type || record['任务类型'],
+                    customer: record.customer || record['所属客户'],
+                    satellite_name: record.satellite_name || record['卫星名称'],
+                    station_name: record.station_name || record['测站名称'],
+                    station_id: record.station_id || record['测站ID'],
+                    ...record
+                };
+
+                if (standardRecord.start_time) {
+                    standardRecord.timestamp = this.parseTimeToTimestamp(standardRecord.start_time);
                 }
 
-                const putRequest = allDataStore.put(record);
+                const putRequest = allDataStore.put(standardRecord);
                 putRequest.onsuccess = () => appendedCount++;
             }
 
