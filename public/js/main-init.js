@@ -42,7 +42,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (progressText) progressText.textContent = '正在初始化应用...';
 
         // 开始加载数据（不需要forceReload，直接使用IndexedDB）
-        await dataPreloader.autoPreloadAllData();
+        await dataPreloader.autoPreloadAllData(false, (progress, loaded, total) => {
+            // 🆕 更新骨架屏进度：50% + 进度的40%（50%-90%区间）
+            const adjustedProgress = 50 + Math.round(progress * 0.4);
+            if (progressPercent) progressPercent.textContent = `${adjustedProgress}%`;
+            if (progressText) progressText.textContent = `正在加载数据... ${loaded.toLocaleString()}/${total.toLocaleString()}`;
+        });
 
         if (progressPercent) progressPercent.textContent = '70%';
         if (progressText) progressText.textContent = '正在构建应用...';

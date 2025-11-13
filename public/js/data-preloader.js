@@ -5,7 +5,7 @@ class DataPreloader {
     }
 
     // 页面加载时自动预载所有数据（优化版本 - 懒加载）
-    async autoPreloadAllData(forceReload = false) {
+    async autoPreloadAllData(forceReload = false, onProgress = null) {
         try {
             console.log('🚀 页面加载：开始智能预载数据...');
             this.isPreloading = true;
@@ -68,6 +68,10 @@ class DataPreloader {
                     `正在加载数据... ${loaded.toLocaleString()}/${total.toLocaleString()} (${progress}%)`,
                     'loading'
                 );
+                // 🆕 调用外部进度回调
+                if (onProgress) {
+                    onProgress(progress, loaded, total);
+                }
             });
 
             this.updatePreloadStatus(`✅ 成功加载全量数据（${result.totalCount.toLocaleString()} 条）`, 'success');
@@ -328,6 +332,7 @@ class DataPreloader {
             const CONCURRENT_LIMIT = this.calculateOptimalConcurrency(shards.length);
             let totalLoaded = 0;
             let completedShards = 0;
+            let downloadedShards = 0; // 🆕 跟踪下载完成的分片数
             let index = 0;
 
             // 先清空现有数据
@@ -360,7 +365,7 @@ class DataPreloader {
                         if (records && records.length > 0) {
                             pendingBatch.push(...records);
                             pendingShards.push({ shard, downloadTime, count: records.length });
-                            completedShards++;
+                            // ⚠️ 不在这里增加completedShards，应该在实际存储完成后增加
                         }
                     }
 
@@ -391,7 +396,14 @@ class DataPreloader {
                             workerStored += totalRecords;
                             totalLoaded += totalRecords;
 
-                            const progress = Math.round((completedShards / shards.length) * 100);
+                            // 🆕 在存储完成后才增加completedShards
+                            completedShards += mergedCount;
+
+                            // 🆕 改进的进度计算：下载进度(0-30%) + 存储进度(30-100%)
+                            const downloadProgress = Math.min(30, Math.round((downloadedShards / shards.length) * 30));
+                            const storageProgress = Math.round((completedShards / shards.length) * 70);
+                            const progress = downloadProgress + storageProgress;
+
                             if (onProgress) {
                                 onProgress(progress, totalLoaded, totalLoaded);
                             }
@@ -426,6 +438,9 @@ class DataPreloader {
 
                             // 阶段2：放入存储队列（不阻塞）
                             storageQueue.push({ records, shard, workerId, downloadTime });
+
+                            // 🆕 增加下载完成计数
+                            downloadedShards++;
                         }
                     } catch (error) {
                         console.error(`❌ Worker${workerId} 下载分片 ${shard.label} 失败:`, error);
