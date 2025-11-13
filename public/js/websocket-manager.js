@@ -302,7 +302,8 @@ class WebSocketSyncManager {
 
             // 🔥 智能策略：只获取最近30天的数据（基于start_time过滤）
             const recentDays = 30;
-            const url = `${apiUrl}?sinceChangeLogId=${lastChangeLogId}&recentDays=${recentDays}`;
+            const limit = 10000;  // ✅ 一次性获取最多10000条
+            const url = `${apiUrl}?sinceChangeLogId=${lastChangeLogId}&recentDays=${recentDays}&limit=${limit}`;
 
             console.log(`📡 请求URL: ${url}`);
 

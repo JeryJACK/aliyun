@@ -933,43 +933,85 @@ class CacheManager {
     async updateRecord(record) {
         if (!this.db) await this.init();
 
-        return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction([this.allDataStoreName, this.metaStoreName], 'readwrite');
-            const allDataStore = transaction.objectStore(this.allDataStoreName);
-            const metaStore = transaction.objectStore(this.metaStoreName);
+        return new Promise(async (resolve, reject) => {
+            try {
+                // 添加必要字段
+                if (!record.timestamp) {
+                    record.timestamp = new Date(record.start_time).getTime();
+                }
 
-            // 添加必要字段
-            if (!record.timestamp) {
-                record.timestamp = new Date(record.start_time).getTime();
-            }
+                // 1. 检查记录是否已存在（判断是新增还是更新）
+                const checkTransaction = this.db.transaction([this.allDataStoreName], 'readonly');
+                const checkStore = checkTransaction.objectStore(this.allDataStoreName);
+                const getRequest = checkStore.get(record.id);
 
-            // 使用 put 方法：存在则更新，不存在则插入
-            const putRequest = allDataStore.put(record);
+                getRequest.onsuccess = async () => {
+                    const isNewRecord = !getRequest.result;
 
-            putRequest.onsuccess = () => {
-                // 更新元数据的最后同步时间
-                const metaRequest = metaStore.get('allDataMeta');
-                metaRequest.onsuccess = () => {
-                    const meta = metaRequest.result || {
-                        key: 'allDataMeta',
-                        totalCount: 0,
-                        lastUpdated: Date.now(),
-                        lastSyncTime: Date.now()
+                    // 2. 执行更新/插入操作
+                    const transaction = this.db.transaction([this.allDataStoreName, this.metaStoreName], 'readwrite');
+                    const allDataStore = transaction.objectStore(this.allDataStoreName);
+                    const metaStore = transaction.objectStore(this.metaStoreName);
+
+                    // 使用 put 方法：存在则更新，不存在则插入
+                    const putRequest = allDataStore.put(record);
+
+                    putRequest.onsuccess = () => {
+                        // 3. 更新元数据
+                        const metaRequest = metaStore.get('allDataMeta');
+                        metaRequest.onsuccess = () => {
+                            const meta = metaRequest.result || {
+                                key: 'allDataMeta',
+                                totalCount: 0,
+                                lastUpdated: Date.now(),
+                                lastSyncTime: Date.now()
+                            };
+
+                            // 如果是新记录，增加总数
+                            if (isNewRecord) {
+                                meta.totalCount = (meta.totalCount || 0) + 1;
+                            }
+
+                            // 更新时间戳
+                            meta.lastUpdated = Date.now();
+                            meta.lastSyncTime = Date.now();
+
+                            // 更新时间范围（如果新数据超出了原有范围）
+                            const recordTimestamp = record.timestamp;
+                            const currentMinTimestamp = meta.minTimestamp || Infinity;
+                            const currentMaxTimestamp = meta.maxTimestamp || -Infinity;
+
+                            if (recordTimestamp < currentMinTimestamp) {
+                                meta.minTimestamp = recordTimestamp;
+                                meta.minDate = new Date(recordTimestamp);
+                            }
+
+                            if (recordTimestamp > currentMaxTimestamp) {
+                                meta.maxTimestamp = recordTimestamp;
+                                meta.maxDate = new Date(recordTimestamp);
+                            }
+
+                            metaStore.put(meta);
+                        };
+
+                        console.log(`✅ ${isNewRecord ? '新增' : '更新'}记录 ID: ${record.id}`);
+                        resolve(record);
                     };
 
-                    meta.lastUpdated = Date.now();
-                    meta.lastSyncTime = Date.now();
-                    metaStore.put(meta);
+                    putRequest.onerror = () => {
+                        console.error('❌ 增量更新失败:', putRequest.error);
+                        reject(putRequest.error);
+                    };
                 };
 
-                console.log(`✅ 增量更新记录 ID: ${record.id}`);
-                resolve(record);
-            };
-
-            putRequest.onerror = () => {
-                console.error('❌ 增量更新失败:', putRequest.error);
-                reject(putRequest.error);
-            };
+                getRequest.onerror = () => {
+                    console.error('❌ 检查记录存在性失败:', getRequest.error);
+                    reject(getRequest.error);
+                };
+            } catch (error) {
+                console.error('❌ 更新记录失败:', error);
+                reject(error);
+            }
         });
     }
 
@@ -984,44 +1026,95 @@ class CacheManager {
             const metaStore = transaction.objectStore(this.metaStoreName);
 
             let successCount = 0;
+            let minTimestamp = Infinity;
+            let maxTimestamp = -Infinity;
 
-            // 批量更新
+            // 批量更新并追踪时间范围
             records.forEach(record => {
                 if (!record.timestamp) {
                     record.timestamp = new Date(record.start_time).getTime();
                 }
 
+                // 追踪时间范围
+                if (record.timestamp < minTimestamp) minTimestamp = record.timestamp;
+                if (record.timestamp > maxTimestamp) maxTimestamp = record.timestamp;
+
                 const putRequest = allDataStore.put(record);
                 putRequest.onsuccess = () => successCount++;
             });
 
-            transaction.oncomplete = () => {
-                // 更新元数据
-                const metaTransaction = this.db.transaction([this.metaStoreName], 'readwrite');
-                const ms = metaTransaction.objectStore(this.metaStoreName);
-                const metaRequest = ms.get('allDataMeta');
-
-                metaRequest.onsuccess = () => {
-                    const meta = metaRequest.result || {
-                        key: 'allDataMeta',
-                        totalCount: 0,
-                        lastUpdated: Date.now(),
-                        lastSyncTime: Date.now()
-                    };
-
-                    meta.lastUpdated = Date.now();
-                    meta.lastSyncTime = Date.now();
-                    ms.put(meta);
-                };
-
-                console.log(`✅ 批量增量更新完成: ${successCount}/${records.length} 条记录`);
-                resolve(successCount);
+            transaction.oncomplete = async () => {
+                try {
+                    // 🔥 关键修复：重新统计总记录数并更新时间范围
+                    await this.updateMetadataAfterBatchUpdate(successCount, minTimestamp, maxTimestamp);
+                    console.log(`✅ 批量增量更新完成: ${successCount}/${records.length} 条记录`);
+                    resolve(successCount);
+                } catch (error) {
+                    console.error('❌ 更新元数据失败:', error);
+                    resolve(successCount); // 仍然返回成功数，但记录错误
+                }
             };
 
             transaction.onerror = () => {
                 console.error('❌ 批量增量更新失败:', transaction.error);
                 reject(transaction.error);
             };
+        });
+    }
+
+    // 🆕 批量更新后更新元数据（重新统计总数并更新时间范围）
+    async updateMetadataAfterBatchUpdate(addedCount, newMinTimestamp, newMaxTimestamp) {
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction([this.allDataStoreName, this.metaStoreName], 'readwrite');
+            const allDataStore = transaction.objectStore(this.allDataStoreName);
+            const metaStore = transaction.objectStore(this.metaStoreName);
+
+            // 1. 获取现有元数据
+            const metaRequest = metaStore.get('allDataMeta');
+
+            metaRequest.onsuccess = () => {
+                const meta = metaRequest.result || {
+                    key: 'allDataMeta',
+                    totalCount: 0,
+                    lastUpdated: Date.now(),
+                    lastSyncTime: Date.now()
+                };
+
+                // 2. 重新统计实际记录数（确保准确）
+                const countRequest = allDataStore.count();
+                countRequest.onsuccess = () => {
+                    const actualCount = countRequest.result;
+
+                    // 3. 更新元数据
+                    meta.totalCount = actualCount;
+                    meta.lastUpdated = Date.now();
+                    meta.lastSyncTime = Date.now();
+
+                    // 4. 更新时间范围（如果新数据超出了原有范围）
+                    if (newMinTimestamp !== Infinity && newMaxTimestamp !== -Infinity) {
+                        const currentMinTimestamp = meta.minTimestamp || Infinity;
+                        const currentMaxTimestamp = meta.maxTimestamp || -Infinity;
+
+                        if (newMinTimestamp < currentMinTimestamp) {
+                            meta.minTimestamp = newMinTimestamp;
+                            meta.minDate = new Date(newMinTimestamp);
+                        }
+
+                        if (newMaxTimestamp > currentMaxTimestamp) {
+                            meta.maxTimestamp = newMaxTimestamp;
+                            meta.maxDate = new Date(newMaxTimestamp);
+                        }
+                    }
+
+                    // 5. 保存更新的元数据
+                    metaStore.put(meta);
+
+                    console.log(`📊 元数据已更新: 总数 ${actualCount} (新增 ${addedCount} 条)`);
+                };
+            };
+
+            transaction.oncomplete = () => resolve();
+            transaction.onerror = () => reject(transaction.error);
         });
     }
 
@@ -1036,6 +1129,8 @@ class CacheManager {
             const metaStore = transaction.objectStore(this.metaStoreName);
 
             let appendedCount = 0;
+            let minTimestamp = Infinity;
+            let maxTimestamp = -Infinity;
 
             // 批量添加新记录
             for (const record of newRecords) {
@@ -1053,32 +1148,26 @@ class CacheManager {
 
                 if (standardRecord.start_time) {
                     standardRecord.timestamp = this.parseTimeToTimestamp(standardRecord.start_time);
+
+                    // 追踪时间范围
+                    if (standardRecord.timestamp < minTimestamp) minTimestamp = standardRecord.timestamp;
+                    if (standardRecord.timestamp > maxTimestamp) maxTimestamp = standardRecord.timestamp;
                 }
 
                 const putRequest = allDataStore.put(standardRecord);
                 putRequest.onsuccess = () => appendedCount++;
             }
 
-            transaction.oncomplete = () => {
-                // 更新元数据
-                const metaTransaction = this.db.transaction([this.metaStoreName], 'readwrite');
-                const ms = metaTransaction.objectStore(this.metaStoreName);
-                const metaRequest = ms.get('allDataMeta');
-
-                metaRequest.onsuccess = () => {
-                    const meta = metaRequest.result || {
-                        key: 'allDataMeta',
-                        totalCount: 0,
-                        lastUpdated: Date.now()
-                    };
-
-                    meta.totalCount = (meta.totalCount || 0) + appendedCount;
-                    meta.lastUpdated = Date.now();
-                    ms.put(meta);
-                };
-
-                console.log(`✅ 追加数据完成: ${appendedCount}/${newRecords.length} 条记录`);
-                resolve(appendedCount);
+            transaction.oncomplete = async () => {
+                try {
+                    // 🔥 使用统一的元数据更新方法
+                    await this.updateMetadataAfterBatchUpdate(appendedCount, minTimestamp, maxTimestamp);
+                    console.log(`✅ 追加数据完成: ${appendedCount}/${newRecords.length} 条记录`);
+                    resolve(appendedCount);
+                } catch (error) {
+                    console.error('❌ 更新元数据失败:', error);
+                    resolve(appendedCount); // 仍然返回成功数，但记录错误
+                }
             };
 
             transaction.onerror = () => {
