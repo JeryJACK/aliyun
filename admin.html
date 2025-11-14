@@ -4,29 +4,18 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>数据管理 - 卫星任务数据分析平台</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+    <!-- 本地资源 - 极简SVG方案 -->
+    <!-- 本地Tailwind CSS -->
+    <link rel="stylesheet" href="./public/css/output.css">
+    <!-- 本地图标系统 -->
+    <link rel="stylesheet" href="./public/css/icons.css">
+    <!-- 主题系统 -->
+    <link rel="stylesheet" href="./public/css/themes.css">
+    <!-- XLSX库 -->
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-    
+
     <!-- 配置文件 -->
     <script src="./public/js/config.js"></script>
-    
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        primary: '#165DFF',
-                        secondary: '#36CFC9',
-                        accent: '#722ED1',
-                        warning: '#FF7D00',
-                        danger: '#F53F3F',
-                        success: '#00B42A',
-                    },
-                }
-            }
-        }
-    </script>
 
     <style>
         .card-shadow {
@@ -53,11 +42,23 @@
     </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
+    <!-- SVG图标库 -->
+    <div style="display:none">
+        <div id="svg-sprite-container"></div>
+    </div>
+    <script>
+        // 加载SVG sprite
+        fetch('./public/icons/sprite.svg')
+            .then(r => r.text())
+            .then(svg => {
+                document.getElementById('svg-sprite-container').innerHTML = svg;
+            });
+    </script>
     <!-- 顶部导航 -->
     <header class="bg-white border-b border-gray-200">
         <div class="container mx-auto px-4 py-3 flex items-center justify-between">
             <div class="flex items-center space-x-2">
-                <i class="fa fa-database text-primary text-2xl"></i>
+                <svg class="icon icon-xl text-primary"><use href="#icon-database"/></svg>
                 <h1 class="text-xl font-bold text-primary">数据管理中心</h1>
             </div>
 
@@ -65,10 +66,10 @@
             <div class="flex items-center space-x-4">
                 <span class="text-sm text-gray-600">欢迎，<span id="username" class="font-medium">管理员</span></span>
                 <a href="index.html" class="text-gray-600 hover:text-primary transition-colors px-3 py-2 rounded-md">
-                    <i class="fa fa-home mr-1"></i>返回首页
+                    <svg class="icon mr-1"><use href="#icon-home"/></svg>返回首页
                 </a>
                 <button id="logoutBtn" class="text-gray-600 hover:text-danger transition-colors px-3 py-2 rounded-md">
-                    <i class="fa fa-sign-out mr-1"></i>退出登录
+                    <svg class="icon mr-1"><use href="#icon-sign-out"/></svg>退出登录
                 </button>
             </div>
         </div>
@@ -85,7 +86,7 @@
                         <h3 class="text-2xl font-bold text-primary mt-1" id="totalRecords">-</h3>
                     </div>
                     <div class="p-3 bg-primary/10 rounded-lg">
-                        <i class="fa fa-database text-primary text-xl"></i>
+                        <svg class="icon icon-xl text-primary"><use href="#icon-database"/></svg>
                     </div>
                 </div>
             </div>
@@ -97,7 +98,7 @@
                         <h3 class="text-2xl font-bold text-secondary mt-1" id="totalPlans">-</h3>
                     </div>
                     <div class="p-3 bg-secondary/10 rounded-lg">
-                        <i class="fa fa-list-alt text-secondary text-xl"></i>
+                        <svg class="icon icon-xl text-secondary"><use href="#icon-list-alt"/></svg>
                     </div>
                 </div>
             </div>
@@ -109,7 +110,7 @@
                         <h3 class="text-2xl font-bold text-danger mt-1" id="totalFailures">-</h3>
                     </div>
                     <div class="p-3 bg-danger/10 rounded-lg">
-                        <i class="fa fa-exclamation-circle text-danger text-xl"></i>
+                        <svg class="icon icon-xl text-danger"><use href="#icon-exclamation-circle"/></svg>
                     </div>
                 </div>
             </div>
@@ -121,7 +122,7 @@
                         <h3 class="text-sm font-bold text-success mt-1" id="dataRange">-</h3>
                     </div>
                     <div class="p-3 bg-success/10 rounded-lg">
-                        <i class="fa fa-calendar text-success text-xl"></i>
+                        <svg class="icon icon-xl text-success"><use href="#icon-calendar"/></svg>
                     </div>
                 </div>
             </div>
@@ -130,7 +131,7 @@
         <!-- 数据导入区域 -->
         <section class="bg-white rounded-lg p-6 card-shadow mb-8">
             <h2 class="text-lg font-semibold mb-4 flex items-center">
-                <i class="fa fa-upload text-primary mr-2"></i>数据导入
+                <svg class="icon text-primary mr-2"><use href="#icon-upload"/></svg>数据导入
             </h2>
             
             <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -138,11 +139,11 @@
                 <div>
                     <h3 class="text-md font-medium mb-3">Excel 文件上传</h3>
                     <div id="dropArea" class="drag-area border rounded-lg p-8 text-center cursor-pointer">
-                        <i class="fa fa-cloud-upload text-4xl text-gray-400 mb-4"></i>
+                        <svg class="icon icon-2xl text-gray-400 mb-4"><use href="#icon-cloud-upload"/></svg>
                         <p class="text-gray-600 mb-2">拖拽文件到此处或点击选择文件</p>
                         <p class="text-sm text-gray-500">支持 .xlsx, .xls 格式</p>
                         <p class="text-xs text-blue-500 mt-1">
-                            <i class="fa fa-info-circle mr-1"></i>
+                            <svg class="icon mr-1"><use href="#icon-info-circle"/></svg>
                             大文件（>4MB）将自动采用客户端分批处理
                         </p>
                         <input type="file" id="fileInput" accept=".xlsx,.xls" class="hidden" />
@@ -151,11 +152,11 @@
                     <div id="fileInfo" class="mt-4 p-3 bg-gray-50 rounded-lg hidden">
                         <div class="flex items-center justify-between">
                             <div class="flex items-center space-x-2">
-                                <i class="fa fa-file-excel-o text-success"></i>
+                                <svg class="icon text-success"><use href="#icon-file-excel-o"/></svg>
                                 <span id="fileName" class="text-sm font-medium"></span>
                             </div>
                             <button id="removeFile" class="text-gray-400 hover:text-danger">
-                                <i class="fa fa-times"></i>
+                                <svg class="icon"><use href="#icon-times"/></svg>
                             </button>
                         </div>
                     </div>
@@ -194,7 +195,7 @@
             <!-- 导入按钮和进度 -->
             <div class="mt-6">
                 <button id="importBtn" class="px-6 py-2 bg-primary text-white rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-                    <i class="fa fa-upload mr-2"></i>开始导入
+                    <svg class="icon mr-2"><use href="#icon-upload"/></svg>开始导入
                 </button>
                 
                 <div id="importProgress" class="mt-4 hidden">
@@ -220,18 +221,18 @@
         <section class="bg-white rounded-lg p-6 card-shadow mb-8">
             <div class="flex items-center justify-between mb-4">
                 <h2 class="text-lg font-semibold flex items-center">
-                    <i class="fa fa-table text-primary mr-2"></i>数据管理
+                    <svg class="icon text-primary mr-2"><use href="#icon-table"/></svg>数据管理
                 </h2>
                 
                 <div class="flex items-center space-x-2">
                     <button id="refreshData" class="px-3 py-2 text-gray-600 hover:text-primary transition-colors">
-                        <i class="fa fa-refresh mr-1"></i>刷新
+                        <svg class="icon mr-1"><use href="#icon-refresh"/></svg>刷新
                     </button>
                     <button id="exportData" class="px-3 py-2 text-gray-600 hover:text-success transition-colors">
-                        <i class="fa fa-download mr-1"></i>导出
+                        <svg class="icon mr-1"><use href="#icon-download"/></svg>导出
                     </button>
                     <button id="clearAllData" class="px-3 py-2 text-gray-600 hover:text-danger transition-colors">
-                        <i class="fa fa-trash mr-1"></i>清空数据
+                        <svg class="icon mr-1"><use href="#icon-trash"/></svg>清空数据
                     </button>
                 </div>
             </div>
@@ -347,7 +348,7 @@
             <div class="flex justify-between items-center mb-4">
                 <h3 class="text-lg font-semibold">编辑记录</h3>
                 <button id="closeEditModal" class="text-gray-500 hover:text-gray-700">
-                    <i class="fa fa-times"></i>
+                    <svg class="icon"><use href="#icon-times"/></svg>
                 </button>
             </div>
             
@@ -815,10 +816,10 @@
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-2">
                             <button onclick="app.editRecord(${record.id})" class="text-primary hover:text-primary/70">
-                                <i class="fa fa-edit mr-1"></i>编辑
+                                <svg class="icon mr-1"><use href="#icon-edit"/></svg>编辑
                             </button>
                             <button onclick="app.deleteRecord(${record.id})" class="text-danger hover:text-danger/70">
-                                <i class="fa fa-trash mr-1"></i>删除
+                                <svg class="icon mr-1"><use href="#icon-trash"/></svg>删除
                             </button>
                         </td>
                     `;

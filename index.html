@@ -6,10 +6,6 @@
     <title>卫星任务数据分析平台</title>
     <link rel="icon" type="image/svg+xml" href="./favicon.svg">
 
-    <!-- ⚡ 性能优化：预连接CDN，加速资源加载 -->
-    <link rel="preconnect" href="https://cdn.tailwindcss.com">
-    <link rel="preconnect" href="https://cdn.bootcdn.net" crossorigin>
-    <link rel="dns-prefetch" href="https://cdn.bootcdn.net">
 
     <!-- 🚀 性能优化：预解析API和WebSocket服务器，减少首次请求延迟 -->
     <link rel="dns-prefetch" href="https://records-bsjjdmpsel.cn-hangzhou.fcapp.run">
@@ -20,41 +16,14 @@
     <!-- 🎨 主题系统 - 支持深色/浅色模式 + 多彩主题切换 -->
     <link rel="stylesheet" href="./public/css/themes.css">
 
-    <!-- 外部资源 - 使用CDN -->
-    <!-- Tailwind CSS Play CDN -->
-    <script src="https://cdn.tailwindcss.com?plugins=forms,typography,aspect-ratio"></script>
-    <link href="https://cdn.bootcdn.net/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet">
-    <!-- Chart.js -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
-
-    <!-- Tailwind 配置 -->
-    <script>
-        // 配置Tailwind并禁用生产环境警告
-        tailwind.config = {
-            darkMode: 'class',
-            theme: {
-                extend: {
-                    colors: {
-                        primary: 'rgb(var(--color-primary))',
-                        secondary: 'rgb(var(--color-secondary))',
-                        accent: 'rgb(var(--color-accent))',
-                        success: 'rgb(var(--color-success))',
-                        warning: 'rgb(var(--color-warning))',
-                        danger: 'rgb(var(--color-danger))',
-                        info: 'rgb(var(--color-info))',
-                    },
-                }
-            },
-            corePlugins: {
-                preflight: true,
-            }
-        };
-        // 禁用生产环境警告
-        if (window.tailwind && window.tailwind.config) {
-            window.tailwind.config.devMode = false;
-        }
-    </script>
+    <!-- 本地资源 - 极简SVG方案 -->
+    <!-- 本地Tailwind CSS -->
+    <link rel="stylesheet" href="./public/css/output.css">
+    <!-- 本地图标系统 -->
+    <link rel="stylesheet" href="./public/css/icons.css">
+    <!-- 本地Chart.js -->
+    <script src="./public/lib/chart.min.js"></script>
+    <script src="./public/lib/chartjs-plugin-datalabels.min.js"></script>
 
     <!-- 配置文件 -->
     <script src="./public/js/config.js?v=5"></script>
@@ -62,29 +31,20 @@
 
     <!-- ⚡ 性能监控工具（仅开发环境，生产环境可移除） -->
     <script src="./public/js/performance-monitor.js" defer></script>
-
-    <style type="text/tailwindcss">
-        @layer utilities {
-            .content-auto {
-                content-visibility: auto;
-            }
-            .card-shadow {
-                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
-            }
-            .modal-backdrop {
-                backdrop-filter: blur(2px);
-            }
-            .stat-card {
-                transition: transform 0.3s ease, box-shadow 0.3s ease;
-            }
-            .stat-card:hover {
-                transform: translateY(-5px);
-                box-shadow: 0 8px 30px rgba(22, 93, 255, 0.15);
-            }
-        }
-    </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
+    <!-- SVG图标库 -->
+    <div style="display:none">
+        <div id="svg-sprite-container"></div>
+    </div>
+    <script>
+        // 加载SVG sprite
+        fetch('./public/icons/sprite.svg')
+            .then(r => r.text())
+            .then(svg => {
+                document.getElementById('svg-sprite-container').innerHTML = svg;
+            });
+    </script>
     <!-- 骨架屏 HTML -->
     <div id="skeleton-screen" class="fixed inset-0 bg-gray-50 z-50">
         <div class="container mx-auto px-4 py-6">
@@ -138,7 +98,7 @@
     <header class="bg-white border-b border-gray-200">
         <div class="container mx-auto px-4 py-3 flex items-center justify-between">
             <div class="flex items-center space-x-2">
-                <i class="fa fa-line-chart text-primary text-2xl"></i>
+                <svg class="icon icon-xl text-primary"><use href="#icon-line-chart"/></svg>
                 <h1 class="text-xl font-bold text-primary">卫星任务数据分析平台</h1>
             </div>
 
@@ -149,13 +109,13 @@
                  <a href="data-distribution.html" class="text-gray-600 hover:text-primary transition-colors px-1 py-5">数据分布</a>
                  <a href="circle-warning.html" class="text-gray-600 hover:text-primary transition-colors px-1 py-5">数据预警</a>
                  <a href="admin.html" class="text-gray-600 hover:text-primary transition-colors px-1 py-5">
-                    <i class="fa fa-cog mr-1"></i>数据管理
+                    <svg class="icon mr-1"><use href="#icon-cog"/></svg>数据管理
                 </a>
             </nav>
 
             <!-- 移动端菜单按钮 -->
             <button class="md:hidden text-gray-600 hover:text-primary">
-                <i class="fa fa-bars text-xl"></i>
+                <svg class="icon icon-xl"><use href="#icon-bars"/></svg>
             </button>
         </div>
     </header>
@@ -165,7 +125,7 @@
         <!-- 数据加载状态 -->
         <div id="dbLoading" class="mb-6 p-3 bg-primary/10 text-primary rounded-lg hidden">
             <div class="flex items-center mb-2">
-                <i class="fa fa-spinner fa-spin mr-2"></i>
+                <svg class="icon icon-spin mr-2"><use href="#icon-spinner"/></svg>
                 <span id="dbLoadingText">正在从 Postgres 数据库加载数据...</span>
             </div>
             <!-- 进度条 -->
@@ -181,7 +141,7 @@
         </div>
 
         <div id="noDataAlert" class="bg-warning/10 text-warning p-4 rounded-lg mb-6 hidden">
-            <i class="fa fa-exclamation-circle mr-2"></i>
+            <svg class="icon mr-2"><use href="#icon-exclamation-circle"/></svg>
             <span>当前无数据，请前往 <a href="admin.html" class="text-primary underline font-medium">管理页面</a> 导入数据</span>
         </div>
 
@@ -190,7 +150,7 @@
         <section id="instructionsSection" class="mb-8 bg-white rounded-lg p-6 card-shadow">
             <h2 class="text-lg font-semibold mb-4 flex items-center justify-between cursor-pointer" id="instructionsToggle">
                 <span class="flex items-center">
-                    <i class="fa fa-info-circle text-primary mr-2"></i>系统说明
+                    <svg class="icon text-primary mr-2"><use href="#icon-info-circle"/></svg>系统说明
                 </span>
                 <i id="instructionsIcon" class="fa fa-chevron-up text-gray-500 transition-transform duration-300"></i>
             </h2>
@@ -207,16 +167,16 @@
             <div class="mt-4 p-4 bg-gray-50 rounded-lg border">
                 <div class="flex items-center justify-between mb-3">
                     <h3 class="text-sm font-semibold text-gray-700 flex items-center">
-                        <i class="fa fa-database text-primary mr-2"></i>本地缓存管理
+                        <svg class="icon text-primary mr-2"><use href="#icon-database"/></svg>本地缓存管理
                     </h3>
                     <span id="cacheStatus" class="text-xs px-2 py-1 rounded-full bg-gray-200 text-gray-600">检查中...</span>
                 </div>
                 <div class="flex flex-wrap gap-2">
                     <button id="refreshCacheBtn" class="text-xs px-3 py-1 bg-primary text-white rounded hover:bg-primary/90 transition-colors">
-                        <i class="fa fa-refresh mr-1"></i>刷新缓存
+                        <svg class="icon mr-1"><use href="#icon-refresh"/></svg>刷新缓存
                     </button>
                     <button id="clearCacheBtn" class="text-xs px-3 py-1 bg-warning text-white rounded hover:bg-warning/90 transition-colors">
-                        <i class="fa fa-trash mr-1"></i>清空缓存
+                        <svg class="icon mr-1"><use href="#icon-trash"/></svg>清空缓存
                     </button>
                     <span id="cacheInfo" class="text-xs text-gray-500 self-center"></span>
                 </div>
@@ -245,7 +205,7 @@
                 <div class="flex items-center justify-between mb-1">
                     <label class="block text-sm font-medium text-gray-700">统计周期</label>
                     <button id="configGroupingBtn" class="text-gray-500 hover:text-primary transition-colors p-1" title="配置周期规则（基于文件时间）">
-                        <i class="fa fa-cog"></i>
+                        <svg class="icon"><use href="#icon-cog"/></svg>
                     </button>
                 </div>
                 <select id="groupBy" class="w-full p-2 border border-gray-300 rounded-md">
@@ -276,11 +236,11 @@
                 <div class="flex items-center gap-2">
                     <button class="chart-download-btn px-2 py-1 bg-primary/10 text-primary rounded hover:bg-primary/20 transition text-sm"
                             data-chart="mainChart" data-type="image" title="下载图表图片">
-                        <i class="fa fa-download mr-1"></i>下载图表
+                        <svg class="icon mr-1"><use href="#icon-download"/></svg>下载图表
                     </button>
                     <button class="chart-download-btn px-2 py-1 bg-primary/10 text-primary rounded hover:bg-primary/20 transition text-sm"
                             data-chart="mainChart" data-type="csv" title="下载图表数据">
-                        <i class="fa fa-table mr-1"></i>下载数据
+                        <svg class="icon mr-1"><use href="#icon-table"/></svg>下载数据
                     </button>
                 </div>
             </div>
@@ -292,7 +252,7 @@
                 <!-- 空状态提示 -->
                 <div id="chartEmptyState" class="absolute inset-0 flex items-center justify-center text-gray-500 hidden">
                     <div class="text-center">
-                        <i class="fa fa-line-chart text-4xl mb-2"></i>
+                        <svg class="icon icon-2xl mb-2"><use href="#icon-line-chart"/></svg>
                         <p>没有数据可显示</p>
                         <p class="text-sm mt-1">请前往管理页面导入数据并选择正确的时间范围</p>
                     </div>
@@ -301,7 +261,7 @@
                 <!-- 错误状态提示 -->
                 <div id="chartErrorState" class="absolute inset-0 flex items-center justify-center text-gray-500 hidden">
                     <div class="text-center">
-                        <i class="fa fa-exclamation-triangle text-4xl mb-2 text-warning"></i>
+                        <svg class="icon icon-2xl mb-2 text-warning"><use href="#icon-exclamation-triangle"/></svg>
                         <p id="chartErrorMessage">生成统计结果时出错</p>
                     </div>
                 </div>
@@ -327,7 +287,7 @@
                         <p class="text-xs text-gray-400 mt-1">所有周期的计划总数</p>
                     </div>
                     <div class="p-3 bg-primary/10 rounded-lg">
-                        <i class="fa fa-database text-primary text-xl"></i>
+                        <svg class="icon icon-xl text-primary"><use href="#icon-database"/></svg>
                     </div>
                 </div>
             </div>
@@ -341,7 +301,7 @@
                         <p class="text-xs text-gray-400 mt-1">所有周期的平均值</p>
                     </div>
                     <div class="p-3 bg-secondary/10 rounded-lg">
-                        <i class="fa fa-calculator text-secondary text-xl"></i>
+                        <svg class="icon icon-xl text-secondary"><use href="#icon-calculator"/></svg>
                     </div>
                 </div>
             </div>
@@ -355,7 +315,7 @@
                         <p class="text-xs text-gray-400 mt-1">所有周期的失败总数</p>
                     </div>
                     <div class="p-3 bg-danger/10 rounded-lg">
-                        <i class="fa fa-exclamation-circle text-danger text-xl"></i>
+                        <svg class="icon icon-xl text-danger"><use href="#icon-exclamation-circle"/></svg>
                     </div>
                 </div>
             </div>
@@ -369,7 +329,7 @@
                         <p class="text-xs text-gray-400 mt-1">所有周期的平均成功率</p>
                     </div>
                     <div class="p-3 bg-success/10 rounded-lg">
-                        <i class="fa fa-check-circle text-success text-xl"></i>
+                        <svg class="icon icon-xl text-success"><use href="#icon-check-circle"/></svg>
                     </div>
                 </div>
             </div>
@@ -383,7 +343,7 @@
                         <p class="text-xs text-gray-400 mt-1">单周期最大计划数</p>
                     </div>
                     <div class="p-3 bg-accent/10 rounded-lg">
-                        <i class="fa fa-arrow-up text-accent text-xl"></i>
+                        <svg class="icon icon-xl text-accent"><use href="#icon-arrow-up"/></svg>
                     </div>
                 </div>
             </div>
@@ -397,7 +357,7 @@
                         <p class="text-xs text-gray-400 mt-1">单周期最小计划数</p>
                     </div>
                     <div class="p-3 bg-warning/10 rounded-lg">
-                        <i class="fa fa-arrow-down text-warning text-xl"></i>
+                        <svg class="icon icon-xl text-warning"><use href="#icon-arrow-down"/></svg>
                     </div>
                 </div>
             </div>
@@ -411,7 +371,7 @@
                         <p class="text-xs text-gray-400 mt-1">点击查看趋势图</p>
                     </div>
                     <div class="p-3 bg-blue-600/10 rounded-lg">
-                        <i class="fa fa-rocket text-blue-600 text-xl"></i>
+                        <svg class="icon icon-xl text-blue-600"><use href="#icon-rocket"/></svg>
                     </div>
                 </div>
             </div>
@@ -425,7 +385,7 @@
                         <p class="text-xs text-gray-400 mt-1">点击查看趋势图</p>
                     </div>
                     <div class="p-3 bg-purple-600/10 rounded-lg">
-                        <i class="fa fa-users text-purple-600 text-xl"></i>
+                        <svg class="icon icon-xl text-purple-600"><use href="#icon-users"/></svg>
                     </div>
                 </div>
             </div>
@@ -457,14 +417,14 @@
             <div class="flex justify-between items-center mb-4">
                 <h3 class="text-lg font-semibold">周期规则配置（所有时间均为文件时间）</h3>
                 <button id="closeConfigModal" class="text-gray-500 hover:text-gray-700 transition-colors">
-                    <i class="fa fa-times"></i>
+                    <svg class="icon"><use href="#icon-times"/></svg>
                 </button>
             </div>
 
             <!-- 日周期规则 -->
             <div class="mb-6 pb-4 border-b border-gray-100">
                 <h4 class="font-medium mb-3 flex items-center">
-                    <i class="fa fa-calendar-o text-primary mr-2"></i>按日周期
+                    <svg class="icon text-primary mr-2"><use href="#icon-calendar-o"/></svg>按日周期
                 </h4>
                 <div class="grid grid-cols-2 gap-4">
                     <div>
@@ -484,7 +444,7 @@
             <!-- 周周期规则 -->
             <div class="mb-6 pb-4 border-b border-gray-100">
                 <h4 class="font-medium mb-3 flex items-center">
-                    <i class="fa fa-calendar-week-o text-primary mr-2"></i>按周周期
+                    <svg class="icon text-primary mr-2"><use href="#icon-calendar-week-o"/></svg>按周周期
                 </h4>
                 <div class="grid grid-cols-2 gap-4">
                     <div>
@@ -509,7 +469,7 @@
             <!-- 月周期规则 -->
             <div class="mb-6 pb-4 border-b border-gray-100">
                 <h4 class="font-medium mb-3 flex items-center">
-                    <i class="fa fa-calendar text-primary mr-2"></i>按月周期
+                    <svg class="icon text-primary mr-2"><use href="#icon-calendar"/></svg>按月周期
                 </h4>
                 <div class="grid grid-cols-2 gap-4">
                     <div>
@@ -526,7 +486,7 @@
             <!-- 季度周期规则 -->
             <div class="mb-6">
                 <h4 class="font-medium mb-3 flex items-center">
-                    <i class="fa fa-calendar-check-o text-primary mr-2"></i>按季度周期
+                    <svg class="icon text-primary mr-2"><use href="#icon-calendar-check-o"/></svg>按季度周期
                 </h4>
                 <div class="grid grid-cols-2 gap-4">
                     <div>
@@ -559,14 +519,14 @@
                 <div class="flex items-center gap-2">
                     <button class="chart-download-btn px-2 py-1 bg-primary/10 text-primary rounded hover:bg-primary/20 transition text-sm"
                             data-chart="satelliteChart" data-type="image" title="下载图表图片">
-                        <i class="fa fa-download mr-1"></i>下载图表
+                        <svg class="icon mr-1"><use href="#icon-download"/></svg>下载图表
                     </button>
                     <button class="chart-download-btn px-2 py-1 bg-primary/10 text-primary rounded hover:bg-primary/20 transition text-sm"
                             data-chart="satelliteChart" data-type="csv" title="下载图表数据">
-                        <i class="fa fa-table mr-1"></i>下载数据
+                        <svg class="icon mr-1"><use href="#icon-table"/></svg>下载数据
                     </button>
                     <button id="closeSatelliteModal" class="text-gray-500 hover:text-gray-700 transition-colors">
-                        <i class="fa fa-times"></i>
+                        <svg class="icon"><use href="#icon-times"/></svg>
                     </button>
                 </div>
             </div>
@@ -577,7 +537,7 @@
                 <!-- 空状态提示 -->
                 <div id="satelliteChartEmpty" class="absolute inset-0 flex items-center justify-center text-gray-500 hidden">
                     <div class="text-center">
-                        <i class="fa fa-rocket text-4xl mb-2"></i>
+                        <svg class="icon icon-2xl mb-2"><use href="#icon-rocket"/></svg>
                         <p>没有卫星数据可显示</p>
                     </div>
                 </div>
@@ -601,14 +561,14 @@
                 <div class="flex items-center gap-2">
                     <button class="chart-download-btn px-2 py-1 bg-primary/10 text-primary rounded hover:bg-primary/20 transition text-sm"
                             data-chart="customerChart" data-type="image" title="下载图表图片">
-                        <i class="fa fa-download mr-1"></i>下载图表
+                        <svg class="icon mr-1"><use href="#icon-download"/></svg>下载图表
                     </button>
                     <button class="chart-download-btn px-2 py-1 bg-primary/10 text-primary rounded hover:bg-primary/20 transition text-sm"
                             data-chart="customerChart" data-type="csv" title="下载图表数据">
-                        <i class="fa fa-table mr-1"></i>下载数据
+                        <svg class="icon mr-1"><use href="#icon-table"/></svg>下载数据
                     </button>
                     <button id="closeCustomerModal" class="text-gray-500 hover:text-gray-700 transition-colors">
-                        <i class="fa fa-times"></i>
+                        <svg class="icon"><use href="#icon-times"/></svg>
                     </button>
                 </div>
             </div>
@@ -619,7 +579,7 @@
                 <!-- 空状态提示 -->
                 <div id="customerChartEmpty" class="absolute inset-0 flex items-center justify-center text-gray-500 hidden">
                     <div class="text-center">
-                        <i class="fa fa-users text-4xl mb-2"></i>
+                        <svg class="icon icon-2xl mb-2"><use href="#icon-users"/></svg>
                         <p>没有客户数据可显示</p>
                     </div>
                 </div>
@@ -647,7 +607,7 @@
     <!-- 🆕 后台加载进度指示器 -->
     <div id="background-loading-indicator" class="hidden fixed bottom-4 right-4 bg-white rounded-lg shadow-xl border border-gray-200 p-4 z-50 max-w-sm">
         <div class="flex items-center mb-2">
-            <i class="fa fa-spinner fa-spin text-primary mr-2"></i>
+            <svg class="icon icon-spin text-primary mr-2"><use href="#icon-spinner"/></svg>
             <span class="font-medium text-gray-700">正在加载历史数据</span>
         </div>
         <div class="w-full bg-gray-200 rounded-full h-2 mb-1">
