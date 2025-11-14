@@ -11,11 +11,12 @@
     <link rel="stylesheet" href="./public/css/icons.css">
     <!-- 主题系统 -->
     <link rel="stylesheet" href="./public/css/themes.css">
-    <!-- XLSX库 -->
-    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 
-    <!-- 配置文件 -->
+    <!-- 配置文件 - 必须最先加载 -->
     <script src="./public/js/config.js"></script>
+
+    <!-- XLSX库 - 延迟加载不阻塞渲染 -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
 
     <style>
         .card-shadow {
@@ -42,17 +43,20 @@
     </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
-    <!-- SVG图标库 -->
-    <div style="display:none">
-        <div id="svg-sprite-container"></div>
-    </div>
+    <!-- SVG图标库 - 异步加载不阻塞渲染 -->
+    <div style="display:none" id="svg-sprite-container"></div>
     <script>
-        // 加载SVG sprite
-        fetch('./public/icons/sprite.svg')
-            .then(r => r.text())
-            .then(svg => {
-                document.getElementById('svg-sprite-container').innerHTML = svg;
-            });
+        // 异步加载SVG sprite，不阻塞页面渲染
+        (function() {
+            var xhr = new XMLHttpRequest();
+            xhr.open('GET', './public/icons/sprite.svg', true);
+            xhr.onload = function() {
+                if (xhr.status === 200) {
+                    document.getElementById('svg-sprite-container').innerHTML = xhr.responseText;
+                }
+            };
+            xhr.send();
+        })();
     </script>
     <!-- 顶部导航 -->
     <header class="bg-white border-b border-gray-200">

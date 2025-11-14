@@ -21,29 +21,33 @@
     <link rel="stylesheet" href="./public/css/output.css">
     <!-- 本地图标系统 -->
     <link rel="stylesheet" href="./public/css/icons.css">
-    <!-- 本地Chart.js -->
-    <script src="./public/lib/chart.min.js"></script>
-    <script src="./public/lib/chartjs-plugin-datalabels.min.js"></script>
 
-    <!-- 配置文件 -->
+    <!-- 配置文件 - 必须最先加载 -->
     <script src="./public/js/config.js?v=5"></script>
+
+    <!-- 延迟加载的脚本 - 不阻塞渲染 -->
+    <script src="./public/lib/chart.min.js" defer></script>
+    <script src="./public/lib/chartjs-plugin-datalabels.min.js" defer></script>
     <script src="./public/js/shared-data-manager.js" defer></script>
 
     <!-- ⚡ 性能监控工具（仅开发环境，生产环境可移除） -->
     <script src="./public/js/performance-monitor.js" defer></script>
 </head>
 <body class="bg-gray-50 min-h-screen">
-    <!-- SVG图标库 -->
-    <div style="display:none">
-        <div id="svg-sprite-container"></div>
-    </div>
+    <!-- SVG图标库 - 异步加载不阻塞渲染 -->
+    <div style="display:none" id="svg-sprite-container"></div>
     <script>
-        // 加载SVG sprite
-        fetch('./public/icons/sprite.svg')
-            .then(r => r.text())
-            .then(svg => {
-                document.getElementById('svg-sprite-container').innerHTML = svg;
-            });
+        // 异步加载SVG sprite，不阻塞页面渲染
+        (function() {
+            var xhr = new XMLHttpRequest();
+            xhr.open('GET', './public/icons/sprite.svg', true);
+            xhr.onload = function() {
+                if (xhr.status === 200) {
+                    document.getElementById('svg-sprite-container').innerHTML = xhr.responseText;
+                }
+            };
+            xhr.send();
+        })();
     </script>
     <!-- 骨架屏 HTML -->
     <div id="skeleton-screen" class="fixed inset-0 bg-gray-50 z-50">
