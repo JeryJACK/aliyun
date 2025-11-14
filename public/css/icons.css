@@ -1,0 +1,24 @@
+/* SVG图标基础样式 */
+.icon {
+  display: inline-block;
+  width: 1.25rem;  /* 20px, 相当于fa的默认大小 */
+  height: 1.25rem;
+  fill: currentColor;
+  vertical-align: middle;
+}
+
+/* 大小变体 */
+.icon-sm { width: 1rem; height: 1rem; }      /* 16px */
+.icon-lg { width: 1.5rem; height: 1.5rem; }  /* 24px */
+.icon-xl { width: 2rem; height: 2rem; }      /* 32px */
+.icon-2xl { width: 2.5rem; height: 2.5rem; } /* 40px */
+
+/* 旋转动画(用于spinner) */
+.icon-spin {
+  animation: icon-spin 1s infinite linear;
+}
+
+@keyframes icon-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
