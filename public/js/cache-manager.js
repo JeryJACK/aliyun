@@ -153,6 +153,14 @@ class CacheManager {
                 if (oldVersion < 8) {
                     console.log('🔥 v8升级：创建智能分片架构...');
 
+                    // 🔥 关键：清空旧表数据（升级时强制重新加载）
+                    if (oldVersion > 0 && this.db.objectStoreNames.contains(this.allDataStoreName)) {
+                        const transaction = event.target.transaction;
+                        const oldStore = transaction.objectStore(this.allDataStoreName);
+                        oldStore.clear();
+                        console.log('  🧹 清空旧表数据（将自动重新加载）');
+                    }
+
                     // 创建4个季度分片表
                     for (const [quarterId, config] of Object.entries(this.partitions)) {
                         if (!this.db.objectStoreNames.contains(config.storeName)) {
@@ -172,7 +180,16 @@ class CacheManager {
                         console.log('  ✅ 创建分片元数据表');
                     }
 
-                    console.log('🎉 智能分片架构创建完成！支持真并行写入和查询优化');
+                    // 🔥 清空元数据缓存（触发重新加载）
+                    if (this.db.objectStoreNames.contains(this.metaStoreName)) {
+                        const transaction = event.target.transaction;
+                        const metaStore = transaction.objectStore(this.metaStoreName);
+                        metaStore.clear();
+                        console.log('  🧹 清空元数据（将自动重新加载）');
+                    }
+
+                    console.log('🎉 智能分片架构创建完成！');
+                    console.log('💡 页面将自动重新加载数据到分片表');
                 }
 
                 // 注意：月份分片ObjectStore会在存储数据时动态创建
