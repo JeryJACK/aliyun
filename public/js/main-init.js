@@ -233,7 +233,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     instructionsIcon.classList.add('fa-chevron-up');
     isExpanded = true;
 
-    // 点击标题切换折叠状态 + 1秒后自动折叠
+    // 点击标题切换折叠状态
     instructionsToggle.addEventListener('click', () => {
         // 切换折叠状态
         toggleInstructions();
+    });
+
+    // 监听数据加载完成事件，自动折叠说明
+    window.addEventListener('dataLoadComplete', () => {
+        if (isExpanded) {
+            console.log('📋 系统说明已折叠（数据加载完成标志）');
+            toggleInstructions();
+        }
+    });
+});
