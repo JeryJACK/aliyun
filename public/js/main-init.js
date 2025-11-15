@@ -1,3 +1,28 @@
+            stat.customerCount = stat.customers.size;
+        });
+        
+        return statsArray;
+    }
+
+}
+
+// 分组逻辑已验证正确
+
+// 检测页面刷新并清空 sessionStorage
+(function() {
+    // 使用 performance.navigation 或 performance.getEntriesByType 检测刷新
+    const navigationType = performance.getEntriesByType('navigation')[0]?.type;
+
+    // 如果是刷新（reload），清空 sessionStorage 中的页面状态
+    if (navigationType === 'reload') {
+        console.log('🔄 检测到页面刷新，清空 sessionStorage 状态');
+        sessionStorage.removeItem('satellitePageState');
+        sessionStorage.removeItem('satelliteStatistics');
+    } else {
+        console.log('🌐 页面正常加载（非刷新）');
+    }
+})();
+
 // ⚡ 性能优化：初始化应用 - 渐进式加载策略
 document.addEventListener('DOMContentLoaded', async () => {
     try {
@@ -13,28 +38,19 @@ document.addEventListener('DOMContentLoaded', async () => {
         // ⚡ 性能优化：使用 requestIdleCallback 延迟非关键任务
         // 优先级：快速显示界面 > 加载数据 > WebSocket连接
 
-        // ==================== 阶段1：执行轻量级补同步（基于changeLogId） ====================
+        // ==================== 阶段1：快速检查缓存（<50ms） ====================
         if (progressPercent) progressPercent.textContent = '5%';
-        if (progressText) progressText.textContent = '正在检查新数据...';
+        if (progressText) progressText.textContent = '正在检查本地缓存...';
 
-        // 🔥 优化：始终执行基于changeLogId的补同步（轻量级，几乎无性能损耗）
-        // - 如果没有新变更，API立即返回（0条数据）
-        // - 如果有新变更，只获取最近30天的数据
-        console.log('🔍 执行轻量级补同步检查...');
+        // ⚡ 优化：将补同步检查延迟到数据加载后（非阻塞）
+        // const catchupResult = await wsSyncManager.checkAndPerformCatchup();
+        let catchupResult = { hasNewData: false, count: 0 };
 
-        const catchupResult = await wsSyncManager.checkAndPerformCatchup((progress, loaded, total) => {
-            if (progressPercent) progressPercent.textContent = `${Math.max(5, Math.min(40, 5 + progress * 0.35))}%`;
-            if (progressText) progressText.textContent = `正在同步 ${loaded.toLocaleString()}/${total.toLocaleString()} 条新数据...`;
-        });
-
+        // 🆕 优化：补同步已经更新了IndexedDB，不需要重新下载全量数据！
         if (catchupResult.hasNewData) {
-            console.log(`✅ 补同步完成: ${catchupResult.count} 条新数据, maxChangeLogId=${catchupResult.maxChangeLogId}`);
+            console.log(`✅ 补同步已更新 ${catchupResult.count} 条数据到IndexedDB`);
             // 清除DataStore桶缓存，因为统计数据可能变化
             await cacheManager.clearDataStoreBucketsCache();
-            if (progressPercent) progressPercent.textContent = '45%';
-            if (progressText) progressText.textContent = `同步完成，已更新 ${catchupResult.count} 条数据`;
-        } else {
-            console.log('✅ 无新数据，跳过补同步');
         }
 
         // ==================== 阶段2：加载数据和初始化应用 ====================
@@ -51,8 +67,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         // ⚡ 性能优化：使用 requestIdleCallback 延迟WebSocket连接（非阻塞）
         const initWebSocket = () => {
             console.log('🔌 延迟启动 WebSocket 实时同步...');
-            // 直接连接 WebSocket（补同步已在阶段1完成，无需重复执行��
-            wsSyncManager.connect();
+
+            // 先执行补同步，再连接WebSocket
+            wsSyncManager.checkAndPerformCatchup().then((result) => {
+                catchupResult = result;
+                if (catchupResult.hasNewData) {
+                    console.log(`✅ 后台补同步完成: ${catchupResult.count} 条数据`);
+                    cacheManager.clearDataStoreBucketsCache();
+                }
+                // 启动 WebSocket 连接
+                wsSyncManager.connect();
+            });
         };
 
         // 使用 requestIdleCallback 或 setTimeout 延迟执行
@@ -237,26 +262,3 @@ document.addEventListener('DOMContentLoaded', async () => {
     instructionsToggle.addEventListener('click', () => {
         // 切换折叠状态
         toggleInstructions();
-
-        // 清除之前的定时器
-        if (autoCollapseTimer) {
-            clearTimeout(autoCollapseTimer);
-        }
-
-        // 1秒后自动折叠（无论当前是展开还是折叠）
-        autoCollapseTimer = setTimeout(() => {
-            if (isExpanded) {
-                toggleInstructions();
-                console.log('⏱️ 系统说明自动折叠（点击1秒后）');
-            }
-        }, 1000);
-    });
-
-    // 提供全局方法供 SatelliteApp 调用（数据加载完成后折叠）
-    window.collapseInstructions = () => {
-        if (isExpanded) {
-            toggleInstructions();
-            console.log('📋 系统说明已折叠（数据加载完成标志）');
-        }
-    };
-});

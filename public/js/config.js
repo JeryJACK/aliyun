@@ -303,5 +303,4 @@ window.getApiUrl = getApiUrl;
 window.getWebSocketUrl = getWebSocketUrl;
 window.API = API;
 window.Auth = Auth;
-
 window.ErrorHandler = ErrorHandler;
