@@ -2510,3 +2510,6 @@ class SatelliteApp {
         sessionStorage.removeItem('satellitePageState');
         sessionStorage.removeItem('satelliteStatistics');
     } else {
+        console.log('🌐 页面正常加载（非刷新）');
+    }
+})();

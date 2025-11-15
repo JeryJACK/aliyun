@@ -1,28 +1,3 @@
-            stat.customerCount = stat.customers.size;
-        });
-        
-        return statsArray;
-    }
-
-}
-
-// 分组逻辑已验证正确
-
-// 检测页面刷新并清空 sessionStorage
-(function() {
-    // 使用 performance.navigation 或 performance.getEntriesByType 检测刷新
-    const navigationType = performance.getEntriesByType('navigation')[0]?.type;
-
-    // 如果是刷新（reload），清空 sessionStorage 中的页面状态
-    if (navigationType === 'reload') {
-        console.log('🔄 检测到页面刷新，清空 sessionStorage 状态');
-        sessionStorage.removeItem('satellitePageState');
-        sessionStorage.removeItem('satelliteStatistics');
-    } else {
-        console.log('🌐 页面正常加载（非刷新）');
-    }
-})();
-
 // ⚡ 性能优化：初始化应用 - 渐进式加载策略
 document.addEventListener('DOMContentLoaded', async () => {
     try {
