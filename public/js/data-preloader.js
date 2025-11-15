@@ -351,7 +351,7 @@ class DataPreloader {
 
             let downloadComplete = false;
             const STORAGE_WORKERS = 3; // 🔥 3个存储Worker并行
-            const MIN_BATCH_SIZE = 50000; // 🚀 关键优化：超大批次减少事务数量
+            const MIN_BATCH_SIZE = 5000; // 🚀 批次大小：5000条平衡性能和实时性
 
             // 🔥 v8：Worker分配策略（3个Worker负责4个季度）
             const workerAssignment = {
