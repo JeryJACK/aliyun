@@ -542,6 +542,15 @@ class DataPreloader {
                 console.warn(`   4. 数据量过大 - 考虑分批加载`);
             }
 
+            // 🔥 数据加载完成后，触发索引创建（延迟索引创建优化）
+            console.log(`🚀 开始为分片表创建索引...`);
+            const indexStartTime = performance.now();
+            await cacheManager.createIndexesForPartitions();
+            const indexTime = performance.now() - indexStartTime;
+            console.log(`✅ 索引创建完成，耗时 ${(indexTime / 1000).toFixed(1)}秒`);
+            console.log(`📊 总耗时: ${((perfTime + indexTime) / 1000).toFixed(1)}秒 (数据写入: ${(perfTime / 1000).toFixed(1)}秒 + 索引创建: ${(indexTime / 1000).toFixed(1)}秒)`);
+
+
             return { success: true, totalCount: totalLoaded };
 
         } catch (error) {
