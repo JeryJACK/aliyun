@@ -351,7 +351,7 @@ class DataPreloader {
 
             let downloadComplete = false;
             const STORAGE_WORKERS = 3; // 🔥 3个存储Worker并行
-            const MIN_BATCH_SIZE = 5000; // 🚀 批次大小：5000条平衡性能和实时性
+            const MIN_BATCH_SIZE = 20000; // 🚀 优化：增大批次减少事务次数（20000条/批）
 
             // 🔥 v8：Worker分配策略（3个Worker负责4个季度）
             const workerAssignment = {
@@ -360,7 +360,7 @@ class DataPreloader {
                 3: ['Q3']         // Worker3负责Q3
             };
 
-            // 🔥 v8：存储Worker（支持智能分片）
+            // 🔥 v8：存储Worker（支持智能分片）- 优化版
             const storageWorker = async (storageWorkerId) => {
                 const myQuarters = workerAssignment[storageWorkerId];
                 let workerStored = 0;
@@ -371,18 +371,18 @@ class DataPreloader {
                     // 轮询我负责的季度队列
                     for (const quarter of myQuarters) {
                         const queue = partitionQueues[quarter];
-                        let pendingBatch = [];
 
-                        // 从队列取数据
-                        while (queue.length > 0 && pendingBatch.length < MIN_BATCH_SIZE) {
-                            pendingBatch.push(queue.shift());
-                        }
+                        // 🚀 优化：一次性取出所有可用数据（最多MIN_BATCH_SIZE）
+                        const batchSize = Math.min(queue.length, MIN_BATCH_SIZE);
+                        if (batchSize === 0) continue;
 
-                        // 判断是否需要提交
+                        const pendingBatch = queue.splice(0, batchSize);
+
+                        // 判断是否需要提交（数据足够多或下载完成）
                         const shouldFlush = pendingBatch.length >= MIN_BATCH_SIZE ||
-                                           (downloadComplete && queue.length === 0 && pendingBatch.length > 0);
+                                           (downloadComplete && pendingBatch.length > 0);
 
-                        if (shouldFlush && pendingBatch.length > 0) {
+                        if (shouldFlush) {
                             try {
                                 const storeStart = performance.now();
                                 const tableName = cacheManager.getPartitionStoreName(quarter);
@@ -395,8 +395,9 @@ class DataPreloader {
                                 );
 
                                 const storeTime = performance.now() - storeStart;
+                                const throughput = pendingBatch.length / (storeTime / 1000);
 
-                                console.log(`  💾 Worker${storageWorkerId} → ${tableName}: ${pendingBatch.length.toLocaleString()} 条 (${storeTime.toFixed(0)}ms)`);
+                                console.log(`  💾 Worker${storageWorkerId} → ${tableName}: ${pendingBatch.length.toLocaleString()} 条 (${storeTime.toFixed(0)}ms, ${throughput.toFixed(0)} 条/秒)`);
 
                                 workerStored += pendingBatch.length;
                                 totalLoaded += pendingBatch.length;
@@ -410,16 +411,17 @@ class DataPreloader {
                                 if (onProgress) {
                                     onProgress(progress, totalLoaded, totalLoaded);
                                 }
-
-                                pendingBatch = [];
                             } catch (error) {
                                 console.error(`❌ Worker${storageWorkerId} 存储${quarter}失败:`, error);
-                                pendingBatch = [];
                             }
+                        } else {
+                            // 数据不够，放回队列头部
+                            queue.unshift(...pendingBatch);
                         }
                     }
 
-                    await new Promise(resolve => setTimeout(resolve, 10));
+                    // 🚀 优化：减少等待时间，提高响应速度
+                    await new Promise(resolve => setTimeout(resolve, 1));
                 }
                 console.log(`✅ StorageWorker${storageWorkerId} 完成，存储 ${workerStored.toLocaleString()} 条数据`);
             };

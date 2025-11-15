@@ -406,37 +406,64 @@ class CacheManager {
     }
 
     // 🆕 快速获取数据时间范围（只读首尾记录）
+    // 🔥 v8：从分片表获取时间范围
     async getTimeRangeQuick() {
         if (!this.db) await this.init();
 
-        return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction([this.allDataStoreName], 'readonly');
-            const store = transaction.objectStore(this.allDataStoreName);
-            const index = store.index('start_time');
+        try {
+            // 🔥 v8：并行从所有分片表获取时间范围
+            const storeNames = Object.values(this.partitions).map(p => p.storeName);
+            const promises = storeNames.map(storeName => {
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction([storeName], 'readonly');
+                    const store = transaction.objectStore(storeName);
+                    const timestampIndex = store.index('timestamp');
 
+                    const range = { min: null, max: null };
+
+                    // 读取最早记录
+                    const firstRequest = timestampIndex.openCursor(null, 'next');
+                    firstRequest.onsuccess = (e) => {
+                        const cursor = e.target.result;
+                        if (cursor && cursor.value.timestamp) {
+                            range.min = new Date(cursor.value.timestamp);
+                        }
+                    };
+
+                    // 读取最新记录
+                    const lastRequest = timestampIndex.openCursor(null, 'prev');
+                    lastRequest.onsuccess = (e) => {
+                        const cursor = e.target.result;
+                        if (cursor && cursor.value.timestamp) {
+                            range.max = new Date(cursor.value.timestamp);
+                        }
+                    };
+
+                    transaction.oncomplete = () => resolve(range);
+                    transaction.onerror = () => reject(transaction.error);
+                });
+            });
+
+            // 等待所有分片表的时间范围
+            const ranges = await Promise.all(promises);
+
+            // 找到全局最小和最大时间
             const timeRange = {};
+            const validMins = ranges.map(r => r.min).filter(d => d);
+            const validMaxs = ranges.map(r => r.max).filter(d => d);
 
-            // 读取最早记录
-            const firstRequest = index.openCursor(null, 'next');
-            firstRequest.onsuccess = (e) => {
-                const cursor = e.target.result;
-                if (cursor) {
-                    timeRange.minDate = new Date(cursor.value.timestamp);
-                }
-            };
+            if (validMins.length > 0) {
+                timeRange.minDate = new Date(Math.min(...validMins.map(d => d.getTime())));
+            }
+            if (validMaxs.length > 0) {
+                timeRange.maxDate = new Date(Math.max(...validMaxs.map(d => d.getTime())));
+            }
 
-            // 读取最新记录
-            const lastRequest = index.openCursor(null, 'prev');
-            lastRequest.onsuccess = (e) => {
-                const cursor = e.target.result;
-                if (cursor) {
-                    timeRange.maxDate = new Date(cursor.value.timestamp);
-                }
-            };
-
-            transaction.oncomplete = () => resolve(timeRange);
-            transaction.onerror = () => reject(transaction.error);
-        });
+            return timeRange;
+        } catch (error) {
+            console.error('❌ 获取时间范围失败:', error);
+            return {};
+        }
     }
 
     // 🆕 保存元数据和分片索引（包含时间范围）
@@ -947,39 +974,46 @@ class CacheManager {
         });
     }
 
-    // ⚡ 【优化】快速加载数据（使用getAll一次性读取，冷启动性能提升5-10倍）
+    // ⚡ 【优化】快速加载数据（v8：从分片表并行读取）
     async queryAllDataFast(onBatch, batchSize = 5000) {
         if (!this.db) await this.init();
 
         const perfStart = performance.now();
 
-        return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction([this.allDataStoreName], 'readonly');
-            const store = transaction.objectStore(this.allDataStoreName);
-            const request = store.getAll(); // ⚡ 一次性读取所有数据
+        try {
+            // 🔥 v8：并行从4个分片表读取数据
+            const storeNames = Object.values(this.partitions).map(p => p.storeName);
+            const promises = storeNames.map(storeName => {
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction([storeName], 'readonly');
+                    const store = transaction.objectStore(storeName);
+                    const request = store.getAll();
 
-            request.onsuccess = (event) => {
-                const allData = event.target.result;
-                const totalLoaded = allData.length;
+                    request.onsuccess = (event) => resolve(event.target.result || []);
+                    request.onerror = () => reject(request.error);
+                });
+            });
 
-                // 分批触发回调（保持兼容性）
-                if (onBatch) {
-                    for (let i = 0; i < allData.length; i += batchSize) {
-                        const batch = allData.slice(i, i + batchSize);
-                        onBatch(batch, Math.min(i + batchSize, totalLoaded));
-                    }
+            // 等待所有分片表数据
+            const results = await Promise.all(promises);
+            const allData = results.flat(); // 合并所有分片数据
+            const totalLoaded = allData.length;
+
+            // 分批触发回调（保持兼容性）
+            if (onBatch) {
+                for (let i = 0; i < allData.length; i += batchSize) {
+                    const batch = allData.slice(i, i + batchSize);
+                    onBatch(batch, Math.min(i + batchSize, totalLoaded));
                 }
+            }
 
-                const perfTime = performance.now() - perfStart;
-                console.log(`✅ 快速加载完成: ${totalLoaded.toLocaleString()} 条 (${perfTime.toFixed(0)}ms, ${(totalLoaded / (perfTime / 1000)).toFixed(0)} 条/秒)`);
-                resolve(totalLoaded);
-            };
-
-            request.onerror = () => {
-                console.error('❌ 快速加载失败:', request.error);
-                reject(request.error);
-            };
-        });
+            const perfTime = performance.now() - perfStart;
+            console.log(`✅ 快速加载完成: ${totalLoaded.toLocaleString()} 条 (${perfTime.toFixed(0)}ms, ${(totalLoaded / (perfTime / 1000)).toFixed(0)} 条/秒)`);
+            return totalLoaded;
+        } catch (error) {
+            console.error('❌ 快速加载失败:', error);
+            throw error;
+        }
     }
 
     // 【优化】渐进式加载数据（使用游标分批，边加载边处理）- 降级方案
