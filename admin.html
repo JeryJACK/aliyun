@@ -4,19 +4,29 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>数据管理 - 卫星任务数据分析平台</title>
-    <!-- 本地资源 - 极简SVG方案 -->
-    <!-- 本地Tailwind CSS -->
-    <link rel="stylesheet" href="./public/css/output.css">
-    <!-- 本地图标系统 -->
-    <link rel="stylesheet" href="./public/css/icons.css">
-    <!-- 主题系统 -->
-    <link rel="stylesheet" href="./public/css/themes.css">
-
-    <!-- 配置文件 - 必须最先加载 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    
+    <!-- 配置文件 -->
     <script src="./public/js/config.js"></script>
-
-    <!-- XLSX库 - 延迟加载不阻塞渲染 -->
-    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
+    
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#165DFF',
+                        secondary: '#36CFC9',
+                        accent: '#722ED1',
+                        warning: '#FF7D00',
+                        danger: '#F53F3F',
+                        success: '#00B42A',
+                    },
+                }
+            }
+        }
+    </script>
 
     <style>
         .card-shadow {
@@ -43,26 +53,11 @@
     </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
-    <!-- SVG图标库 - 异步加载不阻塞渲染 -->
-    <div style="display:none" id="svg-sprite-container"></div>
-    <script>
-        // 异步加载SVG sprite，不阻塞页面渲染
-        (function() {
-            var xhr = new XMLHttpRequest();
-            xhr.open('GET', './public/icons/sprite.svg', true);
-            xhr.onload = function() {
-                if (xhr.status === 200) {
-                    document.getElementById('svg-sprite-container').innerHTML = xhr.responseText;
-                }
-            };
-            xhr.send();
-        })();
-    </script>
     <!-- 顶部导航 -->
     <header class="bg-white border-b border-gray-200">
         <div class="container mx-auto px-4 py-3 flex items-center justify-between">
             <div class="flex items-center space-x-2">
-                <svg class="icon icon-xl text-primary"><use href="#icon-database"/></svg>
+                <i class="fa fa-database text-primary text-2xl"></i>
                 <h1 class="text-xl font-bold text-primary">数据管理中心</h1>
             </div>
 
@@ -70,10 +65,10 @@
             <div class="flex items-center space-x-4">
                 <span class="text-sm text-gray-600">欢迎，<span id="username" class="font-medium">管理员</span></span>
                 <a href="index.html" class="text-gray-600 hover:text-primary transition-colors px-3 py-2 rounded-md">
-                    <svg class="icon mr-1"><use href="#icon-home"/></svg>返回首页
+                    <i class="fa fa-home mr-1"></i>返回首页
                 </a>
                 <button id="logoutBtn" class="text-gray-600 hover:text-danger transition-colors px-3 py-2 rounded-md">
-                    <svg class="icon mr-1"><use href="#icon-sign-out"/></svg>退出登录
+                    <i class="fa fa-sign-out mr-1"></i>退出登录
                 </button>
             </div>
         </div>
@@ -90,7 +85,7 @@
                         <h3 class="text-2xl font-bold text-primary mt-1" id="totalRecords">-</h3>
                     </div>
                     <div class="p-3 bg-primary/10 rounded-lg">
-                        <svg class="icon icon-xl text-primary"><use href="#icon-database"/></svg>
+                        <i class="fa fa-database text-primary text-xl"></i>
                     </div>
                 </div>
             </div>
@@ -102,7 +97,7 @@
                         <h3 class="text-2xl font-bold text-secondary mt-1" id="totalPlans">-</h3>
                     </div>
                     <div class="p-3 bg-secondary/10 rounded-lg">
-                        <svg class="icon icon-xl text-secondary"><use href="#icon-list-alt"/></svg>
+                        <i class="fa fa-list-alt text-secondary text-xl"></i>
                     </div>
                 </div>
             </div>
@@ -114,7 +109,7 @@
                         <h3 class="text-2xl font-bold text-danger mt-1" id="totalFailures">-</h3>
                     </div>
                     <div class="p-3 bg-danger/10 rounded-lg">
-                        <svg class="icon icon-xl text-danger"><use href="#icon-exclamation-circle"/></svg>
+                        <i class="fa fa-exclamation-circle text-danger text-xl"></i>
                     </div>
                 </div>
             </div>
@@ -126,7 +121,7 @@
                         <h3 class="text-sm font-bold text-success mt-1" id="dataRange">-</h3>
                     </div>
                     <div class="p-3 bg-success/10 rounded-lg">
-                        <svg class="icon icon-xl text-success"><use href="#icon-calendar"/></svg>
+                        <i class="fa fa-calendar text-success text-xl"></i>
                     </div>
                 </div>
             </div>
@@ -135,7 +130,7 @@
         <!-- 数据导入区域 -->
         <section class="bg-white rounded-lg p-6 card-shadow mb-8">
             <h2 class="text-lg font-semibold mb-4 flex items-center">
-                <svg class="icon text-primary mr-2"><use href="#icon-upload"/></svg>数据导入
+                <i class="fa fa-upload text-primary mr-2"></i>数据导入
             </h2>
             
             <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -143,11 +138,11 @@
                 <div>
                     <h3 class="text-md font-medium mb-3">Excel 文件上传</h3>
                     <div id="dropArea" class="drag-area border rounded-lg p-8 text-center cursor-pointer">
-                        <svg class="icon icon-2xl text-gray-400 mb-4"><use href="#icon-cloud-upload"/></svg>
+                        <i class="fa fa-cloud-upload text-4xl text-gray-400 mb-4"></i>
                         <p class="text-gray-600 mb-2">拖拽文件到此处或点击选择文件</p>
                         <p class="text-sm text-gray-500">支持 .xlsx, .xls 格式</p>
                         <p class="text-xs text-blue-500 mt-1">
-                            <svg class="icon mr-1"><use href="#icon-info-circle"/></svg>
+                            <i class="fa fa-info-circle mr-1"></i>
                             大文件（>4MB）将自动采用客户端分批处理
                         </p>
                         <input type="file" id="fileInput" accept=".xlsx,.xls" class="hidden" />
@@ -156,11 +151,11 @@
                     <div id="fileInfo" class="mt-4 p-3 bg-gray-50 rounded-lg hidden">
                         <div class="flex items-center justify-between">
                             <div class="flex items-center space-x-2">
-                                <svg class="icon text-success"><use href="#icon-file-excel-o"/></svg>
+                                <i class="fa fa-file-excel-o text-success"></i>
                                 <span id="fileName" class="text-sm font-medium"></span>
                             </div>
                             <button id="removeFile" class="text-gray-400 hover:text-danger">
-                                <svg class="icon"><use href="#icon-times"/></svg>
+                                <i class="fa fa-times"></i>
                             </button>
                         </div>
                     </div>
@@ -199,7 +194,7 @@
             <!-- 导入按钮和进度 -->
             <div class="mt-6">
                 <button id="importBtn" class="px-6 py-2 bg-primary text-white rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-                    <svg class="icon mr-2"><use href="#icon-upload"/></svg>开始导入
+                    <i class="fa fa-upload mr-2"></i>开始导入
                 </button>
                 
                 <div id="importProgress" class="mt-4 hidden">
@@ -225,18 +220,18 @@
         <section class="bg-white rounded-lg p-6 card-shadow mb-8">
             <div class="flex items-center justify-between mb-4">
                 <h2 class="text-lg font-semibold flex items-center">
-                    <svg class="icon text-primary mr-2"><use href="#icon-table"/></svg>数据管理
+                    <i class="fa fa-table text-primary mr-2"></i>数据管理
                 </h2>
                 
                 <div class="flex items-center space-x-2">
                     <button id="refreshData" class="px-3 py-2 text-gray-600 hover:text-primary transition-colors">
-                        <svg class="icon mr-1"><use href="#icon-refresh"/></svg>刷新
+                        <i class="fa fa-refresh mr-1"></i>刷新
                     </button>
                     <button id="exportData" class="px-3 py-2 text-gray-600 hover:text-success transition-colors">
-                        <svg class="icon mr-1"><use href="#icon-download"/></svg>导出
+                        <i class="fa fa-download mr-1"></i>导出
                     </button>
                     <button id="clearAllData" class="px-3 py-2 text-gray-600 hover:text-danger transition-colors">
-                        <svg class="icon mr-1"><use href="#icon-trash"/></svg>清空数据
+                        <i class="fa fa-trash mr-1"></i>清空数据
                     </button>
                 </div>
             </div>
@@ -352,7 +347,7 @@
             <div class="flex justify-between items-center mb-4">
                 <h3 class="text-lg font-semibold">编辑记录</h3>
                 <button id="closeEditModal" class="text-gray-500 hover:text-gray-700">
-                    <svg class="icon"><use href="#icon-times"/></svg>
+                    <i class="fa fa-times"></i>
                 </button>
             </div>
             
@@ -405,23 +400,12 @@
             async init() {
                 // 检查认证状态
                 if (!this.token) {
-                    console.log('❌ 未找到token，跳转到登录页');
                     window.location.href = 'login.html';
                     return;
                 }
 
                 try {
-                    // GitHub Pages环境下跳过验证（因为没有统一的verify端点）
-                    if (CONFIG.isGitHubPages) {
-                        console.log('🌐 GitHub Pages环境，跳过token验证');
-                        // 尝试从userInfo获取用户名
-                        const userInfo = JSON.parse(localStorage.getItem('userInfo') || sessionStorage.getItem('userInfo') || '{}');
-                        document.getElementById('username').textContent = userInfo.username || '管理员';
-                    } else {
-                        // 本地开发环境才进行验证
-                        await this.verifyAuth();
-                    }
-
+                    await this.verifyAuth();
                     this.bindEvents();
                     await this.loadStats();
                     await this.loadData();
@@ -432,35 +416,16 @@
             }
 
             async verifyAuth() {
-                try {
-                    console.log('🔐 开始验证token...');
-                    console.log('Token:', this.token);
-                    console.log('API URL:', `${CONFIG.API_BASE_URL}/verify`);
+                const response = await fetch(`${CONFIG.API_BASE_URL}/verify`, {
+                    headers: { 'Authorization': `Bearer ${this.token}` }
+                });
 
-                    const response = await fetch(`${CONFIG.API_BASE_URL}/verify`, {
-                        headers: { 'Authorization': `Bearer ${this.token}` }
-                    });
-
-                    console.log('验证响应状态:', response.status);
-
-                    if (!response.ok) {
-                        const errorText = await response.text();
-                        console.error('验证失败:', errorText);
-                        throw new Error(`认证失败 (${response.status}): ${errorText}`);
-                    }
-
-                    const result = await response.json();
-                    console.log('验证成功:', result);
-
-                    if (result.success && result.data) {
-                        document.getElementById('username').textContent = result.data.username || '管理员';
-                    } else {
-                        throw new Error('验证响应格式不正确');
-                    }
-                } catch (error) {
-                    console.error('❌ verifyAuth 失败:', error);
-                    throw error;
+                if (!response.ok) {
+                    throw new Error('认证失败');
                 }
+
+                const result = await response.json();
+                document.getElementById('username').textContent = result.data.username;
             }
 
             bindEvents() {
@@ -555,7 +520,7 @@
                 formData.append('mode', document.getElementById('importMode').value);
                 formData.append('validate', document.getElementById('validateData').checked);
                 formData.append('batch', document.getElementById('batchProcess').checked);
-
+                
                 // 调试FormData内容
                 console.log('FormData内容:');
                 for (let [key, value] of formData.entries()) {
@@ -564,15 +529,8 @@
 
                 try {
                     this.showImportProgress(true);
-
-                    // GitHub Pages环境使用API_ENDPOINTS，本地环境使用API_BASE_URL
-                    const importUrl = CONFIG.isGitHubPages
-                        ? CONFIG.API_ENDPOINTS.import
-                        : `${CONFIG.API_BASE_URL}/import`;
-
-                    console.log('📤 导入数据，URL:', importUrl);
-
-                    const response = await fetch(importUrl, {
+                    
+                    const response = await fetch(`${CONFIG.API_BASE_URL}/import`, {
                         method: 'POST',
                         headers: { 'Authorization': `Bearer ${this.token}` },
                         body: formData
@@ -708,12 +666,7 @@
             }
 
             async uploadBatch(batchData, mode) {
-                // GitHub Pages环境使用API_ENDPOINTS，本地环境使用API_BASE_URL
-                const importUrl = CONFIG.isGitHubPages
-                    ? CONFIG.API_ENDPOINTS.import
-                    : `${CONFIG.API_BASE_URL}/import-batch`;
-
-                const response = await fetch(importUrl, {
+                const response = await fetch(`${CONFIG.API_BASE_URL}/import-batch`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -736,14 +689,7 @@
 
             async loadStats() {
                 try {
-                    // GitHub Pages环境使用API_ENDPOINTS，本地环境使用API_BASE_URL
-                    const statsUrl = CONFIG.isGitHubPages
-                        ? CONFIG.API_ENDPOINTS.stats
-                        : `${CONFIG.API_BASE_URL}/stats`;
-
-                    console.log('📊 加载统计数据，URL:', statsUrl);
-
-                    const response = await fetch(statsUrl, {
+                    const response = await fetch(`${CONFIG.API_BASE_URL}/stats`, {
                         headers: { 'Authorization': `Bearer ${this.token}` }
                     });
 
@@ -753,7 +699,7 @@
                         document.getElementById('totalRecords').textContent = stats.total_records || 0;
                         document.getElementById('totalPlans').textContent = stats.total_plans || 0;
                         document.getElementById('totalFailures').textContent = stats.total_failures || 0;
-
+                        
                         if (stats.earliest_time && stats.latest_time) {
                             const start = new Date(stats.earliest_time).toLocaleDateString();
                             const end = new Date(stats.latest_time).toLocaleDateString();
@@ -775,14 +721,7 @@
                         ...this.filters
                     });
 
-                    // GitHub Pages环境使用API_ENDPOINTS，本地环境使用API_BASE_URL
-                    const recordsUrl = CONFIG.isGitHubPages
-                        ? CONFIG.API_ENDPOINTS.records
-                        : `${CONFIG.API_BASE_URL}/records`;
-
-                    console.log('📋 加载数据记录，URL:', recordsUrl);
-
-                    const response = await fetch(`${recordsUrl}?${params}`, {
+                    const response = await fetch(`${CONFIG.API_BASE_URL}/records?${params}`, {
                         headers: { 'Authorization': `Bearer ${this.token}` }
                     });
 
@@ -820,10 +759,10 @@
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-2">
                             <button onclick="app.editRecord(${record.id})" class="text-primary hover:text-primary/70">
-                                <svg class="icon mr-1"><use href="#icon-edit"/></svg>编辑
+                                <i class="fa fa-edit mr-1"></i>编辑
                             </button>
                             <button onclick="app.deleteRecord(${record.id})" class="text-danger hover:text-danger/70">
-                                <svg class="icon mr-1"><use href="#icon-trash"/></svg>删除
+                                <i class="fa fa-trash mr-1"></i>删除
                             </button>
                         </td>
                     `;
@@ -873,12 +812,7 @@
 
             async editRecord(id) {
                 try {
-                    // GitHub Pages环境使用API_ENDPOINTS，本地环境使用API_BASE_URL
-                    const recordsUrl = CONFIG.isGitHubPages
-                        ? CONFIG.API_ENDPOINTS.records
-                        : `${CONFIG.API_BASE_URL}/records`;
-
-                    const response = await fetch(`${recordsUrl}/${id}`, {
+                    const response = await fetch(`${CONFIG.API_BASE_URL}/records/${id}`, {
                         headers: { 'Authorization': `Bearer ${this.token}` }
                     });
 
@@ -903,12 +837,7 @@
                 }
 
                 try {
-                    // GitHub Pages环境使用API_ENDPOINTS，本地环境使用API_BASE_URL
-                    const recordsUrl = CONFIG.isGitHubPages
-                        ? CONFIG.API_ENDPOINTS.records
-                        : `${CONFIG.API_BASE_URL}/records`;
-
-                    const response = await fetch(`${recordsUrl}/${id}`, {
+                    const response = await fetch(`${CONFIG.API_BASE_URL}/records/${id}`, {
                         method: 'DELETE',
                         headers: { 'Authorization': `Bearer ${this.token}` }
                     });
@@ -927,7 +856,7 @@
 
             async saveEdit(e) {
                 e.preventDefault();
-
+                
                 const id = document.getElementById('editId').value;
                 const data = {
                     plan_id: document.getElementById('editPlanId').value,
@@ -936,12 +865,7 @@
                 };
 
                 try {
-                    // GitHub Pages环境使用API_ENDPOINTS，本地环境使用API_BASE_URL
-                    const recordsUrl = CONFIG.isGitHubPages
-                        ? CONFIG.API_ENDPOINTS.records
-                        : `${CONFIG.API_BASE_URL}/records`;
-
-                    const response = await fetch(`${recordsUrl}/${id}`, {
+                    const response = await fetch(`${CONFIG.API_BASE_URL}/records/${id}`, {
                         method: 'PUT',
                         headers: {
                             'Content-Type': 'application/json',
@@ -969,15 +893,7 @@
             async exportData() {
                 try {
                     const params = new URLSearchParams(this.filters);
-
-                    // GitHub Pages环境使用API_ENDPOINTS，本地环境使用API_BASE_URL
-                    const exportUrl = CONFIG.isGitHubPages
-                        ? CONFIG.API_ENDPOINTS.export || `${CONFIG.API_ENDPOINTS.stats}/export`
-                        : `${CONFIG.API_BASE_URL}/export`;
-
-                    console.log('📥 导出数据，URL:', exportUrl);
-
-                    const response = await fetch(`${exportUrl}?${params}`, {
+                    const response = await fetch(`${CONFIG.API_BASE_URL}/export?${params}`, {
                         headers: { 'Authorization': `Bearer ${this.token}` }
                     });
 
@@ -1006,14 +922,7 @@
                 }
 
                 try {
-                    // GitHub Pages环境使用API_ENDPOINTS，本地环境使用API_BASE_URL
-                    const clearUrl = CONFIG.isGitHubPages
-                        ? CONFIG.API_ENDPOINTS.clear || `${CONFIG.API_ENDPOINTS.stats}/clear`
-                        : `${CONFIG.API_BASE_URL}/clear`;
-
-                    console.log('🗑️ 清空数据，URL:', clearUrl);
-
-                    const response = await fetch(clearUrl, {
+                    const response = await fetch(`${CONFIG.API_BASE_URL}/clear`, {
                         method: 'DELETE',
                         headers: { 'Authorization': `Bearer ${this.token}` }
                     });
