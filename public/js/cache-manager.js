@@ -1,15 +1,44 @@
 class CacheManager {
     constructor() {
         this.dbName = 'SatelliteDataCache';
-        this.dbVersion = 7; // 🚀 升级到v7修复版本冲突
+        this.dbVersion = 8; // 🔥 升级到v8：智能分片架构
         this.allDataStoreName = 'allDataCache';
         this.metaStoreName = 'metaData';
         this.shardIndexStoreName = 'shardIndex'; // 🆕 分片索引
         this.dataStoreCacheStoreName = 'dataStoreCache'; // 🆕 DataStore桶缓存
         this.statisticsCacheStoreName = 'statisticsCache'; // 🚀 预计算统计缓存
+        this.partitionMetaStoreName = 'partitionMeta'; // 🔥 v8：分片元数据
         this.db = null;
         // 移除缓存过期时间，始终使用本地缓存
         this.cacheExpiry = Infinity;
+
+        // 🔥 v8：季度分片配置
+        this.partitions = {
+            Q1: { id: 'Q1', storeName: 'records_Q1', months: [1, 2, 3] },
+            Q2: { id: 'Q2', storeName: 'records_Q2', months: [4, 5, 6] },
+            Q3: { id: 'Q3', storeName: 'records_Q3', months: [7, 8, 9] },
+            Q4: { id: 'Q4', storeName: 'records_Q4', months: [10, 11, 12] }
+        };
+    }
+
+    // 🔥 v8：根据日期智能路由到季度分片
+    getPartitionByDate(taskDate) {
+        if (!taskDate) return 'Q1'; // 默认Q1
+
+        const date = new Date(taskDate);
+        const month = date.getMonth() + 1; // 1-12
+
+        if (month >= 1 && month <= 3) return 'Q1';
+        if (month >= 4 && month <= 6) return 'Q2';
+        if (month >= 7 && month <= 9) return 'Q3';
+        if (month >= 10 && month <= 12) return 'Q4';
+
+        return 'Q1'; // 默认
+    }
+
+    // 🔥 v8：获取分片表名
+    getPartitionStoreName(quarter) {
+        return this.partitions[quarter]?.storeName || 'records_Q1';
     }
 
     // 🆕 工具函数：生成月份key (格式: YYYY_MM)
@@ -120,6 +149,32 @@ class CacheManager {
                     console.log('🚀 创建预计算统计缓存表（99%性能提升！）');
                 }
 
+                // 🔥 v8: 创建4个季度分片表（支持真并行写入）
+                if (oldVersion < 8) {
+                    console.log('🔥 v8升级：创建智能分片架构...');
+
+                    // 创建4个季度分片表
+                    for (const [quarterId, config] of Object.entries(this.partitions)) {
+                        if (!this.db.objectStoreNames.contains(config.storeName)) {
+                            const partitionStore = this.db.createObjectStore(config.storeName, { keyPath: 'id' });
+                            partitionStore.createIndex('timestamp', 'timestamp', { unique: false });
+                            partitionStore.createIndex('start_time', 'start_time', { unique: false });
+                            partitionStore.createIndex('TaskDate', 'TaskDate', { unique: false }); // 任务日期索引
+                            partitionStore.createIndex('SatelliteName', 'SatelliteName', { unique: false }); // 卫星名称索引
+                            console.log(`  ✅ 创建分片表: ${config.storeName} (${config.months.join(',')}月)`);
+                        }
+                    }
+
+                    // 创建分片元数据表
+                    if (!this.db.objectStoreNames.contains(this.partitionMetaStoreName)) {
+                        const partitionMetaStore = this.db.createObjectStore(this.partitionMetaStoreName, { keyPath: 'quarter' });
+                        partitionMetaStore.createIndex('timestamp', 'timestamp', { unique: false });
+                        console.log('  ✅ 创建分片元数据表');
+                    }
+
+                    console.log('🎉 智能分片架构创建完成！支持真并行写入和查询优化');
+                }
+
                 // 注意：月份分片ObjectStore会在存储数据时动态创建
                 // 命名规则：monthData_YYYY_MM (如 monthData_2025_10)
             };
@@ -183,10 +238,11 @@ class CacheManager {
     }
 
     // 🆕 存储单个批次（独立事务）
-    async storeBatch(batch, monthStats) {
+    async storeBatch(batch, monthStats = {}, addMode = false) {
         return new Promise((resolve, reject) => {
             const transaction = this.db.transaction([this.allDataStoreName], 'readwrite');
             const store = transaction.objectStore(this.allDataStoreName);
+            const method = addMode ? 'add' : 'put';
 
             for (const record of batch) {
                 // 统一数据格式
@@ -208,13 +264,15 @@ class CacheManager {
                     standardRecord.month_key = this.getMonthKey(standardRecord.start_time);
 
                     // 统计月份数据量
-                    if (!monthStats[standardRecord.month_key]) {
+                    if (monthStats && !monthStats[standardRecord.month_key]) {
                         monthStats[standardRecord.month_key] = 0;
                     }
-                    monthStats[standardRecord.month_key]++;
+                    if (monthStats) {
+                        monthStats[standardRecord.month_key]++;
+                    }
                 }
 
-                store.put(standardRecord);
+                store[method](standardRecord);
             }
 
             transaction.oncomplete = () => resolve();
@@ -222,24 +280,108 @@ class CacheManager {
         });
     }
 
-    // 🆕 清空所有数据
+    // 🔥 v8：分片存储方法（写入到指定季度表）
+    async storePartitionedBatch(records, partitionStoreName, addMode = false) {
+        if (!this.db) await this.init();
+        if (!records || records.length === 0) return 0;
+
+        return new Promise((resolve, reject) => {
+            // 检查表是否存在
+            if (!this.db.objectStoreNames.contains(partitionStoreName)) {
+                console.error(`❌ 分片表不存在: ${partitionStoreName}`);
+                reject(new Error(`Partition store ${partitionStoreName} does not exist`));
+                return;
+            }
+
+            const transaction = this.db.transaction([partitionStoreName], 'readwrite');
+            const store = transaction.objectStore(partitionStoreName);
+            const method = addMode ? 'add' : 'put';
+            let stored = 0;
+
+            for (const record of records) {
+                // 标准化记录（如果尚未标准化）
+                const standardRecord = {
+                    id: record.id || record.plan_id || record['计划ID'] || `record_${Date.now()}_${Math.random()}`,
+                    start_time: record.start_time || record['开始时间'],
+                    task_result: record.task_result || record['任务结果状态'],
+                    task_type: record.task_type || record['任务类型'],
+                    customer: record.customer || record['所属客户'],
+                    SatelliteName: record.satellite_name || record['卫星名称'] || record.SatelliteName,
+                    station_name: record.station_name || record['测站名称'],
+                    station_id: record.station_id || record['测站ID'],
+                    TaskDate: record.TaskDate || record.start_time || record['开始时间'],
+                    ...record
+                };
+
+                // 确保有时间戳
+                if (!standardRecord.timestamp && standardRecord.start_time) {
+                    standardRecord.timestamp = this.parseTimeToTimestamp(standardRecord.start_time);
+                }
+
+                const request = store[method](standardRecord);
+                request.onsuccess = () => stored++;
+                request.onerror = () => {
+                    console.error(`存储失败:`, request.error);
+                };
+            }
+
+            transaction.oncomplete = () => {
+                resolve(stored);
+            };
+
+            transaction.onerror = () => {
+                console.error(`❌ 分片存储事务失败:`, transaction.error);
+                reject(transaction.error);
+            };
+        });
+    }
+
+    // 🆕 清空所有数据（包括分片表）
     async clearAllData() {
         return new Promise((resolve, reject) => {
             const storeNames = [this.allDataStoreName];
+
+            // 添加分片索引表
             if (this.db.objectStoreNames.contains(this.shardIndexStoreName)) {
                 storeNames.push(this.shardIndexStoreName);
             }
 
+            // 🔥 v8：添加4个季度分片表
+            for (const config of Object.values(this.partitions)) {
+                if (this.db.objectStoreNames.contains(config.storeName)) {
+                    storeNames.push(config.storeName);
+                }
+            }
+
+            // 添加分片元数据表
+            if (this.db.objectStoreNames.contains(this.partitionMetaStoreName)) {
+                storeNames.push(this.partitionMetaStoreName);
+            }
+
             const transaction = this.db.transaction(storeNames, 'readwrite');
 
+            // 清空主表
             transaction.objectStore(this.allDataStoreName).clear();
 
+            // 清空分片索引
             if (storeNames.includes(this.shardIndexStoreName)) {
                 transaction.objectStore(this.shardIndexStoreName).clear();
             }
 
+            // 🔥 v8：清空季度分片表
+            for (const config of Object.values(this.partitions)) {
+                if (storeNames.includes(config.storeName)) {
+                    transaction.objectStore(config.storeName).clear();
+                }
+            }
+
+            // 清空分片元数据
+            if (storeNames.includes(this.partitionMetaStoreName)) {
+                transaction.objectStore(this.partitionMetaStoreName).clear();
+            }
+
             transaction.oncomplete = () => {
-                console.log('🧹 已清空现有数据');
+                console.log('🧹 已清空现有数据（包括分片表）');
                 resolve();
             };
             transaction.onerror = () => reject(transaction.error);
@@ -1759,5 +1901,164 @@ class CacheManager {
 
             return allData.length;
         }
+    }
+
+    // ==================== 🔥 v8：智能分片查询方法 ====================
+
+    /**
+     * 🔥 v8：并行查询所有分片表
+     * @param {Object} filters - 过滤条件 { startDate, endDate, SatelliteName }
+     * @returns {Array} 查询结果
+     */
+    async queryAllPartitions(filters = {}) {
+        if (!this.db) await this.init();
+
+        const perfStart = performance.now();
+
+        // 并行查询4个季度分片
+        const promises = Object.keys(this.partitions).map(async (quarter) => {
+            const storeName = this.getPartitionStoreName(quarter);
+
+            // 检查表是否存在
+            if (!this.db.objectStoreNames.contains(storeName)) {
+                console.warn(`⚠️ 分片表不存在: ${storeName}`);
+                return [];
+            }
+
+            return this.queryFromPartition(storeName, filters);
+        });
+
+        const results = await Promise.all(promises);
+
+        // 合并结果
+        const allRecords = results.flat();
+
+        const perfTime = performance.now() - perfStart;
+        console.log(`✅ 并行查询分片完成: ${allRecords.length.toLocaleString()} 条 (${perfTime.toFixed(0)}ms, 平均 ${(perfTime / 4).toFixed(0)}ms/分片)`);
+
+        return allRecords;
+    }
+
+    /**
+     * 🔥 v8：从单个分片表查询
+     * @param {string} storeName - 分片表名
+     * @param {Object} filters - 过滤条件
+     * @returns {Array} 查询结果
+     */
+    async queryFromPartition(storeName, filters = {}) {
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction([storeName], 'readonly');
+            const store = transaction.objectStore(storeName);
+
+            let request;
+
+            // 如果有时间范围过滤，使用索引
+            if (filters.startDate || filters.endDate) {
+                const index = store.index('timestamp');
+
+                const startTime = filters.startDate
+                    ? this.parseLocalDateToTimestamp(filters.startDate, 0, 0, 0, 0)
+                    : 0;
+                const endTime = filters.endDate
+                    ? this.parseLocalDateToTimestamp(filters.endDate, 23, 59, 59, 999)
+                    : Date.now();
+
+                const range = IDBKeyRange.bound(startTime, endTime);
+                request = index.getAll(range);
+            } else {
+                // 否则获取全部数据
+                request = store.getAll();
+            }
+
+            request.onsuccess = () => {
+                let results = request.result || [];
+
+                // 应用其他过滤条件
+                if (filters.SatelliteName) {
+                    results = results.filter(r =>
+                        (r.SatelliteName || r.satellite_name) === filters.SatelliteName
+                    );
+                }
+
+                if (filters.customer) {
+                    results = results.filter(r =>
+                        r.customer === filters.customer
+                    );
+                }
+
+                resolve(results);
+            };
+
+            request.onerror = () => {
+                console.error(`❌ 查询分片${storeName}失败:`, request.error);
+                resolve([]); // 失败时返回空数组，不中断整体查询
+            };
+        });
+    }
+
+    /**
+     * 🔥 v8：智能查询（根据时间范围选择相关分片）
+     * @param {Object} filters - 过滤条件
+     * @returns {Array} 查询结果
+     */
+    async queryPartitionsSmart(filters = {}) {
+        if (!this.db) await this.init();
+
+        const perfStart = performance.now();
+
+        // 确定需要查询的季度
+        const relevantQuarters = this.getRelevantQuarters(filters);
+
+        console.log(`🔍 智能查询: 只查询相关分片 ${relevantQuarters.join(', ')}`);
+
+        // 只查询相关的分片
+        const promises = relevantQuarters.map(async (quarter) => {
+            const storeName = this.getPartitionStoreName(quarter);
+
+            if (!this.db.objectStoreNames.contains(storeName)) {
+                console.warn(`⚠️ 分片表不存在: ${storeName}`);
+                return [];
+            }
+
+            return this.queryFromPartition(storeName, filters);
+        });
+
+        const results = await Promise.all(promises);
+        const allRecords = results.flat();
+
+        const perfTime = performance.now() - perfStart;
+        console.log(`✅ 智能查询完成: ${allRecords.length.toLocaleString()} 条 (${perfTime.toFixed(0)}ms)`);
+
+        return allRecords;
+    }
+
+    /**
+     * 🔥 v8：根据过滤条件确定需要查询的季度
+     * @param {Object} filters - 过滤条件
+     * @returns {Array} 相关的季度ID数组
+     */
+    getRelevantQuarters(filters = {}) {
+        if (!filters.startDate && !filters.endDate) {
+            // 没有时间过滤，查询所有季度
+            return ['Q1', 'Q2', 'Q3', 'Q4'];
+        }
+
+        const relevantQuarters = new Set();
+
+        // 根据开始和结束日期确定涉及的季度
+        const startDate = filters.startDate ? new Date(filters.startDate) : new Date(2020, 0, 1);
+        const endDate = filters.endDate ? new Date(filters.endDate) : new Date();
+
+        // 遍历日期范围内的每个月，确定所属季度
+        const current = new Date(startDate);
+        while (current <= endDate) {
+            const quarter = this.getPartitionByDate(current);
+            relevantQuarters.add(quarter);
+
+            // 移到下个月
+            current.setMonth(current.getMonth() + 1);
+        }
+
+        return Array.from(relevantQuarters);
     }
 }
