@@ -148,8 +148,8 @@ class WebSocketSyncManager {
         // 启动心跳检测
         this.startHeartbeat();
 
-        // 执行断线补同步
-        await this.performCatchupSync();
+        // 执行断线补同步（先检查是否需要）
+        await this.checkAndPerformCatchup();
     }
 
     // 接收消息处理
@@ -159,6 +159,11 @@ class WebSocketSyncManager {
             console.log('📨 收到 WebSocket 消息:', message);
 
             switch (message.type) {
+                case 'welcome':
+                    // WebSocket连接欢迎消息
+                    console.log('💡 WebSocket 连接成功，后续数据更新将通过实时推送获取');
+                    break;
+
                 case 'heartbeat':
                     // 心跳响应
                     this.missedHeartbeats = 0;
