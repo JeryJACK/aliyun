@@ -861,65 +861,50 @@ class CacheManager {
 
         return new Promise(async (resolve, reject) => {
             try {
-                const transaction = this.db.transaction([this.allDataStoreName], 'readonly');
-                const store = transaction.objectStore(this.allDataStoreName);
+                // 🔥 v9优化：使用分片表和timestamp索引查询
+                const startTimestamp = startDate.getTime();
+                const endTimestamp = endDate.getTime();
 
-                // 检查是否有month_key索引
-                if (!store.indexNames.contains('month_key')) {
-                    console.warn('⚠️ month_key索引不存在，降级到start_time查询');
-                    // 降级：使用start_time索引
-                    const index = store.index('start_time');
-                    const range = IDBKeyRange.bound(startDate, endDate);
-                    const request = index.getAll(range);
-
-                    request.onsuccess = (event) => {
-                        const data = event.target.result;
-                        if (onBatch) {
-                            for (let i = 0; i < data.length; i += batchSize) {
-                                const batch = data.slice(i, i + batchSize);
-                                onBatch(batch, Math.min(i + batchSize, data.length));
-                            }
+                // 并行查询所有分片表
+                const storeNames = Object.values(this.partitions).map(p => p.storeName);
+                const promises = storeNames.map(storeName => {
+                    return new Promise((res, rej) => {
+                        if (!this.db.objectStoreNames.contains(storeName)) {
+                            res([]);
+                            return;
                         }
-                        resolve(data.length);
-                    };
 
-                    request.onerror = () => reject(request.error);
-                    return;
-                }
-
-                const index = store.index('month_key');
-                let totalLoaded = 0;
-
-                // 🎬 按月份顺序加载（从最新到最旧，让用户看到横轴从右向左扩展）
-                // monthKeys.reverse() 确保先加载最近的数据，再逐步加载更早的数据
-                for (const monthKey of monthKeys.reverse()) {
-                    const range = IDBKeyRange.only(monthKey);
-                    const monthData = await new Promise((res, rej) => {
+                        const transaction = this.db.transaction([storeName], 'readonly');
+                        const store = transaction.objectStore(storeName);
+                        const index = store.index('timestamp');
+                        const range = IDBKeyRange.bound(startTimestamp, endTimestamp);
                         const request = index.getAll(range);
+
                         request.onsuccess = (event) => {
-                            const data = event.target.result;
-                            // 过滤数据，只保留在日期范围内的
-                            const filtered = data.filter(record => {
-                                const recordDate = new Date(record.start_time || record['开始时间']);
-                                return recordDate >= startDate && recordDate <= endDate;
-                            });
-                            console.log(`  ✓ ${monthKey}: ${filtered.length} 条（过滤后）`);
-                            res(filtered);
+                            const data = event.target.result || [];
+                            console.log(`  ✓ ${storeName}: ${data.length} 条`);
+                            res(data);
                         };
                         request.onerror = () => {
-                            console.error(`  ✗ ${monthKey}: 查询失败`);
+                            console.error(`  ✗ ${storeName}: 查询失败`);
                             res([]);
                         };
                     });
+                });
 
-                    // 立即触发回调（边加载边处理）
-                    if (monthData.length > 0 && onBatch) {
-                        for (let i = 0; i < monthData.length; i += batchSize) {
-                            const batch = monthData.slice(i, i + batchSize);
-                            totalLoaded += batch.length;
-                            onBatch(batch, totalLoaded);
-                        }
+                const results = await Promise.all(promises);
+                const allData = results.flat();
+                let totalLoaded = 0;
+
+                // 触发批量回调
+                if (allData.length > 0 && onBatch) {
+                    for (let i = 0; i < allData.length; i += batchSize) {
+                        const batch = allData.slice(i, i + batchSize);
+                        totalLoaded += batch.length;
+                        onBatch(batch, totalLoaded);
                     }
+                } else {
+                    totalLoaded = allData.length;
                 }
 
                 const perfTime = performance.now() - perfStart;
