@@ -335,6 +335,10 @@ class DataPreloader {
             }
             console.log(`✅ 已注册 ${shards.length} 个分区:`, shards.map(s => s.partitionId).join(', '));
 
+            // 🔥 v11：确保IndexedDB中创建了这些分区表
+            await cacheManager.ensurePartitionsExist();
+            console.log(`✅ IndexedDB分区表已就绪`);
+
             // 3. 🔥 动态并发数：根据分片数量和浏览器限制自动调整
             const CONCURRENT_LIMIT = this.calculateOptimalConcurrency(shards.length);
             let totalLoaded = 0;
