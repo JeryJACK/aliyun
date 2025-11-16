@@ -189,7 +189,7 @@ class QueryCache {
 class CacheManager {
     constructor() {
         this.dbName = 'SatelliteDataCache';
-        this.dbVersion = 12; // 🔥 升级到v12：删除all表，纯分区架构+v10.1查询优化
+        this.dbVersion = 14; // 🔥 升级到v14：修复all表访问错误（v12-v13测试版本）
         this.allDataStoreName = 'allDataCache';
         this.metaStoreName = 'metaData';
         this.shardIndexStoreName = 'shardIndex'; // 🆕 分片索引
@@ -634,9 +634,9 @@ class CacheManager {
                     console.log(`💡 分区将在数据加载时动态创建...`);
                 }
 
-                // 🔥 v12: 纯分区架构 + v10.1查询优化（删除all表，性能巨幅提升）
-                if (oldVersion < 12) {
-                    console.log('🔥 v12升级：纯分区架构 + v10.1查询优化...');
+                // 🔥 v12-v14: 纯分区架构 + v10.1查询优化（删除all表，性能巨幅提升）
+                if (oldVersion < 14) {
+                    console.log('🔥 v14升级：纯分区架构 + v10.1查询优化 + all表访问错误修复...');
                     console.log('');
                     console.log('📊 架构革命：');
                     console.log('  ❌ 旧架构：all表 + 分区表（双写，浪费50%性能）');
@@ -670,7 +670,7 @@ class CacheManager {
                     }
 
                     console.log('');
-                    console.log(`🎉 v12升级完成！`);
+                    console.log(`🎉 v14升级完成！`);
                     console.log('');
                     console.log('✨ 新特性：');
                     console.log('  1️⃣  纯分区架构 - 写入性能提升50%');
@@ -679,6 +679,7 @@ class CacheManager {
                     console.log('  4️⃣  游标分页 - 支持百万级数据不卡顿');
                     console.log('  5️⃣  智能分区裁剪 - 只查询必要的表');
                     console.log('  6️⃣  批量并行控制 - 4个一批，符合浏览器限制');
+                    console.log('  7️⃣  修复all表访问错误 - 9个方法完全重构');
                     console.log('');
                     console.log('💡 页面将自动重新加载数据...');
                     console.log('💾 节省存储空间：约50%（不再双写）');
@@ -1560,19 +1561,46 @@ class CacheManager {
     }
 
     // 清空全数据缓存
+    // 🔥 v12：清空缓存（从分区表清空）
     async clearAllDataCache() {
         if (!this.db) await this.init();
 
         return new Promise((resolve) => {
-            const transaction = this.db.transaction([this.allDataStoreName, this.metaStoreName], 'readwrite');
-            const allDataStore = transaction.objectStore(this.allDataStoreName);
-            const metaStore = transaction.objectStore(this.metaStoreName);
+            // 🔥 v12：只清空存在的表
+            const storeNames = [this.metaStoreName];
 
-            allDataStore.clear();
-            metaStore.delete('allDataMeta');
+            // v11兼容：如果all表还存在，也清空
+            if (this.db.objectStoreNames.contains(this.allDataStoreName)) {
+                storeNames.push(this.allDataStoreName);
+            }
+
+            // 添加所有分区表
+            for (const config of Object.values(this.partitions)) {
+                if (this.db.objectStoreNames.contains(config.storeName)) {
+                    storeNames.push(config.storeName);
+                }
+            }
+
+            if (storeNames.length === 0) {
+                console.log('🧹 没有缓存需要清空');
+                resolve();
+                return;
+            }
+
+            const transaction = this.db.transaction(storeNames, 'readwrite');
+
+            // 清空所有表
+            for (const storeName of storeNames) {
+                const store = transaction.objectStore(storeName);
+                if (storeName === this.metaStoreName) {
+                    store.delete('allDataMeta');
+                } else {
+                    store.clear();
+                }
+            }
 
             transaction.oncomplete = () => {
-                console.log('🧹 本地缓存已清空');
+                console.log(`🧹 本地缓存已清空 (${storeNames.length} 个表)`);
                 resolve();
             };
 
