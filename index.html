@@ -600,13 +600,13 @@
     </div>
 
 
-    <!-- ⚡ 性能优化：并行加载+延迟执行（defer） - 开发版本（便于调试） -->
-    <script src="./public/js/cache-manager.js?t=1763191333" defer></script>
-    <script src="./public/js/data-preloader.js?t=1763191333" defer></script>
-    <script src="./public/js/websocket-manager.js?t=1763188324" defer></script>
-    <script src="./public/js/data-store.js?t=1763181495" defer></script>
-    <script src="./public/js/satellite-app.js?t=1763186004" defer></script>
-    <script src="./public/js/main-init.js?t=1763187392" defer></script>
+    <!-- ⚡ 性能优化：使用压缩版本（减少70%文件大小） + 并行加载+延迟执行（defer） -->
+    <script src="./public/js/cache-manager.min.js?v=20.1" defer></script>
+    <script src="./public/js/data-preloader.min.js?v=20.1" defer></script>
+    <script src="./public/js/websocket-manager.min.js?v=20.1" defer></script>
+    <script src="./public/js/data-store.min.js?v=20.1" defer></script>
+    <script src="./public/js/satellite-app.min.js?v=20.1" defer></script>
+    <script src="./public/js/main-init.js?v=20.1" defer></script>
 
     <!-- 🆕 后台加载进度指示器 -->
     <div id="background-loading-indicator" class="hidden fixed bottom-4 right-4 bg-white rounded-lg shadow-xl border border-gray-200 p-4 z-50 max-w-sm">
