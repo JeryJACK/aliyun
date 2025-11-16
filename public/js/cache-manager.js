@@ -189,7 +189,7 @@ class QueryCache {
 class CacheManager {
     constructor() {
         this.dbName = 'SatelliteDataCache';
-        this.dbVersion = 16; // 🔥 升级到v16：修复all表访问错误（v12-v13测试版本）
+        this.dbVersion = 20; // 🔥 v20：预留版本号空间（ensurePartitionsExist会自增，留出缓冲避免版本冲突）
         this.allDataStoreName = 'allDataCache';
         this.metaStoreName = 'metaData';
         this.shardIndexStoreName = 'shardIndex'; // 🆕 分片索引
@@ -266,21 +266,25 @@ class CacheManager {
         }
 
         if (missingPartitions.length === 0) {
-            console.log(`✅ 所有分区表已存在`);
+            console.log(`✅ 所有分区表已存在，无需升级版本`);
             return;
         }
 
         console.log(`🔧 需要创建 ${missingPartitions.length} 个分区表:`, missingPartitions.join(', '));
 
+        // 🔥 修复：只有在真正需要创建分区时才升级版本
+        // 避免每次打开页面都自动升级导致版本冲突
+        const currentDbVersion = this.db.version;
+        const newVersion = currentDbVersion + 1;
+
+        console.log(`📊 数据库版本升级: v${currentDbVersion} → v${newVersion} (仅因需要创建新分区)`);
+
         // 关闭当前连接
         this.db.close();
 
-        // 升级数据库版本
-        this.dbVersion++;
-
         // 重新打开并创建缺失的分区表
         return new Promise((resolve, reject) => {
-            const request = indexedDB.open(this.dbName, this.dbVersion);
+            const request = indexedDB.open(this.dbName, newVersion);
 
             request.onupgradeneeded = (event) => {
                 const db = event.target.result;
@@ -297,6 +301,7 @@ class CacheManager {
 
             request.onsuccess = (event) => {
                 this.db = event.target.result;
+                this.dbVersion = newVersion; // 🔥 同步更新版本号
                 console.log(`✅ 分区表创建完成，数据库版本: v${this.dbVersion}`);
                 resolve();
             };
@@ -634,8 +639,8 @@ class CacheManager {
                     console.log(`💡 分区将在数据加载时动态创建...`);
                 }
 
-                // 🔥 v12-v14: 纯分区架构 + v10.1查询优化（删除all表，性能巨幅提升）
-                if (oldVersion < 14) {
+                // 🔥 v12-v20: 纯分区架构 + v10.1查询优化（删除all表，性能巨幅提升）
+                if (oldVersion < 20) {
                     console.log('🔥 v14升级：纯分区架构 + v10.1查询优化 + all表访问错误修复...');
                     console.log('');
                     console.log('📊 架构革命：');
@@ -684,6 +689,8 @@ class CacheManager {
                     console.log('💡 页面将自动重新加载数据...');
                     console.log('💾 节省存储空间：约50%（不再双写）');
                     console.log('⚡ 总性能提升：3-10倍');
+                    console.log('');
+                    console.log('💡 v20版本说明：预留版本号空间，避免动态分区创建导致的版本冲突');
                     console.log('');
                 }
 
@@ -2859,5 +2866,4 @@ class CacheManager {
 
         return Array.from(relevantQuarters);
     }
-
 }

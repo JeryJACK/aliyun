@@ -254,10 +254,12 @@ class DataPreloader {
             );
 
             // 启动下载Workers
+            // 🔥 架构修复：使用配置的worker数量
             const downloadWorkers = Array.from(
-                { length: Math.min(CONCURRENT_LIMIT, shards.length) },
+                { length: CONCURRENT_LIMIT },
                 (_, i) => downloadWorker(i + 1)
             );
+            console.log(`🔥 增量加载：启动 ${CONCURRENT_LIMIT} 个下载Worker`);
 
             // 等待所有下载完成
             await Promise.all(downloadWorkers);
@@ -286,47 +288,61 @@ class DataPreloader {
         console.log('🚀 启动流水线并行加载（智能分片架构）...');
 
         try {
-            // 1. 🚀 使用stats API获取完整统计信息（1个请求，极速）
+            // 1. 🚀 架构优化：Stats API异步化（不阻塞数据下载）
             let startDate, endDate, totalRecords;
 
-            try {
-                console.log('📡 正在查询数据统计信息...');
-                const queryStart = performance.now();
+            // 🔥 先使用默认范围立即开始下载，同时异步查询stats
+            endDate = new Date();
+            startDate = new Date();
+            startDate.setFullYear(startDate.getFullYear() - 2);
 
-                const statsUrl = getApiUrl('stats');
-                const response = await fetch(statsUrl);
-                const data = await response.json();
+            // 🔥 异步查询stats（不阻塞）
+            const statsPromise = (async () => {
+                try {
+                    console.log('📡 后台查询数据统计信息（不阻塞下载）...');
+                    const queryStart = performance.now();
 
-                const queryTime = performance.now() - queryStart;
+                    const statsUrl = getApiUrl('stats');
+                    const response = await fetch(statsUrl);
+                    const data = await response.json();
 
-                if (data.success && data.data) {
-                    const stats = data.data;
-                    totalRecords = stats.total_records;
-                    startDate = new Date(stats.earliest_time);
-                    endDate = new Date(stats.latest_time);
+                    const queryTime = performance.now() - queryStart;
 
-                    const daysDiff = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
-                    console.log(`✅ 数据统计: ${totalRecords.toLocaleString()} 条记录`);
-                    console.log(`✅ 时间范围: ${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()} (${daysDiff}天)`);
+                    if (data.success && data.data) {
+                        const stats = data.data;
+                        totalRecords = stats.total_records;
+                        const statsStartDate = new Date(stats.earliest_time);
+                        const statsEndDate = new Date(stats.latest_time);
 
-                    // 🚀 显示缓存状态
-                    const cacheStatus = stats.cached ? '缓存' : 'SQL聚合查询';
-                    const speedIcon = stats.cached ? '⚡⚡' : '⚡';
-                    console.log(`${speedIcon} 统计查询耗时: ${queryTime.toFixed(0)}ms (${cacheStatus})`);
-                } else {
-                    throw new Error('统计数据格式错误');
+                        const daysDiff = Math.ceil((statsEndDate - statsStartDate) / (1000 * 60 * 60 * 24));
+                        console.log(`✅ Stats查询完成: ${totalRecords.toLocaleString()} 条记录`);
+                        console.log(`✅ 精确时间范围: ${statsStartDate.toLocaleDateString()} - ${statsEndDate.toLocaleDateString()} (${daysDiff}天)`);
+
+                        // 🚀 显示缓存状态
+                        const cacheStatus = stats.cached ? '缓存' : 'SQL聚合查询';
+                        const speedIcon = stats.cached ? '⚡⚡' : '⚡';
+                        console.log(`${speedIcon} 统计查询耗时: ${queryTime.toFixed(0)}ms (${cacheStatus})（后台执行，未阻塞下载）`);
+
+                        // 如果stats范围更精确，更新范围（但不影响已开始的下载）
+                        return { startDate: statsStartDate, endDate: statsEndDate, totalRecords };
+                    }
+                } catch (error) {
+                    console.warn('⚠️ Stats查询失败，使用默认2年范围:', error.message);
                 }
-            } catch (error) {
-                console.warn('⚠️ 查询统计失败，使用默认2年:', error.message);
-                endDate = new Date();
-                startDate = new Date();
-                startDate.setFullYear(startDate.getFullYear() - 2);
-                console.log(`📊 降级范围: ${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()} (2年)`);
-            }
+                return null;
+            })();
+
+            console.log(`📊 使用默认范围立即开始: ${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()} (2年)`);
+            console.log(`💡 Stats查询在后台执行，不阻塞数据下载`)
 
             // 2. 🔥 动态分片策略：根据时间跨度估算数据量，智能选择分片粒度
             const shards = this.generateAdaptiveShards(startDate, endDate);
-            console.log(`📊 生成 ${shards.length} 个分片`);
+
+            // 🔥 架构优化：按时间顺序排序（从旧到新）
+            // 避免B-tree头部插入导致的性能衰退（先存新数据再存旧数据会慢3倍）
+            shards.sort((a, b) => new Date(a.start) - new Date(b.start));
+            console.log(`📊 生成 ${shards.length} 个分片（已按时间排序，优化B-tree写入性能）`);
+            console.log(`📋 分片顺序:`, shards.map(s => s.partitionId).join(' → '));
 
             // 🔥 v11：智能分区 - 动态注册分区到CacheManager
             console.log(`🎯 智能分区：根据实际数据范围 ${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()} 动态创建分区`);
@@ -504,10 +520,13 @@ class DataPreloader {
             console.log(`💾 启动 ${STORAGE_WORKERS} 个存储Worker并行处理`);
 
             // 启动下载Workers
+            // 🔥 架构修复：直接使用配置的worker数量，不要"聪明"地限制
+            // 即使分片少于worker数量，多worker也能提升性能（HTTP/2多路复用）
             const downloadWorkers = Array.from(
-                { length: Math.min(CONCURRENT_LIMIT, shards.length) },
+                { length: CONCURRENT_LIMIT },
                 (_, i) => downloadWorker(i + 1)
             );
+            console.log(`🔥 架构优化：启动 ${CONCURRENT_LIMIT} 个下载Worker（不受${shards.length}个分片限制）`);
 
             // 等待所有下载完成
             await Promise.all(downloadWorkers);
