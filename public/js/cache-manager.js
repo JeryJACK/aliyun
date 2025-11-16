@@ -692,12 +692,12 @@ class CacheManager {
         });
     }
 
-    // 🆕 【高性能】批量存储数据到本地缓存（分批事务，避免阻塞）
+    // 🔥 v12：【高性能】批量存储数据到分区表（纯分区架构）
     async storeAllData(allData, onProgress) {
         if (!this.db) await this.init();
 
         const perfStart = performance.now();
-        console.log(`💾 开始批量存储 ${allData.length.toLocaleString()} 条数据...`);
+        console.log(`💾 开始批量存储 ${allData.length.toLocaleString()} 条数据到分区表...`);
 
         try {
             // 1. 先清空现有数据
@@ -706,39 +706,60 @@ class CacheManager {
             // 2. 按时间排序（如果后端未排序）
             const sortedData = this.sortDataByTime(allData);
 
-            // 3. 🚀 分批存储（每批10000条，避免长事务）
-            const BATCH_SIZE = 10000;
-            const totalBatches = Math.ceil(sortedData.length / BATCH_SIZE);
+            // 3. 🔥 v12：按分区分组数据
+            const partitionGroups = this.groupRecordsByPartition(sortedData);
+            const partitionIds = Object.keys(partitionGroups);
+            console.log(`📊 数据跨 ${partitionIds.length} 个分区: ${partitionIds.join(', ')}`);
+
+            // 4. 🔥 v12：注册并创建所有需要的分区
+            for (const partitionId of partitionIds) {
+                if (!this.partitions[partitionId]) {
+                    this.registerPartition(partitionId);
+                }
+            }
+            await this.ensurePartitionsExist();
+
+            // 5. 🔥 v12：批量写入每个分区
             let storedCount = 0;
-            const monthStats = {};
+            const BATCH_SIZE = 10000;
 
-            for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
-                const batchStart = batchIndex * BATCH_SIZE;
-                const batchEnd = Math.min(batchStart + BATCH_SIZE, sortedData.length);
-                const batch = sortedData.slice(batchStart, batchEnd);
+            for (const partitionId of partitionIds) {
+                const partitionData = partitionGroups[partitionId];
+                const config = this.partitions[partitionId];
+                const storeName = config.storeName;
 
-                // 每批使用独立事务（避免长事务阻塞）
-                await this.storeBatch(batch, monthStats);
+                console.log(`📦 写入分区 ${partitionId} (${partitionData.length.toLocaleString()} 条)...`);
 
-                storedCount += batch.length;
-                const progress = Math.round((storedCount / sortedData.length) * 100);
+                // 分批写入单个分区
+                const totalBatches = Math.ceil(partitionData.length / BATCH_SIZE);
+                for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+                    const batchStart = batchIndex * BATCH_SIZE;
+                    const batchEnd = Math.min(batchStart + BATCH_SIZE, partitionData.length);
+                    const batch = partitionData.slice(batchStart, batchEnd);
 
-                console.log(`📦 批次 ${batchIndex + 1}/${totalBatches}: 已存储 ${storedCount.toLocaleString()}/${sortedData.length.toLocaleString()} (${progress}%)`);
+                    await this.storePartitionedBatch(batch, storeName, false);
 
-                // 调用进度回调
-                if (onProgress) {
-                    onProgress(progress, storedCount, sortedData.length);
+                    storedCount += batch.length;
+                    const progress = Math.round((storedCount / sortedData.length) * 100);
+
+                    // 调用进度回调
+                    if (onProgress) {
+                        onProgress(progress, storedCount, sortedData.length);
+                    }
+
+                    // 🔥 关键优化：让出主线程，避免UI冻结
+                    await new Promise(resolve => setTimeout(resolve, 0));
                 }
 
-                // 🔥 关键优化：让出主线程，避免UI冻结
-                await new Promise(resolve => setTimeout(resolve, 0));
+                console.log(`  ✅ ${partitionId}: ${partitionData.length.toLocaleString()} 条已存储`);
             }
 
-            // 4. 保存分片索引和元数据
-            await this.saveMetadataAndShardIndex(sortedData.length, monthStats);
+            // 6. 保存元数据
+            await this.saveMetadataAndShardIndex(sortedData.length, {});
 
             const perfTime = performance.now() - perfStart;
             console.log(`✅ 批量存储完成: ${storedCount.toLocaleString()} 条 (${perfTime.toFixed(0)}ms, ${(storedCount / (perfTime / 1000)).toFixed(0)} 条/秒)`);
+            console.log(`📊 已存储到 ${partitionIds.length} 个分区表`);
 
             return storedCount;
 
@@ -748,47 +769,10 @@ class CacheManager {
         }
     }
 
-    // 🆕 存储单个批次（独立事务）
+    // ⚠️ DEPRECATED v12：已废弃，请使用 storePartitionedBatch
     async storeBatch(batch, monthStats = {}, addMode = false) {
-        return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction([this.allDataStoreName], 'readwrite');
-            const store = transaction.objectStore(this.allDataStoreName);
-            const method = addMode ? 'add' : 'put';
-
-            for (const record of batch) {
-                // 统一数据格式
-                const standardRecord = {
-                    id: record.plan_id || record['计划ID'] || record.id || `record_${Date.now()}_${Math.random()}`,
-                    start_time: record.start_time || record['开始时间'],
-                    task_result: record.task_result || record['任务结果状态'],
-                    task_type: record.task_type || record['任务类型'],
-                    customer: record.customer || record['所属客户'],
-                    satellite_name: record.satellite_name || record['卫星名称'],
-                    station_name: record.station_name || record['测站名称'],
-                    station_id: record.station_id || record['测站ID'],
-                    ...record
-                };
-
-                // 添加时间戳和月份key
-                if (standardRecord.start_time) {
-                    standardRecord.timestamp = this.parseTimeToTimestamp(standardRecord.start_time);
-                    standardRecord.month_key = this.getMonthKey(standardRecord.start_time);
-
-                    // 统计月份数据量
-                    if (monthStats && !monthStats[standardRecord.month_key]) {
-                        monthStats[standardRecord.month_key] = 0;
-                    }
-                    if (monthStats) {
-                        monthStats[standardRecord.month_key]++;
-                    }
-                }
-
-                store[method](standardRecord);
-            }
-
-            transaction.oncomplete = () => resolve();
-            transaction.onerror = () => reject(transaction.error);
-        });
+        console.warn('⚠️ storeBatch已废弃（v12纯分区架构），请使用storePartitionedBatch');
+        return Promise.resolve();
     }
 
     // 🔥 v8：分片存储方法（写入到指定季度表）
@@ -841,14 +825,20 @@ class CacheManager {
     // 🆕 清空所有数据（包括分片表）
     async clearAllData() {
         return new Promise((resolve, reject) => {
-            const storeNames = [this.allDataStoreName];
+            // 🔥 v12：只清空存在的表（all表已删除）
+            const storeNames = [];
+
+            // 只有all表还存在时才添加（v11兼容）
+            if (this.db.objectStoreNames.contains(this.allDataStoreName)) {
+                storeNames.push(this.allDataStoreName);
+            }
 
             // 添加分片索引表
             if (this.db.objectStoreNames.contains(this.shardIndexStoreName)) {
                 storeNames.push(this.shardIndexStoreName);
             }
 
-            // 🔥 v8：添加4个季度分片表
+            // 🔥 v12：添加所有分区表
             for (const config of Object.values(this.partitions)) {
                 if (this.db.objectStoreNames.contains(config.storeName)) {
                     storeNames.push(config.storeName);
@@ -860,30 +850,22 @@ class CacheManager {
                 storeNames.push(this.partitionMetaStoreName);
             }
 
+            // 如果没有表需要清空，直接返回
+            if (storeNames.length === 0) {
+                console.log('🧹 没有数据需要清空');
+                resolve();
+                return;
+            }
+
             const transaction = this.db.transaction(storeNames, 'readwrite');
 
-            // 清空主表
-            transaction.objectStore(this.allDataStoreName).clear();
-
-            // 清空分片索引
-            if (storeNames.includes(this.shardIndexStoreName)) {
-                transaction.objectStore(this.shardIndexStoreName).clear();
-            }
-
-            // 🔥 v8：清空季度分片表
-            for (const config of Object.values(this.partitions)) {
-                if (storeNames.includes(config.storeName)) {
-                    transaction.objectStore(config.storeName).clear();
-                }
-            }
-
-            // 清空分片元数据
-            if (storeNames.includes(this.partitionMetaStoreName)) {
-                transaction.objectStore(this.partitionMetaStoreName).clear();
+            // 清空所有表
+            for (const storeName of storeNames) {
+                transaction.objectStore(storeName).clear();
             }
 
             transaction.oncomplete = () => {
-                console.log('🧹 已清空现有数据（包括分片表）');
+                console.log(`🧹 已清空 ${storeNames.length} 个表：${storeNames.join(', ')}`);
                 resolve();
             };
             transaction.onerror = () => reject(transaction.error);
@@ -1119,56 +1101,50 @@ class CacheManager {
         }
     }
 
-    // 从本地缓存查询数据（支持时间范围筛选）
+    // 🔥 v12：从本地缓存查询数据（从分区表查询，支持时间范围筛选）
     async queryAllData(filters = {}) {
         if (!this.db) await this.init();
-        
-        return new Promise((resolve) => {
-            const transaction = this.db.transaction([this.allDataStoreName], 'readonly');
-            const store = transaction.objectStore(this.allDataStoreName);
-            const request = store.getAll();
 
-            request.onsuccess = () => {
-                let results = request.result || [];
-                
-                // 应用时间范围过滤（避免时区转换问题）
-                if (filters.startDate || filters.endDate) {
-                    let startTime, endTime;
-                    
-                    if (filters.startDate) {
-                        // 解析开始日期为本地时间00:00:00
-                        startTime = this.parseLocalDateToTimestamp(filters.startDate, 0, 0, 0);
-                        console.log(`🔍 筛选开始时间: ${filters.startDate} -> ${new Date(startTime).toLocaleString()}`);
-                    }
-                    
-                    if (filters.endDate) {
-                        // 解析结束日期为本地时间23:59:59.999
-                        endTime = this.parseLocalDateToTimestamp(filters.endDate, 23, 59, 59, 999);
-                        console.log(`🔍 筛选结束时间: ${filters.endDate} -> ${new Date(endTime).toLocaleString()}`);
-                    }
-                    
-                    const beforeFilter = results.length;
-                    results = results.filter(record => {
-                        const recordTime = record.timestamp || this.parseTimeToTimestamp(record.start_time);
-                        
-                        if (filters.startDate && recordTime < startTime) return false;
-                        if (filters.endDate && recordTime > endTime) return false;
-                        
-                        return true;
-                    });
-                    
-                    console.log(`🔍 时间筛选: ${beforeFilter} -> ${results.length} 条数据`);
+        try {
+            // 🔥 v12：从分区表并行查询
+            let results = await this.getAllDataFast();
+
+            // 应用时间范围过滤（避免时区转换问题）
+            if (filters.startDate || filters.endDate) {
+                let startTime, endTime;
+
+                if (filters.startDate) {
+                    // 解析开始日期为本地时间00:00:00
+                    startTime = this.parseLocalDateToTimestamp(filters.startDate, 0, 0, 0);
+                    console.log(`🔍 筛选开始时间: ${filters.startDate} -> ${new Date(startTime).toLocaleString()}`);
                 }
-                
-                console.log(`🔍 从本地缓存查询到 ${results.length} 条数据`);
-                resolve(results);
-            };
 
-            request.onerror = () => {
-                console.error('❌ 查询本地缓存失败:', request.error);
-                resolve([]);
-            };
-        });
+                if (filters.endDate) {
+                    // 解析结束日期为本地时间23:59:59.999
+                    endTime = this.parseLocalDateToTimestamp(filters.endDate, 23, 59, 59, 999);
+                    console.log(`🔍 筛选结束时间: ${filters.endDate} -> ${new Date(endTime).toLocaleString()}`);
+                }
+
+                const beforeFilter = results.length;
+                results = results.filter(record => {
+                    const recordTime = record.timestamp || this.parseTimeToTimestamp(record.start_time);
+
+                    if (filters.startDate && recordTime < startTime) return false;
+                    if (filters.endDate && recordTime > endTime) return false;
+
+                    return true;
+                });
+
+                console.log(`🔍 时间筛选: ${beforeFilter} -> ${results.length} 条数据`);
+            }
+
+            console.log(`🔍 从本地缓存查询到 ${results.length} 条数据`);
+            return results;
+
+        } catch (error) {
+            console.error('❌ 查询本地缓存失败:', error);
+            return [];
+        }
     }
 
     // 【极速优化】快速获取元数据（<5ms，避免count和游标）
@@ -1217,8 +1193,26 @@ class CacheManager {
         });
     }
 
-    // ⚡⚡ 【分片优化】只加载最近N个月的分片数据（使用month_key索引，极速！）
+    // ⚠️ DEPRECATED v12：已废弃，请使用 getAllDataFast
     async queryRecentMonthsFromShards(months = 3, onBatch, batchSize = 5000) {
+        console.warn('⚠️ queryRecentMonthsFromShards已废弃（v12纯分区架构），使用getAllDataFast代替');
+
+        // 降级到getAllDataFast
+        const allData = await this.getAllDataFast();
+
+        // 触发批次回调（保持兼容性）
+        if (onBatch) {
+            for (let i = 0; i < allData.length; i += batchSize) {
+                const batch = allData.slice(i, i + batchSize);
+                onBatch(batch, Math.min(i + batchSize, allData.length));
+            }
+        }
+
+        return allData;
+    }
+
+    // ⚠️ DEPRECATED v12 - 旧的实现已被注释
+    async queryRecentMonthsFromShards_OLD(months = 3, onBatch, batchSize = 5000) {
         if (!this.db) await this.init();
 
         const perfStart = performance.now();
@@ -1376,47 +1370,22 @@ class CacheManager {
         });
     }
 
-    // ⚡ 【冷启动优化】只加载最近N个月的数据（使用start_time索引）- 降级方案
+    // ⚠️ DEPRECATED v12：已废弃，请使用 getAllDataFast
     async queryRecentData(months = 1, onBatch, batchSize = 5000) {
-        if (!this.db) await this.init();
+        console.warn('⚠️ queryRecentData已废弃（v12纯分区架构），使用getAllDataFast代替');
 
-        const perfStart = performance.now();
-        const cutoffDate = new Date();
-        cutoffDate.setMonth(cutoffDate.getMonth() - months);
+        // 降级到getAllDataFast
+        const allData = await this.getAllDataFast();
 
-        console.log(`🔍 查询最近${months}个月数据 (从 ${cutoffDate.toISOString()})`);
+        // 触发批次回调（保持兼容性）
+        if (onBatch) {
+            for (let i = 0; i < allData.length; i += batchSize) {
+                const batch = allData.slice(i, i + batchSize);
+                onBatch(batch, Math.min(i + batchSize, allData.length));
+            }
+        }
 
-        return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction([this.allDataStoreName], 'readonly');
-            const store = transaction.objectStore(this.allDataStoreName);
-            const index = store.index('start_time');
-
-            // 使用索引范围查询（比全表扫描快得多）
-            const range = IDBKeyRange.lowerBound(cutoffDate);
-            const request = index.getAll(range);
-
-            request.onsuccess = (event) => {
-                const recentData = event.target.result;
-                const totalLoaded = recentData.length;
-
-                // 分批触发回调（保持兼容性）
-                if (onBatch) {
-                    for (let i = 0; i < recentData.length; i += batchSize) {
-                        const batch = recentData.slice(i, i + batchSize);
-                        onBatch(batch, Math.min(i + batchSize, totalLoaded));
-                    }
-                }
-
-                const perfTime = performance.now() - perfStart;
-                console.log(`✅ 最近${months}个月数据加载完成: ${totalLoaded.toLocaleString()} 条 (${perfTime.toFixed(0)}ms, ${(totalLoaded / (perfTime / 1000)).toFixed(0)} 条/秒)`);
-                resolve(totalLoaded);
-            };
-
-            request.onerror = () => {
-                console.error('❌ 查询最近数据失败:', request.error);
-                reject(request.error);
-            };
-        });
+        return allData.length;
     }
 
     // 🔥 v12：一次性获取所有数据（从分区表并行查询 + 缓存优化）
@@ -1543,55 +1512,22 @@ class CacheManager {
         }
     }
 
-    // 【优化】渐进式加载数据（使用游标分批，边加载边处理）- 降级方案
+    // ⚠️ DEPRECATED v12：已废弃，请使用 getAllDataFast
     async queryAllDataProgressive(onBatch, batchSize = 5000) {
-        if (!this.db) await this.init();
+        console.warn('⚠️ queryAllDataProgressive已废弃（v12纯分区架构），使用getAllDataFast代替');
 
-        const perfStart = performance.now();
-        let totalLoaded = 0;
+        // 降级到getAllDataFast
+        const allData = await this.getAllDataFast();
 
-        return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction([this.allDataStoreName], 'readonly');
-            const store = transaction.objectStore(this.allDataStoreName);
-            const request = store.openCursor();
+        // 触发批次回调（保持兼容性）
+        if (onBatch) {
+            for (let i = 0; i < allData.length; i += batchSize) {
+                const batch = allData.slice(i, i + batchSize);
+                onBatch(batch, Math.min(i + batchSize, allData.length));
+            }
+        }
 
-            let batch = [];
-
-            request.onsuccess = (event) => {
-                const cursor = event.target.result;
-
-                if (cursor) {
-                    // 将当前记录添加到批次
-                    batch.push(cursor.value);
-                    totalLoaded++;
-
-                    // 达到批次大小，触发回调
-                    if (batch.length >= batchSize) {
-                        if (onBatch) {
-                            onBatch(batch, totalLoaded);
-                        }
-                        batch = []; // 清空批次，准备下一批
-                    }
-
-                    // 继续读取下一条记录
-                    cursor.continue();
-                } else {
-                    // 游标结束，处理剩余数据
-                    if (batch.length > 0 && onBatch) {
-                        onBatch(batch, totalLoaded);
-                    }
-
-                    const perfTime = performance.now() - perfStart;
-                    console.log(`✅ 渐进式加载完成: ${totalLoaded.toLocaleString()} 条 (${perfTime.toFixed(0)}ms, ${(totalLoaded / (perfTime / 1000)).toFixed(0)} 条/秒)`);
-                    resolve(totalLoaded);
-                }
-            };
-
-            request.onerror = () => {
-                console.error('❌ 渐进式加载失败:', request.error);
-                reject(request.error);
-            };
-        });
+        return allData.length;
     }
 
     // 检查全数据缓存是否存在
@@ -2228,35 +2164,30 @@ class CacheManager {
 
         const perfStart = performance.now();
 
-        // 解析日期为时间戳
-        const startTime = this.parseLocalDateToTimestamp(startDate, 0, 0, 0, 0);
-        const endTime = this.parseLocalDateToTimestamp(endDate, 23, 59, 59, 999);
+        // 解析日期为Date对象
+        const startDateObj = new Date(startDate);
+        const endDateObj = new Date(endDate);
+        endDateObj.setHours(23, 59, 59, 999);
 
         console.log(`🔍 按日期范围查询: ${startDate} 至 ${endDate}`);
 
-        return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction([this.allDataStoreName], 'readonly');
-            const store = transaction.objectStore(this.allDataStoreName);
+        try {
+            // 🔥 v12：使用v10.1优化的查询路由器
+            const results = await this.queryDateRangeOptimized(startDateObj, endDateObj, {
+                useCache: true,
+                orderBy: 'asc'
+            });
 
-            // 尝试使用timestamp索引
-            const index = store.index('timestamp');
-            const range = IDBKeyRange.bound(startTime, endTime);
-            const request = index.getAll(range);
+            const perfTime = performance.now() - perfStart;
+            console.log(`⚡ 查询完成: ${results.length.toLocaleString()} 条 (${perfTime.toFixed(0)}ms)`);
 
-            request.onsuccess = () => {
-                const results = request.result || [];
-                const perfTime = performance.now() - perfStart;
-                console.log(`⚡ 索引查询完成: ${results.length.toLocaleString()} 条 (${perfTime.toFixed(0)}ms)`);
-                resolve(results);
-            };
-
-            request.onerror = () => {
-                console.error('❌ 索引查询失败:', request.error);
-                // 降级：使用全扫描过滤
-                console.log('⚠️ 降级为全扫描查询...');
-                this.queryAllData({ startDate, endDate }).then(resolve).catch(reject);
-            };
-        });
+            return results;
+        } catch (error) {
+            console.error('❌ 查询失败:', error);
+            // 降级：使用queryAllData
+            console.log('⚠️ 降级为全扫描查询...');
+            return await this.queryAllData({ startDate, endDate });
+        }
     }
 
     /**
