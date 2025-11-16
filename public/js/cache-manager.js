@@ -206,6 +206,9 @@ class CacheManager {
         // 🔥 v12：查询缓存（v10.1优化）
         this.queryCache = new QueryCache();
 
+        // 🔥 Phase 1: 分区锁机制
+        this.partitionLocks = new Map();
+
         // 初始化基础分区（过去2年 + 当前年）
         this.initializePartitions();
     }
@@ -247,6 +250,75 @@ class CacheManager {
         };
 
         console.log(`  ✅ 注册分区: ${partitionId} (${year}年Q${quarter})`);
+    }
+
+    // 🔥 Phase 1: 尝试锁定分区（非阻塞）
+    tryLockPartition(partitionId) {
+        if (this.partitionLocks.get(partitionId)) {
+            return false; // 已被锁定
+        }
+        this.partitionLocks.set(partitionId, true);
+        console.log(`  🔒 Worker锁定分区: ${partitionId}`);
+        return true;
+    }
+
+    // 🔥 Phase 1: 释放分区锁
+    unlockPartition(partitionId) {
+        this.partitionLocks.set(partitionId, false);
+        console.log(`  🔓 Worker释放分区: ${partitionId}`);
+    }
+
+    // 🔥 Phase 1: 动态创建单个分区（按需）
+    async ensurePartition(partitionId) {
+        // 首先注册分区配置（如果还没注册）
+        this.registerPartition(partitionId);
+
+        const config = this.partitions[partitionId];
+        if (!config) {
+            console.error(`❌ 无法注册分区: ${partitionId}`);
+            return false;
+        }
+
+        const storeName = config.storeName;
+
+        // 检查表是否已存在
+        if (this.db && this.db.objectStoreNames.contains(storeName)) {
+            return true;
+        }
+
+        console.log(`🔧 动态创建新分区: ${partitionId}`);
+
+        // 关闭当前连接
+        if (this.db) {
+            this.db.close();
+        }
+
+        // 升级数据库版本
+        this.dbVersion++;
+
+        // 重新打开数据库
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open(this.dbName, this.dbVersion);
+
+            request.onupgradeneeded = (event) => {
+                const db = event.target.result;
+                if (!db.objectStoreNames.contains(storeName)) {
+                    const store = db.createObjectStore(storeName, { keyPath: 'id' });
+                    store.createIndex('timestamp', 'timestamp', { unique: false });
+                    console.log(`  ✅ 创建分区表: ${storeName} (仅timestamp索引)`);
+                }
+            };
+
+            request.onsuccess = (event) => {
+                this.db = event.target.result;
+                resolve(true);
+            };
+
+            request.onerror = (event) => {
+                console.error(`❌ 创建分区失败:`, event.target.error);
+                reject(event.target.error);
+            };
+        });
     }
 
     // 🔥 v11：批量创建已注册的分区表（在IndexedDB中）
@@ -796,30 +868,24 @@ class CacheManager {
                 return;
             }
 
+            // 🚀 v21性能优化：一次性写入所有数据（最快）
             const transaction = this.db.transaction([partitionStoreName], 'readwrite');
             const store = transaction.objectStore(partitionStoreName);
             const method = addMode ? 'add' : 'put';
             let stored = 0;
+            let errorCount = 0;
 
-            // 🔥 v11优化：减少标准化开销
-            for (const record of records) {
-                // 🎯 精简标准化（API返回的数据已经标准化）
-                let finalRecord = record;
-
-                // 仅处理缺失的必要字段
-                if (!record.timestamp && record.start_time) {
-                    finalRecord = { ...record, timestamp: this.parseTimeToTimestamp(record.start_time) };
-                }
-
-                // 快速写入（使用已标准化的数据）
-                const request = store[method](finalRecord);
+            // 🔥 Phase 2优化：纯写入循环（数据已在解析层处理timestamp）
+            for (let i = 0; i < records.length; i++) {
+                const request = store[method](records[i]);
                 request.onsuccess = () => stored++;
-                request.onerror = () => {
-                    console.error(`存储失败:`, request.error);
-                };
+                request.onerror = () => errorCount++;
             }
 
             transaction.oncomplete = () => {
+                if (errorCount > 0) {
+                    console.warn(`⚠️ ${errorCount}/${records.length} 条记录存储失败`);
+                }
                 resolve(stored);
             };
 
