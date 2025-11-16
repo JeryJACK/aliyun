@@ -328,6 +328,13 @@ class DataPreloader {
             const shards = this.generateAdaptiveShards(startDate, endDate);
             console.log(`📊 生成 ${shards.length} 个分片`);
 
+            // 🔥 v11：智能分区 - 动态注册分区到CacheManager
+            console.log(`🎯 智能分区：根据实际数据范围 ${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()} 动态创建分区`);
+            for (const shard of shards) {
+                cacheManager.registerPartition(shard.partitionId);
+            }
+            console.log(`✅ 已注册 ${shards.length} 个分区:`, shards.map(s => s.partitionId).join(', '));
+
             // 3. 🔥 动态并发数：根据分片数量和浏览器限制自动调整
             const CONCURRENT_LIMIT = this.calculateOptimalConcurrency(shards.length);
             let totalLoaded = 0;
@@ -352,64 +359,92 @@ class DataPreloader {
             console.log(`📦 初始化任务队列池:`, Object.keys(taskQueues).join(', '));
 
             let downloadComplete = false;
-            const STORAGE_WORKERS = 3; // 🔥 3个存储Worker并行
-            const MIN_BATCH_SIZE = 20000; // 🚀 优化：增大批次减少事务次数（20000条/批）
+            const STORAGE_WORKERS = 3; // 🔥 3个存储Worker并行写入不同ObjectStore（避免竞争）
+            const MIN_BATCH_SIZE = 50000; // 🚀 v11优化：增大到50000条，大幅减少事务开销
 
-            // 🔥 v10：存储Worker池（任务抢占模式，完全解耦）
+            // 🔥 v11：分区锁机制（确保真正并行）
+            const lockedPartitions = new Set();
+
+            // 🔥 v11：存储Worker池（分区锁模式，确保每个分区同时只有一个Worker）
             const storageWorker = async (workerId) => {
                 let workerStored = 0;
 
-                console.log(`💾 StorageWorker${workerId} 启动（任务抢占模式）`);
+                console.log(`💾 StorageWorker${workerId} 启动（分区锁模式）`);
 
                 while (!downloadComplete || hasTasksInQueues()) {
-                    // 🔥 从任务队列池中抢任务（哪个队列有任务就处理哪个）
-                    let taskFound = false;
+                    let partitionLocked = false;
+                    let currentPartitionId = null;
 
+                    // 🔥 抢占整个分区（不是批次）
                     for (const [partitionId, queue] of Object.entries(taskQueues)) {
                         if (queue.length === 0) continue;
+                        if (lockedPartitions.has(partitionId)) continue; // 分区已被其他Worker锁定
 
-                        // 🔥 一次性取出一批任务
-                        const batchSize = Math.min(queue.length, MIN_BATCH_SIZE);
-                        const batch = queue.splice(0, batchSize);
+                        // 🔥 锁定这个分区（独占）
+                        lockedPartitions.add(partitionId);
+                        partitionLocked = true;
+                        currentPartitionId = partitionId;
 
-                        if (batch.length > 0) {
-                            taskFound = true;
+                        const totalRecords = queue.length;
+                        const storeName = cacheManager.getPartitionStoreName(partitionId);
 
-                            try {
+                        console.log(`  🔒 Worker${workerId} 锁定分区 ${partitionId} (${totalRecords.toLocaleString()} 条待处理)`);
+
+                        try {
+                            const partitionStart = performance.now();
+                            let partitionStored = 0;
+
+                            // 🔥 处理这个分区的所有数据（分批写入）
+                            while (queue.length > 0) {
+                                // 智能批次大小
+                                let batchSize;
+                                if (queue.length <= MIN_BATCH_SIZE * 0.4) {
+                                    batchSize = queue.length; // 剩余少量，全部取出
+                                } else {
+                                    batchSize = Math.min(queue.length, MIN_BATCH_SIZE);
+                                }
+                                const batch = queue.splice(0, batchSize);
+
                                 const storeStart = performance.now();
-                                const storeName = cacheManager.getPartitionStoreName(partitionId);
-
-                                // 🔥 写入到年份+季度分区表
                                 await cacheManager.storePartitionedBatch(batch, storeName, true);
-
                                 const storeTime = performance.now() - storeStart;
-                                const throughput = batch.length / (storeTime / 1000);
 
-                                console.log(`  💾 Worker${workerId} → ${partitionId}: ${batch.length.toLocaleString()} 条 (${storeTime.toFixed(0)}ms, ${throughput.toFixed(0)} 条/秒)`);
-
+                                partitionStored += batch.length;
                                 workerStored += batch.length;
                                 totalLoaded += batch.length;
-                                completedShards++;
 
-                                // 更新进度
-                                const downloadProgress = Math.min(30, Math.round((downloadedShards / shards.length) * 30));
-                                const storageProgress = Math.round((completedShards / shards.length) * 70);
-                                const progress = downloadProgress + storageProgress;
-
-                                if (onProgress) {
-                                    onProgress(progress, totalLoaded, totalLoaded);
-                                }
-                            } catch (error) {
-                                console.error(`❌ Worker${workerId} 存储${partitionId}失败:`, error);
+                                const throughput = batch.length / (storeTime / 1000);
+                                console.log(`  💾 Worker${workerId} → ${partitionId}: ${batch.length.toLocaleString()} 条 (${storeTime.toFixed(0)}ms, ${throughput.toFixed(0)} 条/秒)`);
                             }
 
-                            // 成功处理一个任务后，跳出内层循环继续抢任务
-                            break;
+                            const partitionTime = performance.now() - partitionStart;
+                            const partitionThroughput = partitionStored / (partitionTime / 1000);
+                            console.log(`  ✅ Worker${workerId} 完成分区 ${partitionId}: ${partitionStored.toLocaleString()} 条 (总计${partitionTime.toFixed(0)}ms, ${partitionThroughput.toFixed(0)} 条/秒)`);
+
+                            completedShards++;
+
+                            // 更新进度
+                            const downloadProgress = Math.min(30, Math.round((downloadedShards / shards.length) * 30));
+                            const storageProgress = Math.round((completedShards / shards.length) * 70);
+                            const progress = downloadProgress + storageProgress;
+
+                            if (onProgress) {
+                                onProgress(progress, totalLoaded, totalLoaded);
+                            }
+
+                        } catch (error) {
+                            console.error(`❌ Worker${workerId} 存储${currentPartitionId}失败:`, error);
+                        } finally {
+                            // 🔥 释放锁
+                            lockedPartitions.delete(currentPartitionId);
+                            console.log(`  🔓 Worker${workerId} 释放分区 ${currentPartitionId}`);
                         }
+
+                        break; // 处理完一个分区，重新循环抢下一个
                     }
 
-                    if (!taskFound) {
-                        // 没有任务，等待一小段时间
+                    if (!partitionLocked) {
+                        // 没有可抢占的分区，等待
                         await new Promise(resolve => setTimeout(resolve, 10));
                     }
                 }

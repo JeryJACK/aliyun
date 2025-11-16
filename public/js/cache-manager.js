@@ -1,7 +1,7 @@
 class CacheManager {
     constructor() {
         this.dbName = 'SatelliteDataCache';
-        this.dbVersion = 10; // 🔥 升级到v10：年份+季度分区（解耦架构）
+        this.dbVersion = 11; // 🔥 升级到v11：移除过去年份分区（性能优化）
         this.allDataStoreName = 'allDataCache';
         this.metaStoreName = 'metaData';
         this.shardIndexStoreName = 'shardIndex'; // 🆕 分片索引
@@ -19,26 +19,43 @@ class CacheManager {
         this.initializePartitions();
     }
 
-    // 🔥 v10：初始化分区表（创建过去2年+当前年的季度分区）
+    // 🔥 v11：完全动态分区（按需创建，不预分配）
     initializePartitions() {
-        const currentYear = new Date().getFullYear();
-        const startYear = currentYear - 1; // 过去1年
-        const endYear = currentYear; // 当前年
+        // 🎯 核心优化：不预创建任何分区表
+        // 分区将在数据加载时根据 stats API 返回的实际时间范围动态创建
+        // 优势：
+        // 1. 零浪费：只创建有数据的分区
+        // 2. 减少HTTP：只请求有数据的季度
+        // 3. 灵活扩展：自动适应数据范围变化
 
-        for (let year = startYear; year <= endYear; year++) {
-            for (let quarter = 1; quarter <= 4; quarter++) {
-                const partitionId = `${year}_Q${quarter}`;
-                this.partitions[partitionId] = {
-                    id: partitionId,
-                    storeName: `satellite_data_${partitionId}`,
-                    year: year,
-                    quarter: quarter,
-                    months: this.getQuarterMonths(quarter)
-                };
-            }
+        console.log('📊 分区策略：完全动态创建（基于实际数据时间范围）');
+    }
+
+    // 🔥 v11：动态注册分区（基于实际数据范围）
+    registerPartition(partitionId) {
+        if (this.partitions[partitionId]) {
+            return; // 已存在，跳过
         }
 
-        console.log(`📊 初始化 ${Object.keys(this.partitions).length} 个分区:`, Object.keys(this.partitions).join(', '));
+        // 解析partitionId (格式: YYYY_Q#)
+        const match = partitionId.match(/^(\d{4})_Q(\d)$/);
+        if (!match) {
+            console.warn(`⚠️ 无效的分区ID格式: ${partitionId}`);
+            return;
+        }
+
+        const year = parseInt(match[1]);
+        const quarter = parseInt(match[2]);
+
+        this.partitions[partitionId] = {
+            id: partitionId,
+            storeName: `satellite_data_${partitionId}`,
+            year: year,
+            quarter: quarter,
+            months: this.getQuarterMonths(quarter)
+        };
+
+        console.log(`  ✅ 注册分区: ${partitionId} (${year}年Q${quarter})`);
     }
 
     // 🆕 获取季度对应的月份
@@ -336,6 +353,37 @@ class CacheManager {
                     console.log('💡 页面将自动重新加载数据...');
                 }
 
+                // 🔥 v11: 智能分区 + 分区锁并行（性能优化）
+                if (oldVersion < 11) {
+                    console.log('🔥 v11升级：智能分区架构...');
+
+                    // 删除所有旧的分区表（包括预创建的未来分区）
+                    const allStores = Array.from(this.db.objectStoreNames);
+                    let deletedCount = 0;
+
+                    for (const storeName of allStores) {
+                        // 匹配 satellite_data_YYYY_Q# 格式（删除所有旧分区）
+                        if (storeName.match(/^satellite_data_\d{4}_Q[1-4]$/)) {
+                            this.db.deleteObjectStore(storeName);
+                            console.log(`  🗑️ 删除旧分区: ${storeName}`);
+                            deletedCount++;
+                        }
+                    }
+
+                    // 清空元数据，触发重新加载
+                    if (this.db.objectStoreNames.contains(this.metaStoreName)) {
+                        const transaction = event.target.transaction;
+                        const metaStore = transaction.objectStore(this.metaStoreName);
+                        metaStore.clear();
+                        console.log('  🧹 清空元数据（将自动重新加载）');
+                    }
+
+                    console.log(`🎉 v11升级完成！删除 ${deletedCount} 个旧分区`);
+                    console.log(`✅ 新特性1：智能分区（仅基于实际数据范围创建）`);
+                    console.log(`✅ 新特性2：分区锁机制（真正并行写入）`);
+                    console.log(`💡 分区将在数据加载时动态创建...`);
+                }
+
                 // 注意：月份分片ObjectStore会在存储数据时动态创建
                 // 命名规则：monthData_YYYY_MM (如 monthData_2025_10)
             };
@@ -459,27 +507,18 @@ class CacheManager {
             const method = addMode ? 'add' : 'put';
             let stored = 0;
 
+            // 🔥 v11优化：减少标准化开销
             for (const record of records) {
-                // 标准化记录（如果尚未标准化）
-                const standardRecord = {
-                    id: record.id || record.plan_id || record['计划ID'] || `record_${Date.now()}_${Math.random()}`,
-                    start_time: record.start_time || record['开始时间'],
-                    task_result: record.task_result || record['任务结果状态'],
-                    task_type: record.task_type || record['任务类型'],
-                    customer: record.customer || record['所属客户'],
-                    SatelliteName: record.satellite_name || record['卫星名称'] || record.SatelliteName,
-                    station_name: record.station_name || record['测站名称'],
-                    station_id: record.station_id || record['测站ID'],
-                    TaskDate: record.TaskDate || record.start_time || record['开始时间'],
-                    ...record
-                };
+                // 🎯 精简标准化（API返回的数据已经标准化）
+                let finalRecord = record;
 
-                // 确保有时间戳
-                if (!standardRecord.timestamp && standardRecord.start_time) {
-                    standardRecord.timestamp = this.parseTimeToTimestamp(standardRecord.start_time);
+                // 仅处理缺失的必要字段
+                if (!record.timestamp && record.start_time) {
+                    finalRecord = { ...record, timestamp: this.parseTimeToTimestamp(record.start_time) };
                 }
 
-                const request = store[method](standardRecord);
+                // 快速写入（使用已标准化的数据）
+                const request = store[method](finalRecord);
                 request.onsuccess = () => stored++;
                 request.onerror = () => {
                     console.error(`存储失败:`, request.error);
