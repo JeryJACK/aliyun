@@ -189,7 +189,7 @@ class QueryCache {
 class CacheManager {
     constructor() {
         this.dbName = 'SatelliteDataCache';
-        this.dbVersion = 14; // 🔥 升级到v14：修复all表访问错误（v12-v13测试版本）
+        this.dbVersion = 16; // 🔥 升级到v16：修复all表访问错误（v12-v13测试版本）
         this.allDataStoreName = 'allDataCache';
         this.metaStoreName = 'metaData';
         this.shardIndexStoreName = 'shardIndex'; // 🆕 分片索引
@@ -2859,4 +2859,5 @@ class CacheManager {
 
         return Array.from(relevantQuarters);
     }
+
 }
