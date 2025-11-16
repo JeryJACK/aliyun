@@ -341,66 +341,54 @@ class DataPreloader {
             console.log(`📥 启动 ${CONCURRENT_LIMIT} 个并发worker处理 ${shards.length} 个分片`);
             console.log(`⚡ 并发策略：${CONCURRENT_LIMIT} workers × ${Math.ceil(shards.length / CONCURRENT_LIMIT)} 轮 = 最大化吞吐量`);
 
-            // 🔥 v8：智能分片架构 - 4个季度队列
-            const partitionQueues = {
-                Q1: [],
-                Q2: [],
-                Q3: [],
-                Q4: []
-            };
+            // 🔥 v10：任务队列池（按年份+季度分组，动态扩展）
+            const taskQueues = {};
+
+            // 初始化任务队列（根据分片动态创建）
+            for (const shard of shards) {
+                taskQueues[shard.partitionId] = [];
+            }
+
+            console.log(`📦 初始化任务队列池:`, Object.keys(taskQueues).join(', '));
 
             let downloadComplete = false;
             const STORAGE_WORKERS = 3; // 🔥 3个存储Worker并行
             const MIN_BATCH_SIZE = 20000; // 🚀 优化：增大批次减少事务次数（20000条/批）
 
-            // 🔥 v8：Worker分配策略（3个Worker负责4个季度）
-            const workerAssignment = {
-                1: ['Q1', 'Q4'],  // Worker1负责Q1和Q4
-                2: ['Q2'],        // Worker2负责Q2
-                3: ['Q3']         // Worker3负责Q3
-            };
-
-            // 🔥 v8：存储Worker（支持智能分片）- 优化版
-            const storageWorker = async (storageWorkerId) => {
-                const myQuarters = workerAssignment[storageWorkerId];
+            // 🔥 v10：存储Worker池（任务抢占模式，完全解耦）
+            const storageWorker = async (workerId) => {
                 let workerStored = 0;
 
-                console.log(`💾 StorageWorker${storageWorkerId} 启动，负责: ${myQuarters.join(', ')}`);
+                console.log(`💾 StorageWorker${workerId} 启动（任务抢占模式）`);
 
-                while (!downloadComplete || hasDataInQueues(myQuarters)) {
-                    // 轮询我负责的季度队列
-                    for (const quarter of myQuarters) {
-                        const queue = partitionQueues[quarter];
+                while (!downloadComplete || hasTasksInQueues()) {
+                    // 🔥 从任务队列池中抢任务（哪个队列有任务就处理哪个）
+                    let taskFound = false;
 
-                        // 🚀 优化：一次性取出所有可用数据（最多MIN_BATCH_SIZE）
+                    for (const [partitionId, queue] of Object.entries(taskQueues)) {
+                        if (queue.length === 0) continue;
+
+                        // 🔥 一次性取出一批任务
                         const batchSize = Math.min(queue.length, MIN_BATCH_SIZE);
-                        if (batchSize === 0) continue;
+                        const batch = queue.splice(0, batchSize);
 
-                        const pendingBatch = queue.splice(0, batchSize);
+                        if (batch.length > 0) {
+                            taskFound = true;
 
-                        // 判断是否需要提交（数据足够多或下载完成）
-                        const shouldFlush = pendingBatch.length >= MIN_BATCH_SIZE ||
-                                           (downloadComplete && pendingBatch.length > 0);
-
-                        if (shouldFlush) {
                             try {
                                 const storeStart = performance.now();
-                                const tableName = cacheManager.getPartitionStoreName(quarter);
+                                const storeName = cacheManager.getPartitionStoreName(partitionId);
 
-                                // 🔥 关键：写入到季度分片表
-                                await cacheManager.storePartitionedBatch(
-                                    pendingBatch,
-                                    tableName,
-                                    true  // add模式
-                                );
+                                // 🔥 写入到年份+季度分区表
+                                await cacheManager.storePartitionedBatch(batch, storeName, true);
 
                                 const storeTime = performance.now() - storeStart;
-                                const throughput = pendingBatch.length / (storeTime / 1000);
+                                const throughput = batch.length / (storeTime / 1000);
 
-                                console.log(`  💾 Worker${storageWorkerId} → ${tableName}: ${pendingBatch.length.toLocaleString()} 条 (${storeTime.toFixed(0)}ms, ${throughput.toFixed(0)} 条/秒)`);
+                                console.log(`  💾 Worker${workerId} → ${partitionId}: ${batch.length.toLocaleString()} 条 (${storeTime.toFixed(0)}ms, ${throughput.toFixed(0)} 条/秒)`);
 
-                                workerStored += pendingBatch.length;
-                                totalLoaded += pendingBatch.length;
+                                workerStored += batch.length;
+                                totalLoaded += batch.length;
                                 completedShards++;
 
                                 // 更新进度
@@ -412,26 +400,29 @@ class DataPreloader {
                                     onProgress(progress, totalLoaded, totalLoaded);
                                 }
                             } catch (error) {
-                                console.error(`❌ Worker${storageWorkerId} 存储${quarter}失败:`, error);
+                                console.error(`❌ Worker${workerId} 存储${partitionId}失败:`, error);
                             }
-                        } else {
-                            // 数据不够，放回队列头部
-                            queue.unshift(...pendingBatch);
+
+                            // 成功处理一个任务后，跳出内层循环继续抢任务
+                            break;
                         }
                     }
 
-                    // 🚀 优化：减少等待时间，提高响应速度
-                    await new Promise(resolve => setTimeout(resolve, 1));
+                    if (!taskFound) {
+                        // 没有任务，等待一小段时间
+                        await new Promise(resolve => setTimeout(resolve, 10));
+                    }
                 }
-                console.log(`✅ StorageWorker${storageWorkerId} 完成，存储 ${workerStored.toLocaleString()} 条数据`);
+
+                console.log(`✅ StorageWorker${workerId} 完成，存储 ${workerStored.toLocaleString()} 条数据`);
             };
 
-            // 辅助函数：检查队列是否有数据
-            function hasDataInQueues(quarters) {
-                return quarters.some(q => partitionQueues[q].length > 0);
+            // 辅助函数：检查是否还有任务
+            function hasTasksInQueues() {
+                return Object.values(taskQueues).some(queue => queue.length > 0);
             }
 
-            // 🔥 v8：下载Worker（下载+智能路由）
+            // 🔥 v10：下载Worker（下载+直接路由到对应分区）
             const downloadWorker = async (workerId) => {
                 while (index < shards.length) {
                     const currentIndex = index++;
@@ -446,22 +437,13 @@ class DataPreloader {
                         if (records && records.length > 0) {
                             console.log(`  ✓ Worker${workerId} 下载+解析 ${shard.label}: ${records.length.toLocaleString()} 条 (${downloadTime.toFixed(0)}ms)`);
 
-                            // 🔥 阶段2：智能路由到季度队列
-                            const quarterStats = { Q1: 0, Q2: 0, Q3: 0, Q4: 0 };
+                            // 🔥 v10：直接路由到对应分区队列（不需要再次计算分区）
+                            const partitionId = shard.partitionId;
 
-                            for (const record of records) {
-                                const quarter = cacheManager.getPartitionByDate(record.TaskDate || record.start_time);
-                                partitionQueues[quarter].push(record);
-                                quarterStats[quarter]++;
-                            }
+                            // 将数据推送到对应的任务队列
+                            taskQueues[partitionId].push(...records);
 
-                            // 显示路由统计
-                            const routeInfo = Object.entries(quarterStats)
-                                .filter(([q, count]) => count > 0)
-                                .map(([q, count]) => `${q}:${count}`)
-                                .join(' ');
-
-                            console.log(`    📍 路由: ${routeInfo}`);
+                            console.log(`    📍 路由: ${partitionId} ← ${records.length.toLocaleString()} 条`);
 
                             // 增加下载完成计数
                             downloadedShards++;
@@ -550,40 +532,63 @@ class DataPreloader {
         }
     }
 
-    // 🔥 动态自适应分片生成器（根据时间跨度智能选择粒度）
+    // 🔥 v10：统一使用年份+季度分片（减少HTTP请求63%）
     generateAdaptiveShards(startDate, endDate) {
         const timeDiff = endDate - startDate;
         const daysDiff = timeDiff / (1000 * 60 * 60 * 24);
-        const monthsDiff = daysDiff / 30;
 
-        // 🎯 目标：每个分片包含 15K-40K 条数据（压缩后 500KB-2MB）
-        // 假设：平均每天 500-2000 条数据（根据实际情况调整）
+        // 🔥 v10：统一使用年份+季度分片策略
+        const shards = this.generateYearQuarterShards(startDate, endDate);
 
-        let shards;
-        let strategy;
+        console.log(`💡 数据范围 ${daysDiff.toFixed(0)} 天，v10优化：年份+季度分片，生成 ${shards.length} 个分片`);
+        console.log(`📊 预估：每分片约 ${Math.round(daysDiff * 1000 / shards.length).toLocaleString()} 条数据（假设日均1000条）`);
+        console.log(`🚀 HTTP请求优化：${shards.length}个季度请求（相比v9的11个月度请求，减少约${Math.round((1 - shards.length/11) * 100)}%）`);
 
-        if (monthsDiff <= 3) {
-            // 3个月内：按周分片（12-15个分片）
-            shards = this.generateWeeklyShards(startDate, endDate);
-            strategy = '按周分片';
-        } else if (monthsDiff <= 12) {
-            // 🔥 优化：1年内改用按月分片（减少HTTP请求50%，提升性能40%）
-            // 原策略：按2周分片 → 23个分片 → 27.8秒
-            // 新策略：按月分片 → 10-12个分片 → 预计15-18秒
-            shards = this.generateMonthlyShards(startDate, endDate);
-            strategy = '按月分片';
-        } else if (monthsDiff <= 24) {
-            // 2年内：按2个月分片
-            shards = this.generateBiMonthlyShards(startDate, endDate);
-            strategy = '按2月分片';
-        } else {
-            // 超过2年：按3个月分片
-            shards = this.generateQuarterlyShards(startDate, endDate);
-            strategy = '按季度分片';
+        return shards;
+    }
+
+    // 🔥 v10：生成年份+季度分片（YYYY_Q# 格式）
+    generateYearQuarterShards(startDate, endDate) {
+        const shards = [];
+        const current = new Date(startDate);
+        current.setHours(0, 0, 0, 0);
+
+        while (current < endDate) {
+            const year = current.getFullYear();
+            const month = current.getMonth() + 1; // 1-12
+            const quarter = Math.ceil(month / 3); // 1, 2, 3, 4
+
+            // 计算当前季度的开始和结束日期
+            const quarterStartMonth = (quarter - 1) * 3 + 1; // 1, 4, 7, 10
+            const quarterEndMonth = quarter * 3; // 3, 6, 9, 12
+
+            const shardStart = new Date(year, quarterStartMonth - 1, 1); // 季度第一天
+            const shardEnd = new Date(year, quarterEndMonth, 0, 23, 59, 59, 999); // 季度最后一天
+
+            // 确保不超过endDate
+            if (shardEnd > endDate) {
+                shardEnd.setTime(endDate.getTime());
+            }
+
+            // 确保不早于startDate
+            if (shardStart < startDate) {
+                shardStart.setTime(startDate.getTime());
+            }
+
+            const partitionId = `${year}_Q${quarter}`;
+
+            shards.push({
+                partitionId: partitionId,
+                start: shardStart.toISOString(),
+                end: shardEnd.toISOString(),
+                label: `${year}年Q${quarter}`
+            });
+
+            // 移动到下一个季度
+            current.setMonth(current.getMonth() + 3);
         }
 
-        console.log(`💡 数据范围 ${daysDiff.toFixed(0)} 天，采用${strategy}，生成 ${shards.length} 个分片`);
-        console.log(`📊 预估：每分片约 ${Math.round(daysDiff * 1000 / shards.length).toLocaleString()} 条数据（假设日均1000条）`);
+        console.log(`📊 生成年份+季度分片:`, shards.map(s => s.partitionId).join(', '));
 
         return shards;
     }
