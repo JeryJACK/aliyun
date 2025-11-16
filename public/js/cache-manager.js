@@ -1482,6 +1482,11 @@ class CacheManager {
             const storeNames = Object.values(this.partitions).map(p => p.storeName);
             const promises = storeNames.map(storeName => {
                 return new Promise((resolve, reject) => {
+                    if (!this.db.objectStoreNames.contains(storeName)) {
+                        resolve([]);
+                        return;
+                    }
+
                     const transaction = this.db.transaction([storeName], 'readonly');
                     const store = transaction.objectStore(storeName);
                     const request = store.getAll();

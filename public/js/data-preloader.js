@@ -641,7 +641,7 @@ class DataPreloader {
         if (shardCount <= 2) {
             return shardCount; // 分片很少，全并发
         } else if (shardCount <= 8) {
-            return 4; // 中等分片数，4并发（平衡）
+            return 6; // ⚡ v14优化：6个下载Worker，充分利用HTTP/2多路复用（实测：下载是瓶颈，不是存储）
         } else if (shardCount <= 20) {
             return 6; // 较多分片，6并发（充分利用）
         } else {
