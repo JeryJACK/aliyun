@@ -280,221 +280,240 @@ class DataPreloader {
         }
     }
 
-    // 🚀 【超高性能】流水线并行加载（边下载边解析边存储）+ 智能分片
-    // 🔥 Phase 2: 三层流水线并行加载（方案B）
+    // 🚀 【超高性能】流水线并行加载（边下载边解析边存储）
     async parallelShardedLoad(onProgress) {
         const perfStart = performance.now();
-        console.log('🚀 启动三层流水线并行加载（方案B）...');
+        console.log('🚀 启动流水线并行加载（边下边存）...');
 
         try {
-            // 1. 获取数据统计信息
-            console.log('📡 正在查询数据统计信息...');
-            const statsUrl = getApiUrl('stats');
-            const response = await fetch(statsUrl);
-            const data = await response.json();
+            // 1. 🚀 使用stats API获取完整统计信息（1个请求，极速）
+            let startDate, endDate, totalRecords;
 
-            if (!data.success || !data.data) {
-                throw new Error('统计数据格式错误');
+            try {
+                console.log('📡 正在查询数据统计信息...');
+                const queryStart = performance.now();
+
+                const statsUrl = getApiUrl('stats');
+                const response = await fetch(statsUrl);
+                const data = await response.json();
+
+                const queryTime = performance.now() - queryStart;
+
+                if (data.success && data.data) {
+                    const stats = data.data;
+                    totalRecords = stats.total_records;
+                    startDate = new Date(stats.earliest_time);
+                    endDate = new Date(stats.latest_time);
+
+                    const daysDiff = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
+                    console.log(`✅ 数据统计: ${totalRecords.toLocaleString()} 条记录`);
+                    console.log(`✅ 时间范围: ${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()} (${daysDiff}天)`);
+
+                    // 🚀 显示缓存状态
+                    const cacheStatus = stats.cached ? '缓存' : 'SQL聚合查询';
+                    const speedIcon = stats.cached ? '⚡⚡' : '⚡';
+                    console.log(`${speedIcon} 统计查询耗时: ${queryTime.toFixed(0)}ms (${cacheStatus})`);
+                } else {
+                    throw new Error('统计数据格式错误');
+                }
+            } catch (error) {
+                console.warn('⚠️ 查询统计失败，使用默认2年:', error.message);
+                endDate = new Date();
+                startDate = new Date();
+                startDate.setFullYear(startDate.getFullYear() - 2);
+                console.log(`📊 降级范围: ${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()} (2年)`);
             }
 
-            const stats = data.data;
-            const totalRecords = stats.total_records;
-            const startDate = new Date(stats.earliest_time);
-            const endDate = new Date(stats.latest_time);
+            // 2. 🔥 动态分片策略：根据时间跨度估算数据量，智能选择分片粒度
+            const shards = this.generateAdaptiveShards(startDate, endDate);
+            console.log(`📊 生成 ${shards.length} 个分片`);
 
-            console.log(`✅ 数据范围: ${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()}`);
-            console.log(`✅ 总记录数: ${totalRecords.toLocaleString()} 条`);
-
-            // 2. 🔥 Phase 2: 生成季度分片（Year_Quarter格式）
-            const shards = this.generateYearQuarterShards(startDate, endDate);
-
-            // 3. 清空旧数据
-            await cacheManager.clearAllData();
-
-            // 4. 🔥 Phase 2: 按需创建分区表
-            for (const shard of shards) {
-                await cacheManager.ensurePartition(shard.partitionId);
-            }
-
-            // 5. 🔥 三层队列
-            const rawQueues = {}; // 原始数据队列
-            const parsedQueues = {}; // 已解析数据队列
-
-            for (const shard of shards) {
-                rawQueues[shard.partitionId] = [];
-                parsedQueues[shard.partitionId] = [];
-            }
-
+            // 3. 🔥 动态并发数：根据分片数量和浏览器限制自动调整
+            const CONCURRENT_LIMIT = this.calculateOptimalConcurrency(shards.length);
             let totalLoaded = 0;
+            let completedShards = 0;
+            let downloadedShards = 0; // 🆕 跟踪下载完成的分片数
             let index = 0;
 
-            const DOWNLOAD_WORKERS = 6;
-            const PARSE_WORKERS = 3;
-            const STORAGE_WORKERS = 3;
-            const OPTIMAL_BATCH_SIZE = 5000;
+            // 先清空现有数据
+            await cacheManager.clearAllData();
 
-            let downloadComplete = false;
-            let parseComplete = false;
+            console.log(`📥 启动 ${CONCURRENT_LIMIT} 个并发worker处理 ${shards.length} 个分片`);
+            console.log(`⚡ 并发策略：${CONCURRENT_LIMIT} workers × ${Math.ceil(shards.length / CONCURRENT_LIMIT)} 轮 = 最大化吞吐量`);
 
-            // 🔥 第1层：下载Worker
-            const downloadWorker = async (workerId) => {
-                while (index < shards.length) {
-                    const shard = shards[index++];
+            // 🔥 流水线并行 + 超大批次 = 最优方案
+            const storageQueue = [];
+            let downloadComplete = false; // ✅ 标记下载是否完成
+            const STORAGE_WORKERS = 3; // 🔥 3个存储Worker并行
+            const MIN_BATCH_SIZE = 50000; // 🚀 关键优化：超大批次减少事务数量（151K÷50K=3个事务，节省24秒）
 
-                    try {
-                        const downloadStart = performance.now();
-                        const rawRecords = await this.fetchShardData(shard);
-                        const downloadTime = performance.now() - downloadStart;
+            // 存储Worker：多Worker并行存储（IndexedDB内部处理并发）
+            const storageWorker = async (storageWorkerId) => {
+                let workerStored = 0;
+                let pendingBatch = []; // 🚀 方案3：待合并的小批次缓冲区
+                let pendingShards = []; // 记录合并的分片
 
-                        if (rawRecords && rawRecords.length > 0) {
-                            console.log(`  📥 Download${workerId} → ${shard.label}: ${rawRecords.length.toLocaleString()} 条 (${downloadTime.toFixed(0)}ms)`);
-
-                            // 推入原始数据队列
-                            rawQueues[shard.partitionId].push(...rawRecords);
-                        }
-                    } catch (error) {
-                        console.error(`❌ Download${workerId} 下载失败:`, error);
+                while (!downloadComplete || storageQueue.length > 0 || pendingBatch.length > 0) {
+                    if (storageQueue.length === 0 && pendingBatch.length < MIN_BATCH_SIZE && !downloadComplete) {
+                        await new Promise(resolve => setTimeout(resolve, 10));
+                        continue;
                     }
 
+                    // 🚀 方案3：从队列中取出数据，如果是小批次则累积
+                    if (storageQueue.length > 0) {
+                        const { records, shard, workerId, downloadTime } = storageQueue.shift();
+                        if (records && records.length > 0) {
+                            pendingBatch.push(...records);
+                            pendingShards.push({ shard, downloadTime, count: records.length });
+                            // ⚠️ 不在这里增加completedShards，应该在实际存储完成后增加
+                        }
+                    }
+
+                    // 🚀 方案3：判断是否需要提交批次
+                    const shouldFlush = pendingBatch.length >= MIN_BATCH_SIZE ||
+                                       (downloadComplete && storageQueue.length === 0);
+
+                    if (shouldFlush && pendingBatch.length > 0) {
+                        try {
+                            const storeStart = performance.now();
+                            // 🚀 全量加载使用add模式（性能提升50%）
+                            await cacheManager.storeBatch(pendingBatch, {}, true);
+                            const storeTime = performance.now() - storeStart;
+
+                            // 计算合并的分片信息
+                            const mergedCount = pendingShards.length;
+                            const totalRecords = pendingBatch.length;
+                            const avgDownloadTime = pendingShards.reduce((sum, s) => sum + s.downloadTime, 0) / mergedCount;
+
+                            if (mergedCount > 1) {
+                                console.log(`  💾 StorageWorker${storageWorkerId} 合并存储 ${mergedCount} 个分片: ${totalRecords.toLocaleString()} 条 (平均下载${avgDownloadTime.toFixed(0)}ms + 存储${storeTime.toFixed(0)}ms)`);
+                                console.log(`     📦 合并明细: ${pendingShards.map(s => `${s.shard.label}(${s.count})`).join(', ')}`);
+                            } else {
+                                const s = pendingShards[0];
+                                console.log(`  💾 StorageWorker${storageWorkerId} 存储 ${s.shard.label}: ${totalRecords.toLocaleString()} 条 (下载${s.downloadTime.toFixed(0)}ms + 存储${storeTime.toFixed(0)}ms)`);
+                            }
+
+                            workerStored += totalRecords;
+                            totalLoaded += totalRecords;
+
+                            // 🆕 在存储完成后才增加completedShards
+                            completedShards += mergedCount;
+
+                            // 🆕 改进的进度计算：下载进度(0-30%) + 存储进度(30-100%)
+                            const downloadProgress = Math.min(30, Math.round((downloadedShards / shards.length) * 30));
+                            const storageProgress = Math.round((completedShards / shards.length) * 70);
+                            const progress = downloadProgress + storageProgress;
+
+                            if (onProgress) {
+                                onProgress(progress, totalLoaded, totalLoaded);
+                            }
+
+                            // 清空缓冲区
+                            pendingBatch = [];
+                            pendingShards = [];
+                        } catch (error) {
+                            console.error(`❌ StorageWorker${storageWorkerId} 存储批次失败:`, error);
+                            pendingBatch = [];
+                            pendingShards = [];
+                        }
+                    }
+                }
+                console.log(`✅ StorageWorker${storageWorkerId} 完成，存储 ${workerStored.toLocaleString()} 条数据`);
+            };
+
+            // 下载Worker：专门负责下载+解析，完成后放入存储队列
+            const downloadWorker = async (workerId) => {
+                while (index < shards.length) {
+                    const currentIndex = index++;
+                    const shard = shards[currentIndex];
+
+                    try {
+                        // 阶段1：下载+解析（浏览器自动gzip解压+JSON解析）
+                        const downloadStart = performance.now();
+                        const records = await this.fetchShardData(shard);
+                        const downloadTime = performance.now() - downloadStart;
+
+                        if (records && records.length > 0) {
+                            console.log(`  ✓ Worker${workerId} 下载+解析 ${shard.label}: ${records.length.toLocaleString()} 条 (${downloadTime.toFixed(0)}ms)`);
+
+                            // 阶段2：放入存储队列（不阻塞）
+                            storageQueue.push({ records, shard, workerId, downloadTime });
+
+                            // 🆕 增加下载完成计数
+                            downloadedShards++;
+                        }
+                    } catch (error) {
+                        console.error(`❌ Worker${workerId} 下载分片 ${shard.label} 失败:`, error);
+                    }
+
+                    // 让出主线程
                     await new Promise(resolve => setTimeout(resolve, 0));
                 }
             };
 
-            // 🔥 第2层：解析Worker（独立解析层）
-            const parseWorker = async (workerId) => {
-                console.log(`🔧 ParseWorker${workerId} 启动`);
+            // 🔥 启动多个存储Workers（并行存储）
+            const storageWorkers = Array.from(
+                { length: STORAGE_WORKERS },
+                (_, i) => storageWorker(i + 1)
+            );
+            console.log(`💾 启动 ${STORAGE_WORKERS} 个存储Worker并行处理`);
 
-                while (!downloadComplete || hasRawData()) {
-                    let taskFound = false;
+            // 启动下载Workers
+            const downloadWorkers = Array.from(
+                { length: Math.min(CONCURRENT_LIMIT, shards.length) },
+                (_, i) => downloadWorker(i + 1)
+            );
 
-                    for (const [partitionId, rawQueue] of Object.entries(rawQueues)) {
-                        if (rawQueue.length === 0) continue;
-
-                        const batchSize = Math.min(rawQueue.length, OPTIMAL_BATCH_SIZE);
-                        const rawBatch = rawQueue.splice(0, batchSize);
-
-                        if (rawBatch.length > 0) {
-                            taskFound = true;
-
-                            const parseStart = performance.now();
-                            const parsedBatch = this.parseRecords(rawBatch);
-                            const parseTime = performance.now() - parseStart;
-                            const throughput = parsedBatch.length / (parseTime / 1000);
-
-                            console.log(`  🔧 Parser${workerId} → ${partitionId}: ${parsedBatch.length.toLocaleString()} 条 (${parseTime.toFixed(0)}ms, ${throughput.toFixed(0)} 条/秒)`);
-
-                            parsedQueues[partitionId].push(...parsedBatch);
-
-                            if (rawQueue.length > 0) continue;
-                        }
-                    }
-
-                    if (!taskFound) {
-                        await new Promise(resolve => setTimeout(resolve, 10));
-                    }
-                }
-
-                console.log(`✅ ParseWorker${workerId} 完成`);
-            };
-
-            // 🔥 第3层：存储Worker（带分区锁）
-            const storageWorker = async (workerId) => {
-                let workerStored = 0;
-                console.log(`💾 StorageWorker${workerId} 启动（分区锁定模式）`);
-
-                while (!parseComplete || hasParsedData()) {
-                    let taskFound = false;
-
-                    for (const [partitionId, parsedQueue] of Object.entries(parsedQueues)) {
-                        if (parsedQueue.length === 0) continue;
-
-                        // 🔥 Phase 1: 尝试锁定分区
-                        if (!cacheManager.tryLockPartition(partitionId)) {
-                            continue;
-                        }
-
-                        try {
-                            const batchSize = Math.min(parsedQueue.length, OPTIMAL_BATCH_SIZE);
-                            const batch = parsedQueue.splice(0, batchSize);
-
-                            if (batch.length > 0) {
-                                taskFound = true;
-
-                                const storeStart = performance.now();
-                                const storeName = cacheManager.getPartitionStoreName(partitionId);
-
-                                await cacheManager.storePartitionedBatch(batch, storeName, true);
-
-                                const storeTime = performance.now() - storeStart;
-                                const throughput = batch.length / (storeTime / 1000);
-
-                                console.log(`  💾 Storage${workerId} → ${partitionId}: ${batch.length.toLocaleString()} 条 (${storeTime.toFixed(0)}ms, ${throughput.toFixed(0)} 条/秒)`);
-
-                                workerStored += batch.length;
-                                totalLoaded += batch.length;
-
-                                const progress = Math.round((totalLoaded / totalRecords) * 100);
-                                if (onProgress) {
-                                    onProgress(progress, totalLoaded, totalRecords);
-                                }
-
-                                if (parsedQueue.length > 0) continue;
-                            }
-                        } catch (error) {
-                            console.error(`❌ Storage${workerId} 存储失败:`, error);
-                        } finally {
-                            cacheManager.unlockPartition(partitionId);
-                        }
-                    }
-
-                    if (!taskFound) {
-                        await new Promise(resolve => setTimeout(resolve, 10));
-                    }
-                }
-
-                console.log(`✅ StorageWorker${workerId} 完成，存储 ${workerStored.toLocaleString()} 条数据`);
-            };
-
-            // 辅助函数
-            function hasRawData() {
-                return Object.values(rawQueues).some(queue => queue.length > 0);
-            }
-
-            function hasParsedData() {
-                return Object.values(parsedQueues).some(queue => queue.length > 0);
-            }
-
-            // 启动三层Worker池
-            const downloadWorkers = Array.from({ length: DOWNLOAD_WORKERS }, (_, i) => downloadWorker(i + 1));
-            const parseWorkers = Array.from({ length: PARSE_WORKERS }, (_, i) => parseWorker(i + 1));
-            const storageWorkers = Array.from({ length: STORAGE_WORKERS }, (_, i) => storageWorker(i + 1));
-
-            // 等待下载完成
+            // 等待所有下载完成
             await Promise.all(downloadWorkers);
-            console.log('✅ 所有下载完成，等待解析...');
+            console.log(`✅ 所有下载Worker完成，等待 ${STORAGE_WORKERS} 个存储Worker清空队列...`);
+
+            // ✅ 标记下载完成，存储Worker将处理完剩余队列后退出
             downloadComplete = true;
 
-            // 等待解析完成
-            await Promise.all(parseWorkers);
-            console.log('✅ 所有解析完成，等待存储...');
-            parseComplete = true;
-
-            // 等待存储完成
+            // 等待所有存储Worker完成
             await Promise.all(storageWorkers);
 
-            // 保存元数据
-            const timeRange = await cacheManager.getTimeRangeQuick();
-            await cacheManager.saveMetadataAndShardIndex(totalLoaded, {}, timeRange.minDate, timeRange.maxDate);
+            // 4. 保存元数据和分片索引
+            console.log('📊 保存元数据和索引...');
+
+            // 🚀 优化：正确获取时间范围并保存元数据
+            let minDate, maxDate;
+            try {
+                const timeRange = await cacheManager.getTimeRangeQuick();
+                minDate = timeRange.minDate;
+                maxDate = timeRange.maxDate;
+                console.log(`📅 数据时间范围: ${minDate?.toLocaleDateString()} - ${maxDate?.toLocaleDateString()}`);
+            } catch (error) {
+                console.warn('⚠️ 获取时间范围失败:', error);
+            }
+
+            await cacheManager.saveMetadataAndShardIndex(totalLoaded, {}, minDate, maxDate);
 
             const perfTime = performance.now() - perfStart;
             const throughput = (totalLoaded / (perfTime / 1000)).toFixed(0);
 
-            console.log(`✅ 三层流水线加载完成: ${totalLoaded.toLocaleString()} 条 (${(perfTime / 1000).toFixed(1)}秒, ${throughput} 条/秒)`);
+            console.log(`✅ 流水线并行加载完成: ${totalLoaded.toLocaleString()} 条 (${(perfTime / 1000).toFixed(1)}秒, ${throughput} 条/秒)`);
+            console.log(`⚡ 性能提升：下载和存储完全并行，无等待时间`);
+            console.log(`💾 元数据已保存: totalCount=${totalLoaded}, minDate=${minDate?.toISOString()}, maxDate=${maxDate?.toISOString()}`);
+
+            // 🚀 性能分析
+            console.log(`📊 性能对比分析:`);
+            console.log(`   - 实际吞吐量: ${throughput} 条/秒`);
+            console.log(`   - 优化目标: 12,600 条/秒`);
+            console.log(`   - 达成率: ${((throughput / 12600) * 100).toFixed(1)}%`);
+            if (throughput < 8000) {
+                console.warn(`⚠️ 性能未达预期，可能瓶颈:`);
+                console.warn(`   1. 网络带宽限制（下载慢）`);
+                console.warn(`   2. CPU性能限制（预处理慢）`);
+                console.warn(`   3. IndexedDB写入限制（磁盘IO慢）`);
+                console.warn(`   4. 索引优化未生效（检查数据库版本）`);
+            }
 
             return { success: true, totalCount: totalLoaded };
 
         } catch (error) {
-            console.error('❌ 并行加载失败:', error);
+            console.error('❌ 流水线并行加载失败:', error);
             throw error;
         }
     }

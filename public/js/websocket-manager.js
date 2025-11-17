@@ -56,28 +56,24 @@ class WebSocketSyncManager {
         }
     }
 
-    // 🆕 检查并执行补同步
-    async checkAndPerformCatchup() {
+    // 🆕 检查并执行补同步（基于changeLogId + start_time智能过滤）
+    async checkAndPerformCatchup(onProgress) {
         try {
-            const leaveTime = localStorage.getItem('satellitePageLeaveTime');
-            if (!leaveTime) {
-                console.log('ℹ️ 无页面离开时间记录');
+            // 获取lastChangeLogId
+            const lastChangeLogId = await this.cacheManager.getLastChangeLogId();
+
+            console.log(`🔍 当前lastChangeLogId: ${lastChangeLogId}`);
+
+            // 🔥 首次加载（lastChangeLogId=0）：跳过补同步，让 data-preloader 处理全量加载
+            if (lastChangeLogId === 0) {
+                console.log('💡 首次加载检测，跳过补同步（交由 data-preloader 处理流水线并行加载）');
                 return { hasNewData: false, count: 0 };
             }
 
-            const leaveTimestamp = parseInt(leaveTime);
-            const now = Date.now();
-            const awayDuration = now - leaveTimestamp;
+            // 增量补同步：只获取最近30天的变更数据
+            const result = await this.performCatchupSyncByChangeLogId(lastChangeLogId, onProgress);
+            return result || { hasNewData: false, count: 0 };
 
-            // 如果离开超过30秒，触发补同步
-            if (awayDuration > 30000) {
-                console.log(`🔄 页面离开 ${Math.round(awayDuration / 1000)} 秒，触发补同步`);
-                const result = await this.performCatchupSync();
-                return result || { hasNewData: false, count: 0 };
-            } else {
-                console.log(`ℹ️ 页面离开时间短 (${Math.round(awayDuration / 1000)}秒)，无需补同步`);
-                return { hasNewData: false, count: 0 };
-            }
         } catch (error) {
             console.error('❌ 检查补同步失败:', error);
             return { hasNewData: false, count: 0 };
@@ -148,8 +144,9 @@ class WebSocketSyncManager {
         // 启动心跳检测
         this.startHeartbeat();
 
-        // 执行断线补同步（先检查是否需要）
-        await this.checkAndPerformCatchup();
+        // 🆕 WebSocket 连接成功后，不需要再次执行补同步
+        // 因为在页面初始化阶段（main-init.js）已经执行过一次完整的补同步
+        console.log('💡 WebSocket 连接成功，后续数据更新将通过实时推送获取');
     }
 
     // 接收消息处理
@@ -159,11 +156,6 @@ class WebSocketSyncManager {
             console.log('📨 收到 WebSocket 消息:', message);
 
             switch (message.type) {
-                case 'welcome':
-                    // WebSocket连接欢迎消息
-                    console.log('💡 WebSocket 连接成功，后续数据更新将通过实时推送获取');
-                    break;
-
                 case 'heartbeat':
                     // 心跳响应
                     this.missedHeartbeats = 0;
@@ -302,53 +294,395 @@ class WebSocketSyncManager {
         }
     }
 
-    // 断线补同步（获取断线期间的变更）
-    async performCatchupSync() {
+    // 🆕 基于changeLogId的补同步（更可靠）+ start_time智能过滤
+    async performCatchupSyncByChangeLogId(lastChangeLogId, onProgress) {
+        const perfStart = performance.now();
+
         try {
-            const lastSyncTime = await this.cacheManager.getLastSyncTime();
-            console.log(`🔄 开始断线补同步，最后同步时间: ${new Date(lastSyncTime).toLocaleString()}`);
+            console.log(`🔄 开始基于ChangeLog的补同步，lastChangeLogId: ${lastChangeLogId}`);
 
-            // 调用后端补同步 API
-            const catchupUrl = CONFIG.isGitHubPages
-                ? CONFIG.API_ENDPOINTS.catchup || `${CONFIG.API_ENDPOINTS.records}/changes`
-                : `${CONFIG.API_BASE_URL}/satellite/changes`;
+            // 构建API URL
+            const apiUrl = CONFIG.isGitHubPages
+                ? CONFIG.API_ENDPOINTS.records
+                : `${CONFIG.API_BASE_URL}/satellite`;
 
-            const response = await fetch(`${catchupUrl}?since=${lastSyncTime}`, {
+            // 🔥 增量补同步：只获取最近30天的数据
+            const recentDays = 30;
+            const limit = 10000;  // 一次性获取最多10000条
+            const url = `${apiUrl}?sinceChangeLogId=${lastChangeLogId}&recentDays=${recentDays}&limit=${limit}`;
+
+            console.log(`📡 请求URL: ${url}`);
+
+            const response = await fetch(url, {
                 method: 'GET',
-                headers: {
-                    'Content-Type': 'application/json'
-                }
+                headers: { 'Content-Type': 'application/json' }
             });
 
             if (!response.ok) {
                 console.warn(`⚠️ 补同步请求失败 (${response.status}): ${response.statusText}`);
-                console.warn('💡 提示：补同步功能可选，不影响页面正常使用');
                 return { hasNewData: false, count: 0 };
             }
 
             const result = await response.json();
-            if (result.success && result.data && result.data.changes) {
-                const changes = result.data.changes;
 
-                if (changes.length > 0) {
-                    console.log(`📦 收到 ${changes.length} 条补同步变更`);
-
-                    // 批量更新
-                    await this.cacheManager.batchUpdateRecords(changes);
-
-                    // 🆕 返回有新数据的标志
-                    return { hasNewData: true, count: changes.length };
-                } else {
-                    console.log('✅ 无需补同步，数据已是最新');
-                    return { hasNewData: false, count: 0 };
-                }
+            if (!result.success || !result.data) {
+                console.warn('⚠️ 补同步响应格式错误');
+                return { hasNewData: false, count: 0 };
             }
 
+            const { records, maxChangeLogId, filteredCount } = result.data;
+
+            if (records.length === 0) {
+                console.log('✅ 无需补同步，数据已是最新');
+                return { hasNewData: false, count: 0 };
+            }
+
+            console.log(`📦 收到 ${records.length} 条补同步数据 (过滤掉 ${filteredCount || 0} 条旧数据)`);
+
+            // 🔥 数据转换：将 plan_id 映射为 id（IndexedDB需要）
+            const convertedRecords = records.map(record => ({
+                ...record,
+                id: record.plan_id  // 添加id字段
+            }));
+
+            // 批量更新到IndexedDB
+            await this.cacheManager.batchUpdateRecords(convertedRecords);
+
+            // 🔥 保存maxChangeLogId
+            await this.cacheManager.saveLastChangeLogId(maxChangeLogId);
+
+            const perfTime = performance.now() - perfStart;
+            console.log(`✅ 基于ChangeLog的补同步完成: ${records.length} 条数据 (${(perfTime / 1000).toFixed(1)}秒), maxChangeLogId=${maxChangeLogId}`);
+
+            return {
+                hasNewData: true,
+                count: records.length,
+                maxChangeLogId: maxChangeLogId
+            };
+
+        } catch (error) {
+            console.error('❌ 基于ChangeLog的补同步失败:', error);
             return { hasNewData: false, count: 0 };
+        }
+    }
+
+    // 断线补同步（获取断线期间的变更）- 🔥 使用分片并行加载（兼容旧版本）
+    async performCatchupSync(onProgress) {
+        const perfStart = performance.now();
+
+        try {
+            const lastSyncTime = await this.cacheManager.getLastSyncTime();
+            console.log(`🔄 开始断线补同步，最后同步时间: ${new Date(lastSyncTime).toLocaleString()}`);
+
+            // 计算时间范围
+            const startDate = new Date(lastSyncTime);
+            const endDate = new Date();
+            const timeDiff = endDate - startDate;
+            const hoursDiff = timeDiff / (1000 * 60 * 60);
+            const daysDiff = timeDiff / (1000 * 60 * 60 * 24);
+
+            console.log(`📊 补同步时间范围: ${startDate.toLocaleString()} → ${endDate.toLocaleString()} (${daysDiff.toFixed(1)}天)`);
+
+            // 如果时间差小于1分钟，无需补同步
+            if (timeDiff < 60000) {
+                console.log('✅ 数据已是最新，无需补同步');
+                return { hasNewData: false, count: 0 };
+            }
+
+            // 🔥 智能分片策略（与 data-preloader 保持一致）
+            let shards;
+            if (hoursDiff <= 12) {
+                // ✅ 优化：12小时内直接一次请求（减少HTTP请求数量）
+                shards = [{
+                    start: startDate.toISOString(),
+                    end: endDate.toISOString(),
+                    label: `${Math.round(hoursDiff * 60)}分钟`
+                }];
+                console.log(`📊 时间范围 ${hoursDiff.toFixed(1)} 小时，使用单次请求（避免过度分片）`);
+            } else if (hoursDiff <= 24) {
+                // 24小时内：按6小时分片（最多4个分片）
+                shards = this.generateHourlyShards(startDate, endDate, 6);
+            } else if (daysDiff <= 7) {
+                // 7天内：按12小时分片（减少请求数量）
+                shards = this.generateHourlyShards(startDate, endDate, 12);
+            } else if (daysDiff <= 30) {
+                // 30天内：按天分片
+                shards = this.generateDailyShards(startDate, endDate);
+            } else if (daysDiff <= 90) {
+                // 90天内：按周分片
+                shards = this.generateWeeklyShards(startDate, endDate);
+            } else {
+                // 超过90天：按月分片
+                shards = this.generateMonthlyShards(startDate, endDate);
+            }
+
+            console.log(`📊 生成 ${shards.length} 个补同步分片（并行加载）`);
+
+            if (shards.length === 0) {
+                return { hasNewData: false, count: 0 };
+            }
+
+            // 🔥 并行加载策略（与全量加载相同）
+            const CONCURRENT_LIMIT = this.calculateOptimalConcurrency(shards.length);
+            let totalLoaded = 0;
+            let completedShards = 0;
+            let index = 0;
+
+            const storageQueue = [];
+            let downloadComplete = false;
+            const STORAGE_WORKERS = 3;
+
+            // 存储Worker：多Worker并行存储
+            const storageWorker = async (workerId) => {
+                while (!downloadComplete || storageQueue.length > 0) {
+                    if (storageQueue.length === 0) {
+                        await new Promise(resolve => setTimeout(resolve, 10));
+                        continue;
+                    }
+
+                    const { records, shard, downloadTime } = storageQueue.shift();
+                    if (!records) continue;
+
+                    try {
+                        const storeStart = performance.now();
+                        await this.cacheManager.appendData(records);
+                        const storeTime = performance.now() - storeStart;
+
+                        console.log(`  💾 StorageWorker${workerId} 追加 ${shard.label}: ${records.length.toLocaleString()} 条 (下载${downloadTime.toFixed(0)}ms + 存储${storeTime.toFixed(0)}ms)`);
+
+                        totalLoaded += records.length;
+                        completedShards++;
+
+                        const progress = Math.round((completedShards / shards.length) * 100);
+                        if (onProgress) {
+                            onProgress(progress, totalLoaded, totalLoaded);
+                        }
+                    } catch (error) {
+                        console.error(`❌ StorageWorker${workerId} 存储分片 ${shard.label} 失败:`, error);
+                    }
+                }
+            };
+
+            // 下载Worker：并发下载+解析
+            const downloadWorker = async (workerId) => {
+                while (index < shards.length) {
+                    const shard = shards[index++];
+
+                    try {
+                        const downloadStart = performance.now();
+                        const records = await this.fetchShardData(shard);
+                        const downloadTime = performance.now() - downloadStart;
+
+                        if (records && records.length > 0) {
+                            console.log(`  ✓ Worker${workerId} 下载+解析 ${shard.label}: ${records.length.toLocaleString()} 条 (${downloadTime.toFixed(0)}ms)`);
+                            storageQueue.push({ records, shard, downloadTime });
+                        }
+                    } catch (error) {
+                        console.error(`❌ 补同步分片 ${shard.label} 失败:`, error);
+                    }
+
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }
+            };
+
+            // 🔥 启动多个存储Workers（并行存储）
+            const storageWorkers = Array.from(
+                { length: STORAGE_WORKERS },
+                (_, i) => storageWorker(i + 1)
+            );
+
+            // 启动下载Workers
+            const downloadWorkers = Array.from(
+                { length: Math.min(CONCURRENT_LIMIT, shards.length) },
+                (_, i) => downloadWorker(i + 1)
+            );
+
+            // 等待所有下载完成
+            await Promise.all(downloadWorkers);
+            console.log(`✅ 补同步下载完成，等待 ${STORAGE_WORKERS} 个存储Worker清空队列...`);
+
+            // 标记下载完成
+            downloadComplete = true;
+
+            // 等待所有存储Worker完成
+            await Promise.all(storageWorkers);
+
+            const perfTime = performance.now() - perfStart;
+            console.log(`✅ 补同步完成: ${totalLoaded.toLocaleString()} 条新增数据 (${(perfTime / 1000).toFixed(1)}秒)`);
+
+            return { hasNewData: totalLoaded > 0, count: totalLoaded };
 
         } catch (error) {
             console.error('❌ 断线补同步失败:', error);
+            console.error('💡 错误详情:', error.message);
+            console.warn('💡 补同步失败不影响页面使用，数据将依赖增量并发加载');
             return { hasNewData: false, count: 0 };
+        }
+    }
+
+    // 🆕 辅助方法：生成按小时分片
+    generateHourlyShards(startDate, endDate, hoursPerShard = 3) {
+        const shards = [];
+        const current = new Date(startDate);
+
+        while (current < endDate) {
+            const shardStart = new Date(current);
+            const shardEnd = new Date(current);
+            shardEnd.setHours(shardEnd.getHours() + hoursPerShard);
+
+            if (shardEnd > endDate) {
+                shardEnd.setTime(endDate.getTime());
+            }
+
+            const hours = Math.round((shardEnd - shardStart) / (1000 * 60 * 60));
+            shards.push({
+                start: shardStart.toISOString(),
+                end: shardEnd.toISOString(),
+                label: `${shardStart.getMonth() + 1}/${shardStart.getDate()} ${shardStart.getHours()}:00 (${hours}h)`
+            });
+
+            current.setHours(current.getHours() + hoursPerShard);
+        }
+
+        return shards;
+    }
+
+    // 🆕 辅助方法：生成按天分片
+    generateDailyShards(startDate, endDate) {
+        const shards = [];
+        const current = new Date(startDate);
+        current.setHours(0, 0, 0, 0);
+
+        while (current < endDate) {
+            const shardStart = new Date(current);
+            const shardEnd = new Date(current);
+            shardEnd.setDate(shardEnd.getDate() + 1);
+
+            if (shardEnd > endDate) {
+                shardEnd.setTime(endDate.getTime());
+            }
+
+            shards.push({
+                start: shardStart.toISOString(),
+                end: shardEnd.toISOString(),
+                label: `${shardStart.getMonth() + 1}/${shardStart.getDate()}`
+            });
+
+            current.setDate(current.getDate() + 1);
+        }
+
+        return shards;
+    }
+
+    // 🆕 辅助方法：生成按周分片
+    generateWeeklyShards(startDate, endDate) {
+        const shards = [];
+        const current = new Date(startDate);
+        current.setHours(0, 0, 0, 0);
+
+        while (current < endDate) {
+            const shardStart = new Date(current);
+            const shardEnd = new Date(current);
+            shardEnd.setDate(shardEnd.getDate() + 7);
+
+            if (shardEnd > endDate) {
+                shardEnd.setTime(endDate.getTime());
+            }
+
+            shards.push({
+                start: shardStart.toISOString(),
+                end: shardEnd.toISOString(),
+                label: `${shardStart.getMonth() + 1}/${shardStart.getDate()}-${shardEnd.getMonth() + 1}/${shardEnd.getDate()}`
+            });
+
+            current.setDate(current.getDate() + 7);
+        }
+
+        return shards;
+    }
+
+    // 🆕 辅助方法：生成按月分片
+    generateMonthlyShards(startDate, endDate) {
+        const shards = [];
+        const current = new Date(startDate);
+        current.setHours(0, 0, 0, 0);
+
+        while (current < endDate) {
+            const shardStart = new Date(current);
+            const shardEnd = new Date(current);
+            shardEnd.setMonth(shardEnd.getMonth() + 1);
+
+            if (shardEnd > endDate) {
+                shardEnd.setTime(endDate.getTime());
+            }
+
+            shards.push({
+                start: shardStart.toISOString(),
+                end: shardEnd.toISOString(),
+                label: `${shardStart.getFullYear()}/${shardStart.getMonth() + 1}`
+            });
+
+            current.setMonth(current.getMonth() + 1);
+        }
+
+        return shards;
+    }
+
+    // 🆕 辅助方法：计算最优并发数
+    calculateOptimalConcurrency(shardCount) {
+        if (shardCount <= 2) {
+            return shardCount;
+        } else if (shardCount <= 8) {
+            return 4;
+        } else if (shardCount <= 20) {
+            return 6;
+        } else {
+            return 8;
+        }
+    }
+
+    // 🆕 辅助方法：请求单个分片数据
+    async fetchShardData(shard) {
+        try {
+            const url = getApiUrl('records') +
+                `?startDate=${shard.start}&endDate=${shard.end}&no_limit=true`;
+
+            console.log(`  🔍 补同步请求: ${shard.label}`);
+            console.log(`     URL: ${url}`);
+            console.log(`     时间范围: ${new Date(shard.start).toLocaleString()} ~ ${new Date(shard.end).toLocaleString()}`);
+
+            const response = await fetch(url, {
+                method: 'GET',
+                headers: {
+                    'Accept': 'application/json',
+                    'Accept-Encoding': 'gzip, deflate, br'
+                }
+            });
+
+            if (!response.ok) {
+                console.warn(`⚠️ 分片 ${shard.label} 请求失败: ${response.status}`);
+                return [];
+            }
+
+            const data = await response.json();
+
+            if (data.success && data.data.records) {
+                console.log(`  ✓ 补同步响应: ${shard.label} = ${data.data.records.length} 条`);
+                if (data.data.records.length > 0) {
+                    // 显示前几条数据的时间范围
+                    const first = data.data.records[0];
+                    const last = data.data.records[data.data.records.length - 1];
+                    console.log(`     数据时间范围: ${first.start_time} ~ ${last.start_time}`);
+                }
+                return data.data.records;
+            }
+
+            console.log(`  ⚠️ 补同步响应格式异常: ${shard.label}`, data);
+            return [];
+
+        } catch (error) {
+            console.error(`❌ 分片 ${shard.label} 加载失败:`, error);
+            return [];
         }
     }
 
