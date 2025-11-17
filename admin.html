@@ -400,12 +400,23 @@
             async init() {
                 // 检查认证状态
                 if (!this.token) {
+                    console.log('❌ 未找到token，跳转到登录页');
                     window.location.href = 'login.html';
                     return;
                 }
 
                 try {
-                    await this.verifyAuth();
+                    // GitHub Pages环境下跳过验证（因为没有统一的verify端点）
+                    if (CONFIG.isGitHubPages) {
+                        console.log('🌐 GitHub Pages环境，跳过token验证');
+                        // 尝试从userInfo获取用户名
+                        const userInfo = JSON.parse(localStorage.getItem('userInfo') || sessionStorage.getItem('userInfo') || '{}');
+                        document.getElementById('username').textContent = userInfo.username || '管理员';
+                    } else {
+                        // 本地开发环境才进行验证
+                        await this.verifyAuth();
+                    }
+
                     this.bindEvents();
                     await this.loadStats();
                     await this.loadData();
@@ -416,16 +427,35 @@
             }
 
             async verifyAuth() {
-                const response = await fetch(`${CONFIG.API_BASE_URL}/verify`, {
-                    headers: { 'Authorization': `Bearer ${this.token}` }
-                });
+                try {
+                    console.log('🔐 开始验证token...');
+                    console.log('Token:', this.token);
+                    console.log('API URL:', `${CONFIG.API_BASE_URL}/verify`);
 
-                if (!response.ok) {
-                    throw new Error('认证失败');
+                    const response = await fetch(`${CONFIG.API_BASE_URL}/verify`, {
+                        headers: { 'Authorization': `Bearer ${this.token}` }
+                    });
+
+                    console.log('验证响应状态:', response.status);
+
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        console.error('验证失败:', errorText);
+                        throw new Error(`认证失败 (${response.status}): ${errorText}`);
+                    }
+
+                    const result = await response.json();
+                    console.log('验证成功:', result);
+
+                    if (result.success && result.data) {
+                        document.getElementById('username').textContent = result.data.username || '管理员';
+                    } else {
+                        throw new Error('验证响应格式不正确');
+                    }
+                } catch (error) {
+                    console.error('❌ verifyAuth 失败:', error);
+                    throw error;
                 }
-
-                const result = await response.json();
-                document.getElementById('username').textContent = result.data.username;
             }
 
             bindEvents() {
@@ -520,7 +550,7 @@
                 formData.append('mode', document.getElementById('importMode').value);
                 formData.append('validate', document.getElementById('validateData').checked);
                 formData.append('batch', document.getElementById('batchProcess').checked);
-                
+
                 // 调试FormData内容
                 console.log('FormData内容:');
                 for (let [key, value] of formData.entries()) {
@@ -529,8 +559,15 @@
 
                 try {
                     this.showImportProgress(true);
-                    
-                    const response = await fetch(`${CONFIG.API_BASE_URL}/import`, {
+
+                    // GitHub Pages环境使用API_ENDPOINTS，本地环境使用API_BASE_URL
+                    const importUrl = CONFIG.isGitHubPages
+                        ? CONFIG.API_ENDPOINTS.import
+                        : `${CONFIG.API_BASE_URL}/import`;
+
+                    console.log('📤 导入数据，URL:', importUrl);
+
+                    const response = await fetch(importUrl, {
                         method: 'POST',
                         headers: { 'Authorization': `Bearer ${this.token}` },
                         body: formData
@@ -666,7 +703,12 @@
             }
 
             async uploadBatch(batchData, mode) {
-                const response = await fetch(`${CONFIG.API_BASE_URL}/import-batch`, {
+                // GitHub Pages环境使用API_ENDPOINTS，本地环境使用API_BASE_URL
+                const importUrl = CONFIG.isGitHubPages
+                    ? CONFIG.API_ENDPOINTS.import
+                    : `${CONFIG.API_BASE_URL}/import-batch`;
+
+                const response = await fetch(importUrl, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -689,7 +731,14 @@
 
             async loadStats() {
                 try {
-                    const response = await fetch(`${CONFIG.API_BASE_URL}/stats`, {
+                    // GitHub Pages环境使用API_ENDPOINTS，本地环境使用API_BASE_URL
+                    const statsUrl = CONFIG.isGitHubPages
+                        ? CONFIG.API_ENDPOINTS.stats
+                        : `${CONFIG.API_BASE_URL}/stats`;
+
+                    console.log('📊 加载统计数据，URL:', statsUrl);
+
+                    const response = await fetch(statsUrl, {
                         headers: { 'Authorization': `Bearer ${this.token}` }
                     });
 
@@ -699,7 +748,7 @@
                         document.getElementById('totalRecords').textContent = stats.total_records || 0;
                         document.getElementById('totalPlans').textContent = stats.total_plans || 0;
                         document.getElementById('totalFailures').textContent = stats.total_failures || 0;
-                        
+
                         if (stats.earliest_time && stats.latest_time) {
                             const start = new Date(stats.earliest_time).toLocaleDateString();
                             const end = new Date(stats.latest_time).toLocaleDateString();
@@ -721,7 +770,14 @@
                         ...this.filters
                     });
 
-                    const response = await fetch(`${CONFIG.API_BASE_URL}/records?${params}`, {
+                    // GitHub Pages环境使用API_ENDPOINTS，本地环境使用API_BASE_URL
+                    const recordsUrl = CONFIG.isGitHubPages
+                        ? CONFIG.API_ENDPOINTS.records
+                        : `${CONFIG.API_BASE_URL}/records`;
+
+                    console.log('📋 加载数据记录，URL:', recordsUrl);
+
+                    const response = await fetch(`${recordsUrl}?${params}`, {
                         headers: { 'Authorization': `Bearer ${this.token}` }
                     });
 
@@ -812,7 +868,12 @@
 
             async editRecord(id) {
                 try {
-                    const response = await fetch(`${CONFIG.API_BASE_URL}/records/${id}`, {
+                    // GitHub Pages环境使用API_ENDPOINTS，本地环境使用API_BASE_URL
+                    const recordsUrl = CONFIG.isGitHubPages
+                        ? CONFIG.API_ENDPOINTS.records
+                        : `${CONFIG.API_BASE_URL}/records`;
+
+                    const response = await fetch(`${recordsUrl}/${id}`, {
                         headers: { 'Authorization': `Bearer ${this.token}` }
                     });
 
@@ -837,7 +898,12 @@
                 }
 
                 try {
-                    const response = await fetch(`${CONFIG.API_BASE_URL}/records/${id}`, {
+                    // GitHub Pages环境使用API_ENDPOINTS，本地环境使用API_BASE_URL
+                    const recordsUrl = CONFIG.isGitHubPages
+                        ? CONFIG.API_ENDPOINTS.records
+                        : `${CONFIG.API_BASE_URL}/records`;
+
+                    const response = await fetch(`${recordsUrl}/${id}`, {
                         method: 'DELETE',
                         headers: { 'Authorization': `Bearer ${this.token}` }
                     });
@@ -856,7 +922,7 @@
 
             async saveEdit(e) {
                 e.preventDefault();
-                
+
                 const id = document.getElementById('editId').value;
                 const data = {
                     plan_id: document.getElementById('editPlanId').value,
@@ -865,7 +931,12 @@
                 };
 
                 try {
-                    const response = await fetch(`${CONFIG.API_BASE_URL}/records/${id}`, {
+                    // GitHub Pages环境使用API_ENDPOINTS，本地环境使用API_BASE_URL
+                    const recordsUrl = CONFIG.isGitHubPages
+                        ? CONFIG.API_ENDPOINTS.records
+                        : `${CONFIG.API_BASE_URL}/records`;
+
+                    const response = await fetch(`${recordsUrl}/${id}`, {
                         method: 'PUT',
                         headers: {
                             'Content-Type': 'application/json',
@@ -893,7 +964,15 @@
             async exportData() {
                 try {
                     const params = new URLSearchParams(this.filters);
-                    const response = await fetch(`${CONFIG.API_BASE_URL}/export?${params}`, {
+
+                    // GitHub Pages环境使用API_ENDPOINTS，本地环境使用API_BASE_URL
+                    const exportUrl = CONFIG.isGitHubPages
+                        ? CONFIG.API_ENDPOINTS.export || `${CONFIG.API_ENDPOINTS.stats}/export`
+                        : `${CONFIG.API_BASE_URL}/export`;
+
+                    console.log('📥 导出数据，URL:', exportUrl);
+
+                    const response = await fetch(`${exportUrl}?${params}`, {
                         headers: { 'Authorization': `Bearer ${this.token}` }
                     });
 
@@ -922,7 +1001,14 @@
                 }
 
                 try {
-                    const response = await fetch(`${CONFIG.API_BASE_URL}/clear`, {
+                    // GitHub Pages环境使用API_ENDPOINTS，本地环境使用API_BASE_URL
+                    const clearUrl = CONFIG.isGitHubPages
+                        ? CONFIG.API_ENDPOINTS.clear || `${CONFIG.API_ENDPOINTS.stats}/clear`
+                        : `${CONFIG.API_BASE_URL}/clear`;
+
+                    console.log('🗑️ 清空数据，URL:', clearUrl);
+
+                    const response = await fetch(clearUrl, {
                         method: 'DELETE',
                         headers: { 'Authorization': `Bearer ${this.token}` }
                     });

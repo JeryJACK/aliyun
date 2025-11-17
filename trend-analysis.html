@@ -4,140 +4,91 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>数据趋势分析 - 卫星任务数据分析平台</title>
-    <!-- 本地资源 - 极简SVG方案 -->
-    <!-- 本地Tailwind CSS -->
-    <link rel="stylesheet" href="./public/css/output.css">
-    <!-- 本地图标系统 -->
-    <link rel="stylesheet" href="./public/css/icons.css">
-    <!-- 主题系统 -->
-    <link rel="stylesheet" href="./public/css/themes.css">
+    <!-- 外部资源 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
 
-    <!-- 配置文件 - 必须最先加载 -->
+    <!-- 配置文件 -->
     <script src="./public/js/config.js?v=4"></script>
     <script src="./public/js/shared-data-manager.js"></script>
+    <script src="./public/js/cache-manager.js" defer></script>
 
-    <!-- 延迟加载的脚本 - 不阻塞渲染 -->
-    <script src="./public/lib/chart.min.js" defer></script>
-    <script src="./public/lib/chartjs-plugin-datalabels.min.js" defer></script>
-    <script src="./public/js/cache-manager.js?t=1763191333" defer></script>
+    <!-- Tailwind 配置 -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#165DFF',
+                        secondary: '#36CFC9',
+                        accent: '#722ED1',
+                        warning: '#FF7D00',
+                        danger: '#F53F3F',
+                        success: '#00B42A',
+                    },
+                }
+            }
+        }
+    </script>
 
-    <style>
-        .filter-select {
-            width: 100%;
-            padding: 0.5rem;
-            border: 1px solid #d1d5db;
-            border-radius: 0.375rem;
-            transition: all 0.2s;
-        }
-        .filter-select:focus {
-            outline: none;
-            ring: 2px;
-            ring-color: rgba(22, 93, 255, 0.3);
-            border-color: #165DFF;
-        }
-        .chart-container {
-            height: 20rem;
-            border: 1px solid #e5e7eb;
-            border-radius: 0.5rem;
-            padding: 1rem;
-            position: relative;
-            margin-bottom: 2rem;
-        }
-        .tab-item {
-            padding: 0.5rem 1rem;
-            border-radius: 0.375rem;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-        .tab-item-active {
-            background-color: #165DFF;
-            color: white;
-        }
-        .tab-item-inactive {
-            background-color: #f3f4f6;
-            color: #374151;
-        }
-        .tab-item-inactive:hover {
-            background-color: #e5e7eb;
-        }
-        .dropdown-container {
-            position: relative;
-        }
-        .dropdown-content {
-            position: absolute;
-            z-index: 10;
-            width: 100%;
-            margin-top: 0.25rem;
-            background-color: white;
-            border-radius: 0.375rem;
-            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
-            overflow: hidden;
-            max-height: 15rem;
-            overflow-y: auto;
-        }
-        .multiselect-checkbox {
-            margin-right: 0.5rem;
-            height: 1rem;
-            width: 1rem;
-            color: #165DFF;
-            border-color: #d1d5db;
-            border-radius: 0.25rem;
-        }
-        .selected-tags {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.5rem;
-            margin-top: 0.25rem;
-        }
-        .selected-tag {
-            background-color: rgba(22, 93, 255, 0.1);
-            color: #165DFF;
-            font-size: 0.75rem;
-            padding: 0.25rem 0.5rem;
-            border-radius: 9999px;
-            display: flex;
-            align-items: center;
-        }
-        .tag-remove {
-            margin-left: 0.25rem;
-            cursor: pointer;
-        }
-        .tag-remove:hover {
-            color: rgba(22, 93, 255, 0.8);
-        }
-        .select-all-item {
-            padding: 0.5rem 1rem;
-            border-bottom: 1px solid #f3f4f6;
-            font-weight: 500;
-            color: #165DFF;
-            cursor: pointer;
-        }
-        .select-all-item:hover {
-            background-color: rgba(22, 93, 255, 0.05);
+    <style type="text/tailwindcss">
+        @layer utilities {
+            .content-auto {
+                content-visibility: auto;
+            }
+            .card-shadow {
+                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+            }
+            .modal-backdrop {
+                backdrop-filter: blur(2px);
+            }
+            .filter-select {
+                @apply w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all;
+            }
+            .chart-container {
+                @apply h-80 border border-gray-200 rounded-lg p-4 relative mb-8;
+            }
+            .tab-item {
+                @apply px-4 py-2 rounded-md cursor-pointer transition-all;
+            }
+            .tab-item-active {
+                @apply bg-primary text-white;
+            }
+            .tab-item-inactive {
+                @apply bg-gray-100 text-gray-700 hover:bg-gray-200;
+            }
+            .dropdown-container {
+                @apply relative;
+            }
+            .dropdown-content {
+                @apply absolute z-10 w-full mt-1 bg-white rounded-md shadow-lg overflow-hidden max-h-60 overflow-y-auto;
+            }
+            .multiselect-checkbox {
+                @apply mr-2 h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded;
+            }
+            .selected-tags {
+                @apply flex flex-wrap gap-2 mt-1;
+            }
+            .selected-tag {
+                @apply bg-primary/10 text-primary text-xs px-2 py-1 rounded-full flex items-center;
+            }
+            .tag-remove {
+                @apply ml-1 cursor-pointer hover:text-primary/80;
+            }
+            .select-all-item {
+                @apply px-4 py-2 border-b border-gray-100 font-medium text-primary cursor-pointer hover:bg-primary/5;
+            }
         }
     </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
-    <!-- SVG图标库 - 异步加载不阻塞渲染 -->
-    <div style="display:none" id="svg-sprite-container"></div>
-    <script>
-        // 异步加载SVG sprite，不阻塞页面渲染
-        (function() {
-            var xhr = new XMLHttpRequest();
-            xhr.open('GET', './public/icons/sprite.svg', true);
-            xhr.onload = function() {
-                if (xhr.status === 200) {
-                    document.getElementById('svg-sprite-container').innerHTML = xhr.responseText;
-                }
-            };
-            xhr.send();
-        })();
-    </script>
     <!-- 顶部导航 -->
     <header class="bg-white border-b border-gray-200">
         <div class="container mx-auto px-4 py-3 flex items-center justify-between">
             <div class="flex items-center space-x-2">
-                <svg class="icon icon-xl text-primary"><use href="#icon-line-chart"/></svg>
+                <i class="fa fa-line-chart text-primary text-2xl"></i>
                 <h1 class="text-xl font-bold text-primary">卫星任务数据分析平台</h1>
             </div>
 
@@ -149,7 +100,7 @@
             </nav>
 
             <button class="md:hidden text-gray-600 hover:text-primary" id="mobileMenuBtn">
-                <svg class="icon icon-xl"><use href="#icon-bars"/></svg>
+                <i class="fa fa-bars text-xl"></i>
             </button>
         </div>
 
@@ -166,7 +117,7 @@
 
         <!-- 数据状态提示区 -->
         <div id="dbLoading" class="mb-6 p-3 bg-primary/10 text-primary rounded-lg flex items-center hidden">
-            <svg class="icon icon-spin mr-2"><use href="#icon-spinner"/></svg>
+            <i class="fa fa-spinner fa-spin mr-2"></i>
             <span>正在从数据库加载数据...</span>
             <div class="w-full bg-gray-200 rounded-full h-1.5 mt-2">
                 <div id="loadingProgress" class="bg-primary h-1.5 rounded-full" style="width: 0%"></div>
@@ -177,20 +128,20 @@
         </div>
 
         <div id="noDataAlert" class="bg-warning/10 text-warning p-4 rounded-lg mb-6 hidden">
-            <svg class="icon mr-2"><use href="#icon-exclamation-circle"/></svg>
+            <i class="fa fa-exclamation-circle mr-2"></i>
             <span>请先在首页导入数据，然后再进行趋势分析</span>
             <div class="mt-3 flex gap-2">
                 <button id="refreshDataBtn" class="px-3 py-1 text-sm bg-primary text-white rounded hover:bg-primary/90 transition-colors">
-                    <svg class="icon mr-1"><use href="#icon-refresh"/></svg>刷新数据
+                    <i class="fa fa-refresh mr-1"></i>刷新数据
                 </button>
                 <a href="index.html" class="px-3 py-1 text-sm bg-gray-500 text-white rounded hover:bg-gray-600 transition-colors">
-                    <svg class="icon mr-1"><use href="#icon-home"/></svg>返回首页
+                    <i class="fa fa-home mr-1"></i>返回首页
                 </a>
             </div>
         </div>
 
         <div id="dataStructureAlert" class="bg-warning/10 text-warning p-4 rounded-lg mb-6 hidden">
-            <svg class="icon mr-2"><use href="#icon-exclamation-circle"/></svg>
+            <i class="fa fa-exclamation-circle mr-2"></i>
             <span>数据结构识别异常</span>
             <div class="mt-2 text-sm">
                 <p id="structureMsg">系统检测到数据格式可能不符合预期，已尝试自动修复。</p>
@@ -199,7 +150,7 @@
         </div>
 
         <div id="dbErrorAlert" class="bg-danger/10 text-danger p-4 rounded-lg mb-6 hidden">
-            <svg class="icon mr-2"><use href="#icon-exclamation-circle"/></svg>
+            <i class="fa fa-exclamation-circle mr-2"></i>
             <span id="dbErrorMsg">数据库操作出错</span>
             <div id="dbErrorDetails" class="mt-2 text-sm hidden">
                 <p>错误详情:</p>
@@ -233,7 +184,7 @@
                     <div class="flex items-center justify-between mb-1">
                         <label class="block text-sm font-medium text-gray-700">统计周期</label>
                         <button id="configGroupingBtn" class="text-gray-500 hover:text-primary transition-colors p-1" title="配置周期规则">
-                            <svg class="icon"><use href="#icon-cog"/></svg>
+                            <i class="fa fa-cog"></i>
                         </button>
                     </div>
                     <select id="groupBy" class="filter-select">
@@ -262,7 +213,7 @@
                     <label class="block text-sm font-medium text-gray-700 mb-1">测站名称 <span class="text-xs text-gray-500">(可多选)</span></label>
                     <div class="flex items-center justify-between filter-select cursor-pointer" id="stationDropdown">
                         <span id="stationDisplay">请选择测站</span>
-                        <svg class="icon icon-sm"><use href="#icon-chevron-down"/></svg>
+                        <i class="fa fa-chevron-down text-xs"></i>
                     </div>
                     <div class="selected-tags" id="stationTags"></div>
                     <div class="dropdown-content hidden" id="stationOptions">
@@ -270,7 +221,7 @@
                             <input type="text" placeholder="搜索测站..." class="w-full p-1 text-sm border border-gray-200 rounded" id="stationSearch">
                         </div>
                         <div class="select-all-item" id="selectAllStations">
-                            <svg class="icon mr-2"><use href="#icon-check-square-o"/></svg>全选
+                            <i class="fa fa-check-square-o mr-2"></i>全选
                         </div>
                         <!-- 选项将通过JS动态添加 -->
                     </div>
@@ -282,7 +233,7 @@
                     <label class="block text-sm font-medium text-gray-700 mb-1">客户名称 <span class="text-xs text-gray-500">(可多选)</span></label>
                     <div class="flex items-center justify-between filter-select cursor-pointer" id="customerDropdown">
                         <span id="customerDisplay">请选择客户</span>
-                        <svg class="icon icon-sm"><use href="#icon-chevron-down"/></svg>
+                        <i class="fa fa-chevron-down text-xs"></i>
                     </div>
                     <div class="selected-tags" id="customerTags"></div>
                     <div class="dropdown-content hidden" id="customerOptions">
@@ -290,7 +241,7 @@
                             <input type="text" placeholder="搜索客户..." class="w-full p-1 text-sm border border-gray-200 rounded" id="customerSearch">
                         </div>
                         <div class="select-all-item" id="selectAllCustomers">
-                            <svg class="icon mr-2"><use href="#icon-check-square-o"/></svg>全选
+                            <i class="fa fa-check-square-o mr-2"></i>全选
                         </div>
                         <!-- 选项将通过JS动态添加 -->
                     </div>
@@ -302,7 +253,7 @@
                     <label class="block text-sm font-medium text-gray-700 mb-1">卫星名称 <span class="text-xs text-gray-500">(可多选)</span></label>
                     <div class="flex items-center justify-between filter-select cursor-pointer" id="satelliteDropdown">
                         <span id="satelliteDisplay">请选择卫星</span>
-                        <svg class="icon icon-sm"><use href="#icon-chevron-down"/></svg>
+                        <i class="fa fa-chevron-down text-xs"></i>
                     </div>
                     <div class="selected-tags" id="satelliteTags"></div>
                     <div class="dropdown-content hidden" id="satelliteOptions">
@@ -310,7 +261,7 @@
                             <input type="text" placeholder="搜索卫星..." class="w-full p-1 text-sm border border-gray-200 rounded" id="satelliteSearch">
                         </div>
                         <div class="select-all-item" id="selectAllSatellites">
-                            <svg class="icon mr-2"><use href="#icon-check-square-o"/></svg>全选
+                            <i class="fa fa-check-square-o mr-2"></i>全选
                         </div>
                         <!-- 选项将通过JS动态添加 -->
                     </div>
@@ -322,7 +273,7 @@
                     <label class="block text-sm font-medium text-gray-700 mb-1">任务类型 <span class="text-xs text-gray-500">(可多选)</span></label>
                     <div class="flex items-center justify-between filter-select cursor-pointer" id="typeDropdown">
                         <span id="typeDisplay">请选择任务类型</span>
-                        <svg class="icon icon-sm"><use href="#icon-chevron-down"/></svg>
+                        <i class="fa fa-chevron-down text-xs"></i>
                     </div>
                     <div class="selected-tags" id="typeTags"></div>
                     <div class="dropdown-content hidden" id="typeOptions">
@@ -330,7 +281,7 @@
                             <input type="text" placeholder="搜索类型..." class="w-full p-1 text-sm border border-gray-200 rounded" id="typeSearch">
                         </div>
                         <div class="select-all-item" id="selectAllTypes">
-                            <svg class="icon mr-2"><use href="#icon-check-square-o"/></svg>全选
+                            <i class="fa fa-check-square-o mr-2"></i>全选
                         </div>
                         <!-- 选项将通过JS动态添加 -->
                     </div>
@@ -342,7 +293,7 @@
                     <label class="block text-sm font-medium text-gray-700 mb-1">任务结果状态 <span class="text-xs text-gray-500">(可多选)</span></label>
                     <div class="flex items-center justify-between filter-select cursor-pointer" id="statusDropdown">
                         <span id="statusDisplay">请选择任务状态</span>
-                        <svg class="icon icon-sm"><use href="#icon-chevron-down"/></svg>
+                        <i class="fa fa-chevron-down text-xs"></i>
                     </div>
                     <div class="selected-tags" id="statusTags"></div>
                     <div class="dropdown-content hidden" id="statusOptions">
@@ -350,7 +301,7 @@
                             <input type="text" placeholder="搜索状态..." class="w-full p-1 text-sm border border-gray-200 rounded" id="statusSearch">
                         </div>
                         <div class="select-all-item" id="selectAllStatuses">
-                            <svg class="icon mr-2"><use href="#icon-check-square-o"/></svg>全选
+                            <i class="fa fa-check-square-o mr-2"></i>全选
                         </div>
                         <!-- 选项将通过JS动态添加 -->
                     </div>
@@ -369,7 +320,7 @@
                         <div class="dropdown-container relative">
                             <div class="flex items-center justify-between filter-select cursor-pointer min-w-[180px]" id="stationChartDropdown">
                                 <span id="stationChartDisplay" class="text-sm truncate">请选择测站</span>
-                                <svg class="icon icon-sm ml-2"><use href="#icon-chevron-down"/></svg>
+                                <i class="fa fa-chevron-down text-xs ml-2"></i>
                             </div>
                             <div class="selected-tags" id="stationChartTags"></div>
                             <div class="dropdown-content hidden absolute top-full left-0 z-50 bg-white border border-gray-200 rounded-md shadow-lg min-w-[200px]" id="stationChartOptions">
@@ -377,14 +328,14 @@
                                     <input type="text" placeholder="搜索测站..." class="w-full p-1 text-sm border border-gray-200 rounded" id="stationChartSearch">
                                 </div>
                                 <div class="select-all-item" id="selectAllStationChart">
-                                    <svg class="icon mr-2"><use href="#icon-check-square-o"/></svg>全选
+                                    <i class="fa fa-check-square-o mr-2"></i>全选
                                 </div>
                             </div>
                             <input type="hidden" id="stationChartValue" value="">
                         </div>
                         
                         <button id="resetStationChart" class="px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200 transition" title="重置当前图表筛选">
-                            <svg class="icon"><use href="#icon-refresh"/></svg>
+                            <i class="fa fa-refresh"></i>
                         </button>
                         
                         <div class="h-4 w-px bg-gray-300"></div>
@@ -395,11 +346,11 @@
                         </label>
                         <button class="chart-download-btn px-2 py-1 bg-primary/10 text-primary rounded hover:bg-primary/20 transition"
                                 data-chart="stationChart" data-type="image" title="下载图表图片">
-                            <svg class="icon mr-1"><use href="#icon-download"/></svg>下载图表
+                            <i class="fa fa-download mr-1"></i>下载图表
                         </button>
                         <button class="chart-download-btn px-2 py-1 bg-primary/10 text-primary rounded hover:bg-primary/20 transition"
                                 data-chart="stationChart" data-type="csv" title="下载图表数据">
-                            <svg class="icon mr-1"><use href="#icon-table"/></svg>下载数据
+                            <i class="fa fa-table mr-1"></i>下载数据
                         </button>
                     </div>
                 </h3>
@@ -408,7 +359,7 @@
                     <canvas id="stationChart"></canvas>
                     <div class="absolute inset-0 flex items-center justify-center text-gray-500 hidden" id="stationChartEmpty">
                         <div class="text-center">
-                            <svg class="icon icon-2xl mb-2"><use href="#icon-line-chart"/></svg>
+                            <i class="fa fa-line-chart text-4xl mb-2"></i>
                             <p>没有符合条件的数据</p>
                         </div>
                     </div>
@@ -423,7 +374,7 @@
                         <div class="dropdown-container relative" style="min-width: 160px;">
                             <div class="flex items-center justify-between filter-select cursor-pointer text-sm" id="customerChartDropdown">
                                 <span id="customerChartDisplay" class="truncate" style="max-width: 120px;">请选择客户</span>
-                                <svg class="icon icon-sm ml-2"><use href="#icon-chevron-down"/></svg>
+                                <i class="fa fa-chevron-down text-xs ml-2"></i>
                             </div>
                             <div class="selected-tags" id="customerChartTags"></div>
                             <div class="dropdown-content hidden absolute top-full left-0 z-50" id="customerChartOptions" style="min-width: 200px;">
@@ -431,14 +382,14 @@
                                     <input type="text" placeholder="搜索客户..." class="w-full p-1 text-sm border border-gray-200 rounded" id="customerChartSearch">
                                 </div>
                                 <div class="select-all-item" id="selectAllCustomerChart">
-                                    <svg class="icon mr-2"><use href="#icon-check-square-o"/></svg>全选
+                                    <i class="fa fa-check-square-o mr-2"></i>全选
                                 </div>
                             </div>
                             <input type="hidden" id="customerChartValue" value="">
                         </div>
                         
                         <button id="resetCustomerChart" class="px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200 transition" title="重置当前图表筛选">
-                            <svg class="icon mr-1"><use href="#icon-refresh"/></svg>重置筛选
+                            <i class="fa fa-refresh mr-1"></i>重置筛选
                         </button>
                         
                         <!-- 分隔线 -->
@@ -451,11 +402,11 @@
                             </label>
                             <button class="chart-download-btn px-2 py-1 bg-primary/10 text-primary rounded hover:bg-primary/20 transition"
                                     data-chart="customerChart" data-type="image" title="下载图表图片">
-                                <svg class="icon mr-1"><use href="#icon-download"/></svg>下载图表
+                                <i class="fa fa-download mr-1"></i>下载图表
                             </button>
                             <button class="chart-download-btn px-2 py-1 bg-primary/10 text-primary rounded hover:bg-primary/20 transition"
                                     data-chart="customerChart" data-type="csv" title="下载图表数据">
-                                <svg class="icon mr-1"><use href="#icon-table"/></svg>下载数据
+                                <i class="fa fa-table mr-1"></i>下载数据
                             </button>
                         </div>
                     </div>
@@ -465,7 +416,7 @@
                     <canvas id="customerChart"></canvas>
                     <div class="absolute inset-0 flex items-center justify-center text-gray-500 hidden" id="customerChartEmpty">
                         <div class="text-center">
-                            <svg class="icon icon-2xl mb-2"><use href="#icon-line-chart"/></svg>
+                            <i class="fa fa-line-chart text-4xl mb-2"></i>
                             <p>没有符合条件的数据</p>
                         </div>
                     </div>
@@ -480,7 +431,7 @@
                         <div class="dropdown-container relative" style="min-width: 160px;">
                             <div class="flex items-center justify-between filter-select cursor-pointer text-sm" id="satelliteChartDropdown">
                                 <span id="satelliteChartDisplay" class="truncate" style="max-width: 120px;">请选择卫星名称</span>
-                                <svg class="icon icon-sm ml-2"><use href="#icon-chevron-down"/></svg>
+                                <i class="fa fa-chevron-down text-xs ml-2"></i>
                             </div>
                             <div class="selected-tags" id="satelliteChartTags"></div>
                             <div class="dropdown-content hidden absolute top-full left-0 z-50" id="satelliteChartOptions" style="min-width: 200px;">
@@ -488,7 +439,7 @@
                                     <input type="text" placeholder="搜索卫星..." class="w-full px-3 py-1 border border-gray-300 rounded text-sm" id="satelliteChartSearch">
                                 </div>
                                 <div class="select-all-item" id="selectAllSatelliteChart">
-                                    <svg class="icon mr-2"><use href="#icon-check-square-o"/></svg>全选
+                                    <i class="fa fa-check-square-o mr-2"></i>全选
                                 </div>
                                 <div id="satelliteChartList"></div>
                             </div>
@@ -496,7 +447,7 @@
                         </div>
                         
                         <button id="resetSatelliteChart" class="px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200 transition" title="重置当前图表筛选">
-                            <svg class="icon mr-1"><use href="#icon-refresh"/></svg>重置筛选
+                            <i class="fa fa-refresh mr-1"></i>重置筛选
                         </button>
                         
                         <!-- 分隔线 -->
@@ -509,11 +460,11 @@
                             </label>
                             <button class="chart-download-btn px-2 py-1 bg-primary/10 text-primary rounded hover:bg-primary/20 transition"
                                     data-chart="satelliteChart" data-type="image" title="下载图表图片">
-                                <svg class="icon mr-1"><use href="#icon-download"/></svg>下载图表
+                                <i class="fa fa-download mr-1"></i>下载图表
                             </button>
                             <button class="chart-download-btn px-2 py-1 bg-primary/10 text-primary rounded hover:bg-primary/20 transition"
                                     data-chart="satelliteChart" data-type="csv" title="下载图表数据">
-                                <svg class="icon mr-1"><use href="#icon-table"/></svg>下载数据
+                                <i class="fa fa-table mr-1"></i>下载数据
                             </button>
                         </div>
                     </div>
@@ -523,7 +474,7 @@
                     <canvas id="satelliteChart"></canvas>
                     <div class="absolute inset-0 flex items-center justify-center text-gray-500 hidden" id="satelliteChartEmpty">
                         <div class="text-center">
-                            <svg class="icon icon-2xl mb-2"><use href="#icon-line-chart"/></svg>
+                            <i class="fa fa-line-chart text-4xl mb-2"></i>
                             <p>没有符合条件的数据</p>
                         </div>
                     </div>
@@ -538,7 +489,7 @@
                         <div class="dropdown-container relative" style="min-width: 160px;">
                             <div class="flex items-center justify-between filter-select cursor-pointer text-sm" id="typeChartDropdown">
                                 <span id="typeChartDisplay" class="truncate" style="max-width: 120px;">请选择任务类型</span>
-                                <svg class="icon icon-sm ml-2"><use href="#icon-chevron-down"/></svg>
+                                <i class="fa fa-chevron-down text-xs ml-2"></i>
                             </div>
                             <div class="selected-tags" id="typeChartTags"></div>
                             <div class="dropdown-content hidden absolute top-full left-0 z-50" id="typeChartOptions" style="min-width: 200px;">
@@ -546,7 +497,7 @@
                                     <input type="text" placeholder="搜索类型..." class="w-full px-3 py-1 border border-gray-300 rounded text-sm" id="typeChartSearch">
                                 </div>
                                 <div class="select-all-item" id="selectAllTypeChart">
-                                    <svg class="icon mr-2"><use href="#icon-check-square-o"/></svg>全选
+                                    <i class="fa fa-check-square-o mr-2"></i>全选
                                 </div>
                                 <div id="typeChartList"></div>
                             </div>
@@ -554,7 +505,7 @@
                         </div>
 
                         <button id="resetTypeChart" class="px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200 transition" title="重置当前图表筛选">
-                            <svg class="icon mr-1"><use href="#icon-refresh"/></svg>重置筛选
+                            <i class="fa fa-refresh mr-1"></i>重置筛选
                         </button>
 
                         <!-- 分隔线 -->
@@ -567,11 +518,11 @@
                             </label>
                             <button class="chart-download-btn px-2 py-1 bg-primary/10 text-primary rounded hover:bg-primary/20 transition"
                                     data-chart="typeChart" data-type="image" title="下载图表图片">
-                                <svg class="icon mr-1"><use href="#icon-download"/></svg>下载图表
+                                <i class="fa fa-download mr-1"></i>下载图表
                             </button>
                             <button class="chart-download-btn px-2 py-1 bg-primary/10 text-primary rounded hover:bg-primary/20 transition"
                                     data-chart="typeChart" data-type="csv" title="下载图表数据">
-                                <svg class="icon mr-1"><use href="#icon-table"/></svg>下载数据
+                                <i class="fa fa-table mr-1"></i>下载数据
                             </button>
                         </div>
                     </div>
@@ -581,7 +532,7 @@
                     <canvas id="typeChart"></canvas>
                     <div class="absolute inset-0 flex items-center justify-center text-gray-500 hidden" id="typeChartEmpty">
                         <div class="text-center">
-                            <svg class="icon icon-2xl mb-2"><use href="#icon-line-chart"/></svg>
+                            <i class="fa fa-line-chart text-4xl mb-2"></i>
                             <p>没有符合条件的数据</p>
                         </div>
                     </div>
@@ -596,7 +547,7 @@
                         <div class="dropdown-container relative" style="min-width: 160px;">
                             <div class="flex items-center justify-between filter-select cursor-pointer text-sm" id="statusChartDropdown">
                                 <span id="statusChartDisplay" class="truncate" style="max-width: 120px;">请选择任务状态</span>
-                                <svg class="icon icon-sm ml-2"><use href="#icon-chevron-down"/></svg>
+                                <i class="fa fa-chevron-down text-xs ml-2"></i>
                             </div>
                             <div class="selected-tags" id="statusChartTags"></div>
                             <div class="dropdown-content hidden absolute top-full left-0 z-50" id="statusChartOptions" style="min-width: 200px;">
@@ -604,7 +555,7 @@
                                     <input type="text" placeholder="搜索状态..." class="w-full px-3 py-1 border border-gray-300 rounded text-sm" id="statusChartSearch">
                                 </div>
                                 <div class="select-all-item" id="selectAllStatusChart">
-                                    <svg class="icon mr-2"><use href="#icon-check-square-o"/></svg>全选
+                                    <i class="fa fa-check-square-o mr-2"></i>全选
                                 </div>
                                 <div id="statusChartList"></div>
                             </div>
@@ -612,7 +563,7 @@
                         </div>
 
                         <button id="resetStatusChart" class="px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200 transition" title="重置当前图表筛选">
-                            <svg class="icon mr-1"><use href="#icon-refresh"/></svg>重置筛选
+                            <i class="fa fa-refresh mr-1"></i>重置筛选
                         </button>
 
                         <!-- 分隔线 -->
@@ -625,11 +576,11 @@
                             </label>
                             <button class="chart-download-btn px-2 py-1 bg-primary/10 text-primary rounded hover:bg-primary/20 transition"
                                     data-chart="statusChart" data-type="image" title="下载图表图片">
-                                <svg class="icon mr-1"><use href="#icon-download"/></svg>下载图表
+                                <i class="fa fa-download mr-1"></i>下载图表
                             </button>
                             <button class="chart-download-btn px-2 py-1 bg-primary/10 text-primary rounded hover:bg-primary/20 transition"
                                     data-chart="statusChart" data-type="csv" title="下载图表数据">
-                                <svg class="icon mr-1"><use href="#icon-table"/></svg>下载数据
+                                <i class="fa fa-table mr-1"></i>下载数据
                             </button>
                         </div>
                     </div>
@@ -639,7 +590,7 @@
                     <canvas id="statusChart"></canvas>
                     <div class="absolute inset-0 flex items-center justify-center text-gray-500 hidden" id="statusChartEmpty">
                         <div class="text-center">
-                            <svg class="icon icon-2xl mb-2"><use href="#icon-line-chart"/></svg>
+                            <i class="fa fa-line-chart text-4xl mb-2"></i>
                             <p>没有符合条件的数据</p>
                         </div>
                     </div>
@@ -654,13 +605,13 @@
             <div class="flex justify-between items-center mb-4">
                 <h3 class="text-lg font-semibold">周期规则配置</h3>
                 <button id="closeConfigModal" class="text-gray-500 hover:text-gray-700 transition-colors">
-                    <svg class="icon"><use href="#icon-times"/></svg>
+                    <i class="fa fa-times"></i>
                 </button>
             </div>
 
             <div class="mb-6 pb-4 border-b border-gray-100">
                 <h4 class="font-medium mb-3 flex items-center">
-                    <svg class="icon text-primary mr-2"><use href="#icon-calendar-o"/></svg>按日周期
+                    <i class="fa fa-calendar-o text-primary mr-2"></i>按日周期
                 </h4>
                 <div class="grid grid-cols-2 gap-4">
                     <div>
@@ -678,7 +629,7 @@
 
             <div class="mb-6 pb-4 border-b border-gray-100">
                 <h4 class="font-medium mb-3 flex items-center">
-                    <svg class="icon text-primary mr-2"><use href="#icon-calendar-week-o"/></svg>按周周期
+                    <i class="fa fa-calendar-week-o text-primary mr-2"></i>按周周期
                 </h4>
                 <div class="grid grid-cols-2 gap-4">
                     <div>
@@ -702,7 +653,7 @@
 
             <div class="mb-6 pb-4 border-b border-gray-100">
                 <h4 class="font-medium mb-3 flex items-center">
-                    <svg class="icon text-primary mr-2"><use href="#icon-calendar"/></svg>按月周期
+                    <i class="fa fa-calendar text-primary mr-2"></i>按月周期
                 </h4>
                 <div class="grid grid-cols-2 gap-4">
                     <div>
@@ -718,7 +669,7 @@
 
             <div class="mb-6">
                 <h4 class="font-medium mb-3 flex items-center">
-                    <svg class="icon text-primary mr-2"><use href="#icon-calendar-check-o"/></svg>按季度周期
+                    <i class="fa fa-calendar-check-o text-primary mr-2"></i>按季度周期
                 </h4>
                 <div class="grid grid-cols-2 gap-4">
                     <div>
@@ -4409,7 +4360,7 @@
                 
                 const originalText = btn.innerHTML;
                 btn.disabled = true;
-                btn.innerHTML = '<svg class="icon icon-spin mr-1"><use href="#icon-spinner"/></svg>检查更新...';
+                btn.innerHTML = '<i class="fa fa-spinner fa-spin mr-1"></i>检查更新...';
                 
                 try {
                     // 先检查是否有数据
@@ -4440,7 +4391,7 @@
                 // 创建临时通知元素
                 const notification = document.createElement('div');
                 notification.className = 'fixed top-4 right-4 z-50 bg-success text-white px-4 py-2 rounded-lg shadow-lg';
-                notification.innerHTML = '<svg class="icon mr-2"><use href="#icon-check-circle"/></svg>数据已自动更新';
+                notification.innerHTML = '<i class="fa fa-check-circle mr-2"></i>数据已自动更新';
                 document.body.appendChild(notification);
                 
                 // 3秒后自动消失
